@@ -3,6 +3,9 @@
 //! 版2は版1に「視点の `camera.projection` に `"orthographic"` を許す」を足しただけ。平行投影の
 //! 視点を1つでも含むときだけ版2で書き、含まなければ版1のまま書く（前の版のアプリでも読める）。
 //! 読むときは版1と版2の両方を受け付ける。版1のファイルに `"orthographic"` があれば不正とする。
+//!
+//! STL の単位の仮定は `model.stl_unit`（`"mm"`・`"cm"`・`"m"`）として書く。GLB では項目ごと
+//! 省略し、版も上げない。読むときは省略なら `None`、3つ以外の値は不正とする。
 
 use std::collections::HashSet;
 
@@ -15,6 +18,7 @@ use crate::error::ReviewError;
 use crate::identity::{ModelIdentity, ModelRef};
 use crate::review::{Annotation, ReviewState, SavedView};
 use crate::scene::{NodeId, SceneRead};
+use crate::units::UnitLabel;
 use crate::visibility::Visibility;
 
 const FORMAT: &str = "model-reviewer.review";
@@ -50,6 +54,43 @@ pub struct ReviewModelRecord {
     pub size_bytes: u64,
     pub hash: ReviewHashRecord,
     pub node_count: u32,
+    /// STL の単位の仮定。GLB では `None` で、項目ごと書かない。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "stl_unit_text"
+    )]
+    pub stl_unit: Option<UnitLabel>,
+}
+
+/// `model.stl_unit` の文字（`"mm"`・`"cm"`・`"m"`）。ほかの文字と文字列でない値は不正。
+mod stl_unit_text {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::units::UnitLabel;
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<UnitLabel>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(unit) => serializer.serialize_str(unit.suffix()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<UnitLabel>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        match text.as_str() {
+            "mm" => Ok(Some(UnitLabel::Mm)),
+            "cm" => Ok(Some(UnitLabel::Cm)),
+            "m" => Ok(Some(UnitLabel::M)),
+            _ => Err(D::Error::custom("stl_unit")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +160,7 @@ pub fn to_json(
                 hex: model_ref.identity.blake3_hex.clone(),
             },
             node_count: model.node_count() as u32,
+            stl_unit: model_ref.stl_unit,
         },
         hidden_nodes: state
             .visibility

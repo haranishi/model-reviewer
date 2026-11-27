@@ -541,3 +541,116 @@ fn version_one_files_still_load_and_cannot_claim_orthographic() {
         Err(ReviewError::InvalidValue(_))
     ));
 }
+
+#[test]
+fn stl_unit_round_trips() {
+    use model_reviewer_core::units::UnitLabel;
+
+    let (model, mut model_ref, state) = sample();
+    for (unit, text) in [
+        (UnitLabel::Mm, "\"mm\""),
+        (UnitLabel::Cm, "\"cm\""),
+        (UnitLabel::M, "\"m\""),
+    ] {
+        model_ref.stl_unit = Some(unit);
+        let json = render(&state, &model, &model_ref);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["model"]["stl_unit"].to_string(), text);
+        assert_eq!(value["version"], serde_json::json!(1), "版は上げない");
+        let file = parse(&json).expect("parse");
+        assert_eq!(file.model.stl_unit, Some(unit));
+        // 書き直しても同じ。
+        let again = serde_json::to_string_pretty(&file).unwrap();
+        assert_eq!(parse(&again).unwrap().model.stl_unit, Some(unit));
+    }
+
+    // 無ければ None。
+    model_ref.stl_unit = None;
+    let json = render(&state, &model, &model_ref);
+    assert!(!json.contains("stl_unit"));
+    assert_eq!(parse(&json).unwrap().model.stl_unit, None);
+
+    // 知らない値と文字列でない値は読まない。
+    let base: serde_json::Value = serde_json::from_str(&json).unwrap();
+    for bad in [
+        serde_json::json!("inch"),
+        serde_json::json!("MM"),
+        serde_json::json!(""),
+        serde_json::json!(1),
+        serde_json::json!(null),
+    ] {
+        let mut value = base.clone();
+        value["model"]["stl_unit"] = bad.clone();
+        assert!(
+            matches!(parse(&value.to_string()), Err(ReviewError::InvalidValue(_))),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn glb_review_bytes_are_unchanged() {
+    let model = review_model();
+    let model_ref = model_ref(b"model-a");
+    let mut state = ReviewState::new(&model);
+    state.visibility.set(&model, NodeId(3), false);
+    let hit = Hit {
+        node: NodeId(2),
+        t: 1.0,
+        world_pos: Vec3::ZERO,
+        local_pos: Vec3::new(0.5, 0.25, -1.0),
+        local_normal: Vec3::Y,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
+    };
+    assert_eq!(state.add_annotation(&hit, "角".to_owned()), Some(1));
+    let json = render(&state, &model, &model_ref);
+    let expected = format!(
+        r#"{{
+  "format": "model-reviewer.review",
+  "version": 1,
+  "app_version": "{version}",
+  "model": {{
+    "file_name": "review-sample.glb",
+    "path": "/work/models/review-sample.glb",
+    "relative_path": "../models/review-sample.glb",
+    "size_bytes": 7,
+    "hash": {{
+      "algorithm": "blake3",
+      "hex": "{hex}"
+    }},
+    "node_count": 4
+  }},
+  "hidden_nodes": [
+    {{
+      "gltf_index": 6,
+      "name": "車輪"
+    }}
+  ],
+  "annotations": [
+    {{
+      "id": 1,
+      "node": {{
+        "gltf_index": 9,
+        "name": "先端"
+      }},
+      "local_position": [
+        0.5,
+        0.25,
+        -1.0
+      ],
+      "local_normal": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "text": "角"
+    }}
+  ],
+  "views": []
+}}"#,
+        version = env!("CARGO_PKG_VERSION"),
+        hex = model_ref.identity.blake3_hex,
+    );
+    assert_eq!(json, expected);
+}

@@ -52,10 +52,11 @@
 
 ## 未確認
 - 日本語配列の数字キー、実キーの Cmd+Z・Cmd+D・Delete（自動操作はOSのキー配列を通らない）。実機のトラックパッドとマウス、日本語入力。
-- 書き出しの保存先のダイアログで既存のファイルを選んだときの上書きの確認、ネイティブのダイアログ全般、Windows と Linux、GPUの処理時間。
+- 書き出しの保存先のダイアログで既存のファイルを選んだときの上書きの確認、ネイティブのダイアログ全般、Windows と Linux の画面（ビルドと自動テストは CI で通る）、GPUの処理時間。
 - 画面の見た目と使いやすさの、別の目による採点（この段階では未実施）。
 
 ## 公開の準備（2026-11-27、公開前）
 - LICENSE-APACHE を公式の本文に差し替えた（付録に、依存ライブラリの著作権者の名前が入っていた）。依存のライセンスは `cargo deny check licenses sources bans` が成功。
-- 自動操作の相対パス判定と、Windows でのハードリンクの判定を直した（Windows では未実行。CIで確かめる）。
+- 自動操作の相対パス判定と、Windows でのハードリンクの判定を直した（Windows の実行は下の CI）。
 - 直した後に、`cargo test --workspace` 329件成功・39件 ignored、clippy 警告0、Rust 1.95 の `cargo check --workspace --all-targets` 成功。`heavy-edit` を除く自動操作8本が成功。GPUの試験（`--include-ignored`）は流し直していない。
+- 公開後の CI（GitHub の標準の実行機）: 最初の実行は、`inspector.rs` の回転の比べ方が原因で Linux と Windows のテストが失敗した。直した後は、macOS・Linux・Windows の clippy とテスト、書式、依存のライセンス、Rust 1.95 の検査がすべて成功した（テストは macOS 329件、Linux と Windows は 328件、各 39件 ignored。差の1件は macOS 専用）。Windows と Linux の画面は動かしていない。

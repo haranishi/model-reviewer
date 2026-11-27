@@ -1,12 +1,14 @@
 //! 表示・注釈・視点。注釈と視点の番号は一つの連番。
 
+use std::collections::HashSet;
+use std::ops::Range;
+
 use glam::Vec3;
 
 use crate::camera::OrbitCamera;
-use crate::pick::Hit;
-use std::ops::Range;
-
 use crate::doc::Remap;
+use crate::pick::Hit;
+use crate::review_file::MAX_PARSED_ID;
 use crate::scene::{NodeId, SceneRead};
 use crate::visibility::Visibility;
 
@@ -179,21 +181,33 @@ impl ReviewState {
         }
     }
 
-    /// 使っていない番号だけ返す。`u64::MAX` まで使い切ったら `None`。
+    /// 保存して読み直せる範囲で採番する。上限に達したら1から空きを探す。
     fn allocate_id(&mut self) -> Option<u64> {
-        let mut candidate = self.next_id;
-        loop {
-            if !self.id_used(candidate) {
-                self.next_id = candidate.checked_add(1).unwrap_or(candidate);
-                return Some(candidate);
-            }
-            candidate = candidate.checked_add(1)?;
+        let end = MAX_PARSED_ID + 1;
+        let start = self.next_id.min(end);
+        let id = self.unused_id_in((start..end).chain(1..start))?;
+        self.next_id = id + 1;
+        Some(id)
+    }
+
+    fn unused_id_in(&self, mut candidates: impl Iterator<Item = u64>) -> Option<u64> {
+        let first = candidates.next()?;
+        if !self.id_used(first) {
+            return Some(first);
         }
+        let used: HashSet<_> = self.ids().collect();
+        candidates.find(|id| !used.contains(id))
     }
 
     fn id_used(&self, id: u64) -> bool {
-        self.annotations.iter().any(|note| note.id == id)
-            || self.views.iter().any(|view| view.id == id)
+        self.ids().any(|used| used == id)
+    }
+
+    fn ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.annotations
+            .iter()
+            .map(|note| note.id)
+            .chain(self.views.iter().map(|view| view.id))
     }
 }
 
@@ -202,6 +216,7 @@ mod tests {
     use glam::Vec3;
 
     use crate::pick::Hit;
+    use crate::review_file::MAX_PARSED_ID;
     use crate::scene::NodeId;
     use crate::visibility::Visibility;
 
@@ -221,24 +236,25 @@ mod tests {
 
     #[test]
     fn ids_near_the_end_are_not_reused() {
-        let mut full = ReviewState::from_parts(
+        let mut past_limit = ReviewState::from_parts(
             Visibility::all_visible(1),
             vec![Annotation {
                 id: u64::MAX,
                 node: NodeId(0),
                 local_pos: Vec3::ZERO,
                 local_normal: Vec3::Y,
-                text: "満杯".to_owned(),
+                text: "範囲外".to_owned(),
             }],
             Vec::new(),
         );
-        assert!(full.add_annotation(&hit(), "次".to_owned()).is_none());
-        assert_eq!(full.annotations.len(), 1);
+        assert_eq!(past_limit.add_annotation(&hit(), "次".to_owned()), Some(1));
+        assert_eq!(past_limit.annotations.len(), 2);
+        assert_eq!(past_limit.unused_id_in(1..=1), None);
 
         let mut near = ReviewState::from_parts(
             Visibility::all_visible(1),
             vec![Annotation {
-                id: u64::MAX - 2,
+                id: MAX_PARSED_ID - 2,
                 node: NodeId(0),
                 local_pos: Vec3::ZERO,
                 local_normal: Vec3::Y,
@@ -248,9 +264,10 @@ mod tests {
         );
         let first = near.add_annotation(&hit(), "a".to_owned()).unwrap();
         let second = near.add_annotation(&hit(), "b".to_owned()).unwrap();
-        assert_eq!(first, u64::MAX - 1);
-        assert_eq!(second, u64::MAX);
-        assert!(near.add_annotation(&hit(), "c".to_owned()).is_none());
+        assert_eq!(first, MAX_PARSED_ID - 1);
+        assert_eq!(second, MAX_PARSED_ID);
+        assert_eq!(near.unused_id_in(MAX_PARSED_ID - 2..=MAX_PARSED_ID), None);
+        assert_eq!(near.add_annotation(&hit(), "c".to_owned()), Some(1));
         let mut ids: Vec<u64> = near.annotations.iter().map(|note| note.id).collect();
         ids.sort_unstable();
         ids.dedup();

@@ -27,6 +27,7 @@ fn sample_session() -> Session {
         path: "sample.glb".to_owned(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
+        stl_unit: None,
     });
     session.pick_index = Some(PickIndex::build(&model));
     session.set_model(model);

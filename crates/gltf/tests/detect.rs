@@ -30,6 +30,8 @@ fn assert_order(warnings: &[LoadWarning]) {
             LoadWarning::OmittedLinesAndPoints { .. } => 7,
             LoadWarning::SimplifiedExtension { .. } => 8,
             LoadWarning::UnsupportedOptionalExtension { .. } => 9,
+            LoadWarning::StlSolidsMerged { .. } => 10,
+            LoadWarning::StlTrailingBytes { .. } => 11,
         }
     }
     let ranks: Vec<_> = warnings.iter().map(rank).collect();

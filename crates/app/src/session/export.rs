@@ -70,6 +70,7 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         target: path,
         scene: export_scene(doc),
         forbidden: session.opened_files.clone(),
+        base_kind: exporter::ExportBase::File,
     };
     session.export_error = None;
     session.export_failed = false;
@@ -151,6 +152,7 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         path: canonical.display().to_string(),
         relative_path: None,
         identity: done.identity,
+        stl_unit: None,
     });
     session.exported_since_load = true;
     session.export_error = None;

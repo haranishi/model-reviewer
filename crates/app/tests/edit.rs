@@ -29,6 +29,7 @@ fn sample_session() -> Session {
         path: "sample.glb".to_owned(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
+        stl_unit: None,
     });
     session.pick_index = Some(PickIndex::build(&model));
     session.set_model(model);
@@ -337,6 +338,8 @@ fn moving_a_part_moves_its_annotation_marker_during_the_drag() {
         world_pos: Vec3::ZERO,
         local_pos: Vec3::new(0.0, 0.1, 0.0),
         local_normal: Vec3::Y,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     };
     session
         .review

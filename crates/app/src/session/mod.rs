@@ -15,7 +15,9 @@ use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::review_file::ReviewFile;
 use model_reviewer_core::scene::{Model, NodeId, SceneRead};
-use model_reviewer_core::units::UnitLabel;
+use model_reviewer_core::section::{Axis, SectionPlane};
+use model_reviewer_core::snap::{SnapSettings, SnapTarget};
+use model_reviewer_core::units::{UnitLabel, Units};
 use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
@@ -25,6 +27,7 @@ use crate::metrics::Metrics;
 use crate::ui::ids;
 
 mod camera;
+mod dims;
 mod edit;
 mod export;
 mod measure;
@@ -33,8 +36,11 @@ mod open;
 mod parts;
 mod persist;
 mod pick;
+mod section;
+mod snap;
 mod view;
 
+pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
     GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
 };
@@ -47,6 +53,15 @@ pub(super) struct PendingRestore {
     pub file: ReviewFile,
     pub remaining: Vec<PathBuf>,
     pub first_mismatch: Option<ModelIdentity>,
+}
+
+/// 開いているモデルの元の形式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceKind {
+    #[default]
+    Glb,
+    /// STL。`unit` は座標の単位の仮定。
+    Stl { unit: UnitLabel },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +91,18 @@ pub struct Session {
     pub measurement: Measurement,
     /// 長さに添える単位の文字（数値は換算しない）。作業の間だけの設定。
     pub unit: UnitLabel,
+    /// ファイルの単位（前提）と表示の単位。作業の間だけの設定で、保存しない。
+    pub units: Units,
+    /// 開いているモデルの元の形式。
+    pub source_kind: SourceKind,
+    /// 吸着の設定。作業の間だけの設定で、保存しない。
+    pub snap: SnapSettings,
+    /// ポインタの下の吸着の候補（計測の道具のとき）。クリックはこれを使わない。
+    pub snap_preview: Option<SnapTarget>,
+    /// 断面。履歴・未保存の印・レビューJSONに入れない。
+    pub section: Option<SectionPlane>,
+    /// 断面を切っている間の控え（もう一度入れると、この軸と位置を使う）。
+    pub section_memory: SectionPlane,
     /// 文書の部品が置く三角形の数（追加・複製・削除のたびに数え直す）。
     placed_triangles: u64,
     /// いまの道具。`Annotate` のときは `annotate_mode` も真（第1段階の口として残す）。
@@ -163,6 +190,16 @@ impl Default for Session {
             selection: None,
             measurement: Measurement::default(),
             unit: UnitLabel::default(),
+            units: Units::default(),
+            source_kind: SourceKind::Glb,
+            snap: SnapSettings::default(),
+            snap_preview: None,
+            section: None,
+            section_memory: SectionPlane {
+                axis: Axis::Z,
+                offset: 0.0,
+                flipped: false,
+            },
             placed_triangles: 0,
             tool: Tool::Select,
             annotate_mode: false,
@@ -410,6 +447,14 @@ impl Session {
             Command::ExportGlb(path) => export::export_glb(self, path),
             Command::ClearMeasure => measure::clear_measure(self),
             Command::SetUnit(unit) => measure::set_unit(self, unit),
+            // 第3段階の分。中身は接合の作業で書く。
+            Command::ViewHover { ndc } => snap::hover(self, ndc),
+            Command::SetSnap(on) => snap::set_snap(self, on),
+            Command::ToggleSnap => snap::toggle_snap(self),
+            Command::SetSection(plane) => section::set_section(self, plane),
+            Command::ToggleSection => section::toggle_section(self),
+            Command::SetDisplayUnit(unit) => set_display_unit(self, unit),
+            Command::SetStlUnit(unit) => set_stl_unit(self, unit),
         }
     }
 
@@ -1148,6 +1193,18 @@ impl Session {
             PanelKind::Details => self.panel_details = open,
         }
     }
+}
+
+/// 表示の単位を替える（`None` は「ファイルと同じ」）。
+fn set_display_unit(session: &mut Session, unit: Option<UnitLabel>) {
+    // 契約の先置き。中身は接合の作業で書く。
+    let _ = (session, unit);
+}
+
+/// STL の単位の仮定を替える（同じファイルを開き直す）。
+fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
+    // 契約の先置き。中身は接合の作業で書く。
+    let _ = (session, unit);
 }
 
 /// 変形の途中に届いたら、先に変形をやめる操作。視点の操作は、ハンドルのドラッグのときだけ

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use model_reviewer_core::identity::{ModelIdentity, ModelRef};
 use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::scene::Model;
+use model_reviewer_core::units::UnitLabel;
 use model_reviewer_gltf::{LoadError, load_glb};
 
 /// 画面に出す工程。割合を持つのはGPU転送だけ。
@@ -45,6 +46,12 @@ impl LoadPhase {
             Self::Idle | Self::Failed(_) => None,
         }
     }
+}
+
+/// 読み込みの指定。`stl_unit` は STL の単位の仮定（`None` は mm）。GLB では使わない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoadOptions {
+    pub stl_unit: Option<UnitLabel>,
 }
 
 /// 各工程の前に呼ぶ試験用の関数。本番は空。
@@ -325,6 +332,7 @@ fn model_ref_for(path: &Path, identity: ModelIdentity) -> ModelRef {
         path: absolute.display().to_string(),
         relative_path: None,
         identity,
+        stl_unit: None,
     }
 }
 

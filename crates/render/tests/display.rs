@@ -64,6 +64,7 @@ fn params(view_proj: Mat4, eye: Vec3, size: [u32; 2]) -> FrameParams {
         display: DisplayMode::Faces,
         grid: GridParams::default(),
         drag: None,
+        section: None,
     }
 }
 

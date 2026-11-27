@@ -8,6 +8,7 @@ use model_reviewer_core::scene::NodeId;
 
 pub use model_reviewer_core::camera::{Projection, ViewDir};
 pub use model_reviewer_core::gizmo::{Handle, Tool, Trs};
+pub use model_reviewer_core::section::{Axis, SectionPlane};
 pub use model_reviewer_core::shapes::ShapeKind;
 pub use model_reviewer_core::units::UnitLabel;
 pub use model_reviewer_render::DisplayMode;
@@ -116,7 +117,25 @@ pub enum Command {
 
     // ---- 第2段階：計測（session/measure.rs） ----
     ClearMeasure,
+    /// ファイルの単位（前提）を替える。GLB だけ。数値は換算しない。
     SetUnit(UnitLabel),
+
+    // ---- 第3段階：寸法を確かめる（session/{snap,section}.rs ほか）。どれも履歴と未保存の印に入らない ----
+    /// 計測の道具でポインタが3Dビューの上を動いた（`Some`）か、3Dビューを出た（`None`）。
+    ViewHover {
+        ndc: Option<Vec2>,
+    },
+    /// 吸着を入れるか。
+    SetSnap(bool),
+    ToggleSnap,
+    /// 断面を置く（`None` で外す）。置く前に境界箱へ収める。
+    SetSection(Option<SectionPlane>),
+    /// 断面の入・切。切ってから入れると、前の軸と位置を使う。
+    ToggleSection,
+    /// 表示の単位。`None` は「ファイルと同じ」。
+    SetDisplayUnit(Option<UnitLabel>),
+    /// STL の単位の仮定を替える（同じファイルを開き直す）。
+    SetStlUnit(UnitLabel),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +156,8 @@ pub struct SceneDirty {
     pub display: bool,
     /// 変形中の差分の行列が変わった（インスタンスは書き直さない）。
     pub drag: bool,
+    /// 断面が変わった（定数だけを送り直す。部品の表もインスタンスも作り直さない）。
+    pub section: bool,
 }
 
 impl SceneDirty {
@@ -148,6 +169,7 @@ impl SceneDirty {
             || self.size
             || self.display
             || self.drag
+            || self.section
     }
 }
 

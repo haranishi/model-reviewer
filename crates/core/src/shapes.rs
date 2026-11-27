@@ -18,6 +18,42 @@ pub enum ShapeKind {
     Plane,
 }
 
+/// 足した図形の作り方（`build(kind, size)` の引数）。文書が形状ごとに覚える。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeSpec {
+    pub kind: ShapeKind,
+    pub size: f32,
+}
+
+/// 図形の寸法（シーンの単位）。立方体は3軸、球は直径、円柱は直径（X）と高さ（Y）、平面は X と Z。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dims {
+    Cube { x: f32, y: f32, z: f32 },
+    Sphere { d: f32 },
+    Cylinder { d: f32, h: f32 },
+    Plane { x: f32, z: f32 },
+}
+
+/// 寸法として受け付ける下限と上限。
+pub const DIM_MIN: f32 = 1.0e-6;
+pub const DIM_MAX: f32 = 1.0e9;
+
+/// 大きさ（部品の中の3軸の拡大）から寸法を求める。球の3軸、円柱の X と Z が相対 1e-4 以内で
+/// そろっていなければ `None`。
+pub fn dims_of(spec: ShapeSpec, scale: Vec3) -> Option<Dims> {
+    // 契約の先置き。中身は後の作業で書く。
+    let _ = (spec, scale);
+    None
+}
+
+/// 寸法から大きさを求める。図形の種類が合わない、有限でない、`DIM_MIN`〜`DIM_MAX` の外なら
+/// `None`。平面の Y は `keep_y` をそのまま使う。
+pub fn scale_for(spec: ShapeSpec, dims: Dims, keep_y: f32) -> Option<Vec3> {
+    // 契約の先置き。中身は後の作業で書く。
+    let _ = (spec, dims, keep_y);
+    None
+}
+
 /// 足した図形の色（中間の灰色1色）。
 pub const SHAPE_COLOR: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 

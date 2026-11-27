@@ -511,6 +511,8 @@ fn frame_params(session: &Session, shown: Option<&Arc<Model>>) -> FrameParams {
             }
             _ => None,
         },
+        // 断面はまだ描画へ渡さない（接合の作業でつなぐ）。
+        section: None,
     }
 }
 

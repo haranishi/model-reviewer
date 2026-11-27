@@ -1,3 +1,4 @@
+pub mod bvh;
 pub mod camera;
 pub mod doc;
 pub mod error;
@@ -10,8 +11,8 @@ pub mod pick;
 pub mod review;
 pub mod review_file;
 pub mod scene;
+pub mod section;
 pub mod shapes;
+pub mod snap;
 pub mod units;
 pub mod visibility;
-
-mod bvh;

@@ -120,6 +120,7 @@ fn frame(size: [u32; 2], selected: Option<std::ops::Range<u32>>) -> FrameParams 
         display: Default::default(),
         grid: Default::default(),
         drag: None,
+        section: None,
     }
 }
 
@@ -514,6 +515,7 @@ fn writes_sample_initial_view() {
         display: Default::default(),
         grid: Default::default(),
         drag: None,
+        section: None,
     };
     let image = draw(&mut renderer, &device, &queue, &params);
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

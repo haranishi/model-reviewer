@@ -38,6 +38,8 @@ pub struct TriHit {
     pub t: f32,
     pub local_pos: Vec3,
     pub normal: Vec3,
+    /// 当たった三角形の番号（形状の番号の表で何番目の三角形か）。
+    pub triangle: u32,
 }
 
 impl Bvh {
@@ -132,6 +134,22 @@ impl Bvh {
             }
         }
         best
+    }
+
+    /// 境界箱が球（中心 `center`・半径 `radius`、形状の中の座標）に触れる三角形の番号を `out` に足す。
+    /// `limit` を超えたら `false` を返す（`out` の中身は途中まで）。
+    pub fn triangles_near(
+        &self,
+        center: Vec3,
+        radius: f32,
+        vertices: &[Vertex],
+        indices: &[u32],
+        limit: usize,
+        out: &mut Vec<u32>,
+    ) -> bool {
+        // 契約の先置き。中身は後の作業で書く。
+        let _ = (center, radius, vertices, indices, limit, out);
+        true
     }
 }
 
@@ -336,6 +354,7 @@ fn ray_triangle(
         t,
         local_pos,
         normal,
+        triangle,
     })
 }
 

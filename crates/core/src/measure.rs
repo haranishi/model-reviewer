@@ -8,6 +8,7 @@ use glam::{Affine3A, Vec3};
 
 use crate::doc::{Document, NodeKey};
 use crate::scene::SceneRead;
+use crate::snap::SnapKind;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeasurePoint {
@@ -19,21 +20,46 @@ pub struct MeasurePoint {
 pub struct Measurement {
     pub first: Option<MeasurePoint>,
     pub second: Option<MeasurePoint>,
+    /// 1点目と2点目が何に吸着したか。点が無い側は `Face`。
+    pub kinds: [SnapKind; 2],
 }
 
 impl Measurement {
-    /// 点を足す。2点そろっていれば、新しい計測の1点目にする。有限でない座標は受け付けない。
+    /// 点を足す（面に置いた点として）。`push_with(point, SnapKind::Face)` と同じ。
     pub fn push(&mut self, point: MeasurePoint) {
+        self.push_with(point, SnapKind::Face);
+    }
+
+    /// 点を、何に吸着したかと一緒に足す。2点そろっていれば、新しい計測の1点目にする。
+    /// 有限でない座標は受け付けない。
+    pub fn push_with(&mut self, point: MeasurePoint, kind: SnapKind) {
         if !point.local.is_finite() {
             return;
         }
         match (self.first, self.second) {
-            (Some(_), None) => self.second = Some(point),
+            (Some(_), None) => {
+                self.second = Some(point);
+                self.kinds[1] = kind;
+            }
             _ => {
                 self.first = Some(point);
                 self.second = None;
+                self.kinds = [kind, SnapKind::Face];
             }
         }
+    }
+
+    /// 2点目 − 1点目（ワールド）。2点がそろっていなければ `None`。
+    pub fn delta(&self, doc: &Document) -> Option<Vec3> {
+        self.delta_with(|key| world_of(doc, key))
+    }
+
+    pub fn delta_with(&self, world: impl Fn(NodeKey) -> Option<Affine3A>) -> Option<Vec3> {
+        let (first, second) = (self.first?, self.second?);
+        let a = world(first.node)?.transform_point3(first.local);
+        let b = world(second.node)?.transform_point3(second.local);
+        let delta = b - a;
+        delta.is_finite().then_some(delta)
     }
 
     pub fn clear(&mut self) {

@@ -1,5 +1,7 @@
 //! モデルの識別。ファイル全体の blake3 とバイト数。
 
+use crate::units::UnitLabel;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelIdentity {
     pub size_bytes: u64,
@@ -21,4 +23,6 @@ pub struct ModelRef {
     pub path: String,
     pub relative_path: Option<String>,
     pub identity: ModelIdentity,
+    /// STL を開いたときの単位の仮定。GLB では `None`（レビューJSONに書かない）。
+    pub stl_unit: Option<UnitLabel>,
 }

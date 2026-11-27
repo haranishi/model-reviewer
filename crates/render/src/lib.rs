@@ -1106,6 +1106,7 @@ mod failure_tests {
             display: Default::default(),
             grid: Default::default(),
             drag: None,
+            section: None,
         }
     }
 

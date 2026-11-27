@@ -1896,6 +1896,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-reviewer-stl"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "model-reviewer-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "model-reviewer-testdata"
 version = "0.1.0"
 dependencies = [

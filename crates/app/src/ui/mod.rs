@@ -1,6 +1,7 @@
 //! 5領域。部品は `Session` を読み、`Command` を積むだけ。
 //! 第2段階で足した部品（`viewcube`・`viewbar`・`toolrail`・`inspector`・`gizmo_view`・
-//! `measure_view`）は `Session` を読まず、自分のファイルに置いた入力用の構造体だけを受け取る。
+//! `measure_view`）と第3段階の部品（`section_bar`・`section_view`・`dims`・`measure_panel`）は
+//! `Session` を読まず、自分のファイルに置いた入力用の構造体だけを受け取る。
 //! 構造体を `Session` から組み立てて置くのは接合（WP-J*）の仕事。
 
 use crate::automation::{WidgetEntry, WidgetFrame};
@@ -10,13 +11,17 @@ use crate::session::Session;
 pub mod annotations;
 pub mod details;
 pub mod dialogs;
+pub mod dims;
 pub mod empty;
 pub mod gizmo_view;
 pub mod help;
 pub mod ids;
 pub mod inspector;
+pub mod measure_panel;
 pub mod measure_view;
 pub mod overlay;
+pub mod section_bar;
+pub mod section_view;
 pub mod status;
 pub mod toolbar;
 pub mod toolrail;

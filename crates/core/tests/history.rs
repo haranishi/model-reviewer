@@ -168,6 +168,8 @@ fn hit(node: NodeId, x: f32) -> Hit {
         world_pos: Vec3::ZERO,
         local_pos: Vec3::new(x, 0.25, -0.5),
         local_normal: Vec3::Y,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     }
 }
 

@@ -5,6 +5,7 @@ use glam::{Affine3A, Vec3};
 use crate::bvh::Bvh;
 use crate::math::Ray;
 use crate::scene::{NodeId, PrimId, SceneRead};
+use crate::section::SectionPlane;
 use crate::visibility::Visibility;
 
 #[derive(Clone, Copy, Debug)]
@@ -14,6 +15,10 @@ pub struct Hit {
     pub world_pos: Vec3,
     pub local_pos: Vec3,
     pub local_normal: Vec3,
+    /// 当たった形状。
+    pub prim: PrimId,
+    /// 当たった三角形の番号（`prim` の中）。
+    pub triangle: u32,
 }
 
 pub struct PickIndex {
@@ -55,9 +60,27 @@ impl PickIndex {
         }
         added
     }
+
+    /// 形状の三角形の索引。番号の外なら `None`。
+    pub fn bvh(&self, prim: PrimId) -> Option<&Bvh> {
+        self.bvhs.get(prim.0 as usize)
+    }
 }
 
 pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &Ray) -> Option<Hit> {
+    pick_clipped(model, index, vis, ray, None)
+}
+
+/// 断面で消える側を除いた当たり判定。`clip = None` は `pick` と同じ結果になる。
+pub fn pick_clipped(
+    model: &impl SceneRead,
+    index: &PickIndex,
+    vis: &Visibility,
+    ray: &Ray,
+    clip: Option<&SectionPlane>,
+) -> Option<Hit> {
+    // 契約の先置き。断面での範囲の切り方は後の作業で書く（いまは `clip` を見ない）。
+    let _ = clip;
     if !ray.origin.is_finite() || !ray.dir.is_finite() || ray.dir.length_squared() <= 1.0e-20 {
         return None;
     }
@@ -119,6 +142,8 @@ pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &R
                 world_pos: ray.origin + ray.dir * tri.t,
                 local_pos: tri.local_pos,
                 local_normal: tri.normal,
+                prim: draw.prim,
+                triangle: tri.triangle,
             });
         }
     }

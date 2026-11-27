@@ -88,3 +88,24 @@ pub const TOOLBAR_EXPORT: &str = "toolbar.export";
 pub const TOOLBAR_UNDO: &str = "toolbar.undo";
 pub const TOOLBAR_REDO: &str = "toolbar.redo";
 pub const STATUS_UNIT: &str = "status.unit";
+
+// ---- 第3段階 ----
+// 吸着（ui::toolrail）と計測のパネル（ui::measure_panel）。
+pub const MEASURE_SNAP: &str = "measure.snap";
+pub const MEASURE_CLEAR: &str = "measure.clear";
+// 断面（ui::viewbar・ui::section_bar・ui::section_view）。
+pub const VIEW_SECTION: &str = "view.section";
+pub const SECTION_AXIS_X: &str = "section.axis.x";
+pub const SECTION_AXIS_Y: &str = "section.axis.y";
+pub const SECTION_AXIS_Z: &str = "section.axis.z";
+pub const SECTION_OFFSET: &str = "section.offset";
+pub const SECTION_FLIP: &str = "section.flip";
+pub const SECTION_HANDLE: &str = "section.handle";
+// 寸法の欄（ui::dims）。
+pub const DIMS_X: &str = "dims.x";
+pub const DIMS_Y: &str = "dims.y";
+pub const DIMS_Z: &str = "dims.z";
+pub const DIMS_D: &str = "dims.d";
+pub const DIMS_H: &str = "dims.h";
+// 状態欄の表示の単位（ui::status）。ファイルの単位は既存の `STATUS_UNIT`。
+pub const STATUS_DISPLAY_UNIT: &str = "status.display_unit";

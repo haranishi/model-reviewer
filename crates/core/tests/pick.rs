@@ -438,6 +438,8 @@ fn brute(model: &Model, vis: &Visibility, ray: &Ray) -> Option<Hit> {
                     world_pos: ray.origin + ray.dir * t,
                     local_pos,
                     local_normal: normal,
+                    prim: draw.prim,
+                    triangle: triangle as u32,
                 });
             }
         }

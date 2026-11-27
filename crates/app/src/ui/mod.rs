@@ -86,6 +86,15 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u3
     pixels
 }
 
+/// この後の縦スクロールで、続きがあるときは棒を触る前から見せる（既定は触るまで隠れる）。
+/// 棒は右の余白に寄せて重ねるので、幅と折り返しは変わらない。
+pub(crate) fn show_scroll_handle(ui: &mut egui::Ui) {
+    let scroll = &mut ui.spacing_mut().scroll;
+    scroll.floating_width = 4.0;
+    scroll.dormant_handle_opacity = 0.6;
+    scroll.bar_outer_margin = -6.0;
+}
+
 /// 右のパネル。上から 部品の一覧 → 変形 → 寸法（部品を選んでいるとき）→ 計測（計測の道具のとき）。
 /// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
@@ -99,7 +108,9 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     });
     if session.model.is_some() {
         // 低い画面では下の欄が入りきらないことがある。状態欄に重ならないよう、残りの高さの中で
-        // 縦にスクロールさせる（入りきるときはスクロールの棒は出ない）。
+        // 縦にスクロールさせる。続きがあると分かるように、入りきらないときは棒を出したままにする
+        // （入りきるときは出ない）。
+        show_scroll_handle(ui);
         egui::ScrollArea::vertical()
             .id_salt("parts.below")
             .auto_shrink([false, true])

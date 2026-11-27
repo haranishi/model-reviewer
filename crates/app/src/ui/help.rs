@@ -38,6 +38,8 @@ pub fn show(ui: &mut egui::Ui, out: &mut Vec<Command>) {
         ui.set_min_width(width);
         ui.set_max_width(width);
         ui.label("操作");
+        // 下にまだ行があると分かるように、入りきらないときは棒を出したままにする。
+        super::show_scroll_handle(ui);
         egui::ScrollArea::vertical()
             .id_salt("help.scroll")
             .max_height(scroll_h)

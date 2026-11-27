@@ -29,15 +29,29 @@ fn main() {
         .with_title("model-reviewer")
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([960.0, 600.0]);
-    if launch.script.is_some() {
+    // 自動操作の画面は選ばない。macOS ではさらにアプリを前面にせず（下の指定）、画面を透明にする
+    // （`macos::make_windows_invisible`）。使っている人の作業を邪魔しないためである。
+    let automated = launch.script.is_some();
+    if automated {
         viewport = viewport.with_active(false);
     }
-    let options = eframe::NativeOptions {
+    #[cfg_attr(not(target_os = "macos"), expect(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport,
         system_font_fallback: false,
         wgpu_options: wgpu_options(),
         ..Default::default()
     };
+    #[cfg(target_os = "macos")]
+    if automated {
+        // 起動してもアプリを前面にせず、Dock にも出さない。
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            builder
+                .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(false);
+        }));
+    }
     if let Err(err) = eframe::run_native(
         "model-reviewer",
         options,

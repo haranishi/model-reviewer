@@ -41,6 +41,11 @@ impl App {
             session.open_launch(path);
         }
         let automation = Automation::from_launch(&launch);
+        // 自動操作の画面は、最初に表示される前に透明にする。
+        #[cfg(target_os = "macos")]
+        if launch.script.is_some() && crate::macos::make_windows_invisible() == 0 {
+            log::warn!("自動操作の画面を隠せなかった");
+        }
         Self {
             session,
             launch,
@@ -83,6 +88,10 @@ impl eframe::App for App {
         if !self.quit_menu_done {
             crate::macos::retarget_quit_menu(true);
             self.quit_menu_done = true;
+        }
+        // 自動操作の画面は見えないので、隠れていると扱われても描いて操作を進める（1フレーム分）。
+        if self.launch.script.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
         }
         self.session.set_egui_ctx(ctx);
         let loader_news = self.session.poll_loader();

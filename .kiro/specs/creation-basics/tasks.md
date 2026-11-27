@@ -39,7 +39,7 @@
   - `core/src/color.rs`（換算、16進、見本12色）。`Document::subtree_colors`・`set_subtree_colors`。`Edit::SetColors` と `Applied::recolored`（`History` の実行・取り消し・やり直し、`bytes`、版）。`render::SceneRenderer::update_instances` が、行列と一緒に色も文書から読む
   - 合格: design-testing.md の「色の換算」「文書の色」「履歴」「部分更新」の行（`srgb_round_trips_all_256`、`hex_parse_table`、`swatches_are_distinct`、`color_does_not_leak_to_shared_shape`、`wrong_count_changes_nothing`、`duplicate_inherits_color`、`undo_restores_per_draw_colors`、`set_colors_keeps_alpha`、`recolor_bumps_document_rev_only`、`slots_follow_node_then_draw_order`、`patch_rewrites_color_and_keeps_ids`）。変形の部分更新の既存の試験が通る
   - _Boundary: `core/src/{color,doc,history,lib}.rs`、`render/src/{lib,instances}.rs`_ ／ _Requirements: 3.3, 3.4, 3.7, 3.10〜3.12_
-- [ ] 2.2 (P) WP-C2 色の書き出し（[design-export.md](design-export.md) の「色の変わった部品」「照合」。N1 の後）
+- [x] 2.2 (P) WP-C2 色の書き出し（[design-export.md](design-export.md) の「色の変わった部品」「照合」。N1 の後）
   - 読み込みの組み立てが「描画ごとの（メッシュ、プリミティブ）」を内部の結果に残し、土台が持つ。`export/recolor.rs`（材質の写し、メッシュの写し、まとめる鍵）。`patch::build` で、ファイルにある部品と複製のノードの `mesh` を替える。`ExportNote::Recolored`。`verify` の4つの直し（design-export.md の表）
   - `ExportNote` に場合が増えるので、`app/src/session/export.rs` の文を1つ足す（design-export.md の「結果の一覧」の1行目。テクスチャの注意の行は C3）
   - 合格: design-testing.md の「色の写し」「照合」の行（`recolor_adds_material_and_mesh_only`、`recolor_shares_material_and_mesh`、`recolor_keeps_texture_refs_and_extensions`、`recolor_without_material`、`recolor_maps_draws_past_skipped_primitives`、`recolor_of_duplicate_only`、`restoring_color_restores_json`、`second_export_adds_nothing`、`verify_rejects_non_copy_material`、`verify_rejects_mesh_copy_with_other_changes`、`verify_rejects_one_bit_color_difference`）。既存の書き出しと照合の試験が通る

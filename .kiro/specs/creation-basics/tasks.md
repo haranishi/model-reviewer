@@ -50,8 +50,8 @@
   - 合格: design-testing.md の「色（つなぎ）」「色の部品」の行（`set_color_is_one_history_step`、`same_color_adds_no_history`、`color_marks_document_unexported`、`color_is_refused_while_busy`、`color_change_patches_instances_only`、`color_survives_export_and_reopen`、`texture_note_is_shown_for_textured_model`、`swatch_click_sets_color`、`hex_and_rgb_commit_on_enter`、`bad_hex_is_refused_with_reason`、`mixed_and_no_faces_states`、`color_panel_fits_at_960`）。GPUの試験 `recolor_changes_only_that_part`（`#[ignore]`）。既存の試験が通る
   - _Boundary: `app/src/command.rs`、`app/src/session/{mod,color,edit,export}.rs`、`app/src/ui/{mod,ids,color,inspector,help}.rs`、`app/src/automation/`、`app/tests/{color,color_panel,layout,gpu_flow}.rs`、`app/e2e/{color-1,desk-1}.json`、`docs/{glb,verify}.md`_ ／ _Depends: 2.1, 2.2_ ／ _Requirements: 3.1, 3.2, 3.5, 3.6, 3.8, 3.9, 5.1〜5.5, 6.1〜6.3_
 
-- [ ] 3. 最後の確認（進行役が行う。第4段階の F1 と一緒に行ってよい）
-- [ ] 3.1 WP-F1 確認と記録
+- [x] 3. 最後の確認（進行役が行う。第4段階の F1 と一緒に行ってよい）
+- [x] 3.1 WP-F1 確認と記録
   - `cargo test --workspace -- --include-ignored`。実機の自動操作: 既存の全部と、`new-1`・`color-1`・`desk-1`。見本のハッシュが前後で同じ
   - 実キーの Cmd+N。画像の目視、軽さの測定、ほかのソフトでの確認（[design-testing.md](design-testing.md) の最後の節）。結果で、design-export.md の要確認（同じ名前の材質）を決める
   - 記録（`verification.md`）に、測った値・機械・条件と「未確認」を書く。`spec.json` の `phase` を `implemented` にし、`documents` に `verification.md` を足す。`docs/roadmap.md` に、この段階と、次の段階（テクスチャ）の入口を書く

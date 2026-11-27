@@ -46,7 +46,7 @@ WP-M1 表と振り分け（単独・最初）
   - 試験は `Session::apply` に `Command` を直接渡して書く（キーの振り分けを通さない）
   - 合格: `key_delta_matches_drag_result`、`key_delta_works_when_view_is_parallel`、`key_delta_refuses_bad_amounts`、`amount_parse_and_format_table`、`step_follows_grid_and_fine`、`typed_amount_previews_without_touching_document`、`enter_commits_one_history_step`、`axis_switch_keeps_amount`、`move_amount_is_read_in_display_unit`、`zero_or_empty_amount_changes_nothing`、`nudge_moves_one_grid_step`、`nudge_does_not_snap_to_grid`
   - _Boundary: `core/src/gizmo.rs`、`app/src/session/{keymove,edit}.rs`、`app/src/ui/gizmo_view.rs`、`app/tests/keymove.rs`、`app/tests/gizmo_view.rs`_ ／ _Requirements: 11.1, 11.3〜11.5, 11.7, 11.10, 11.11, 12.1〜12.5_
-- [ ] 2.4 WP-G1 手順書（[design-guide.md](design-guide.md)。**creation-basics の WP-C3 の後**）
+- [x] 2.4 WP-G1 手順書（[design-guide.md](design-guide.md)。**creation-basics の WP-C3 の後**）
   - `docs/guide/README.md` と11ページ（画像の参照は、名前を決めて書く。画像そのものは F1 で入る）。`crates/app/tests/guide.rs`（既定の表と変えられないキーの表の照合、リンク、ページの数と行数。**画像の実在だけは、F1 まで `#[ignore]` にし、理由を書く**）。`crates/app/e2e/guide-*.json`（既存の手順と同じ書き方。実行は進行役）。README（日本語・英語）の入口と、キーのつなぎの文字
   - 画面の言葉は、コード（`ui/*.rs` の文字列）から写す。確かめていないことを、確かめたように書かない
   - 合格: `guide_default_table_matches_registry`、`guide_fixed_table_matches_registry`、`guide_links_resolve`、`guide_has_all_pages_within_limit`。手順の JSON が JSON として読め、`op` が `docs/verify.md` の一覧にある名前だけであること（`guide_scripts_use_known_ops`。手順を読む関数は公開されていないので、実行での確認は進行役）
@@ -65,8 +65,8 @@ WP-M1 表と振り分け（単独・最初）
   - 依存側で数字と PageUp の名前、矢印・Minus・Period・Enter を名前から読めることを確認した。試験では図形の道具がボタンと同じ操作で選べること、軸を選ぶとボタンが入力位置を手放すこと、保存の失敗が `Session.notice` に出ること、複数の窓で保存しても壊れた元ファイルが残ることを確認した。
   - C3が色を足すときは、状態の `selection` が既存の数値IDまたは `null` である点に注意する。F1では [実機の自動操作](../../../docs/verify.md) の `keys-1` → `keys-2` を同じ検証用の保存先で行い、`keymove-1` は既定のキーで行う。画像・実キー・日本語入力・各OSの実際の保存先は実機確認に残した。
 
-- [ ] 4. 最後の確認（進行役が行う。実機・画像の目視・実キー）
-- [ ] 4.1 WP-F1 確認と記録
+- [x] 4. 最後の確認（進行役が行う。実機・画像の目視・実キー）
+- [x] 4.1 WP-F1 確認と記録
   - 実機の自動操作: 第3段階までの全部（手順を変えずに）、`keys-1` → `keys-2`、`keymove-1`、`guide-*`。自分の設定で G を別のキーに変えた状態で `edit-1` が通ること。実行の前後で、利用者の設定ファイルの有無と更新時刻が変わらないこと
   - 実キーと日本語入力（design-testing.md の最後の節。キーで動かす分は要件14）。結果で要件8.2 と手順書の「困ったとき」を直す
   - 画像の目視: 設定の小窓（既定、取り込み中、重なり、断った理由）、道具の列の1文字、ヘルプの下端、幅960と広い幅。重なりと、日本語の字形

@@ -150,6 +150,58 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
     }
 }
 
+/// 部分更新で書き直した結果。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Patched {
+    /// 書き直したインスタンスの位置（小さい順）。
+    pub slots: Vec<u32>,
+    /// 描画の数と位置の数が合わず、色を前の値のままにした部品の数。
+    pub mismatched: u32,
+}
+
+/// `nodes`（`NodeId` の連続範囲）の部品のインスタンスを、文書の今の値で書き直す（GPUには送らない）。
+/// 行列と色の両方を作り直す。位置の表は部品の順・描画の順なので、部品の i 番目の位置が
+/// i 番目の描画に当たる。描画の数と位置の数が合わない部品は、色を前の値のままにして数える
+/// （非表示の部品は位置を持たないので何もしない）。番号と法線の印は前の値を渡す。
+/// 部品の数が `list` と違えば何もしない。
+pub(crate) fn patch(
+    list: &mut InstanceList,
+    model: &impl SceneRead,
+    nodes: &Range<u32>,
+) -> Patched {
+    let mut out = Patched::default();
+    if list.node_starts.len() != model.node_count() + 1 {
+        return out;
+    }
+    let count = model.node_count() as u32;
+    for node in nodes.start.min(count)..nodes.end.min(count) {
+        let index = node as usize;
+        let at = list.node_starts[index] as usize..list.node_starts[index + 1] as usize;
+        if at.is_empty() {
+            continue;
+        }
+        let id = NodeId(node);
+        let draws = model.draws(id);
+        let matched = draws.len() == at.len();
+        if !matched {
+            out.mismatched += 1;
+        }
+        let world = model.world(id);
+        for (i, &slot) in list.slots[at].iter().enumerate() {
+            let old = list.raw[slot as usize];
+            let color = if matched {
+                draws[i].base_color
+            } else {
+                old.color
+            };
+            list.raw[slot as usize] = instance(world, color, node, old.ids[1]);
+            out.slots.push(slot);
+        }
+    }
+    out.slots.sort_unstable();
+    out
+}
+
 /// 1件のインスタンス。確定した変形の部分更新でも、作り直しと同じ値になるようにここだけで作る。
 /// 鏡写しの印（`FLAG_MIRRORED`）は、渡された `flags` の値を捨てて `world` から決め直す。
 pub(crate) fn instance(world: &Affine3A, color: [f32; 4], node: u32, flags: u32) -> InstanceRaw {
@@ -190,6 +242,178 @@ pub fn normal_matrix(world: &Affine3A) -> Mat3 {
 mod tests {
     use super::*;
     use glam::Vec3;
+    use model_reviewer_core::doc::{Document, NodeKey};
+    use model_reviewer_core::math::Aabb;
+    use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId, Primitive};
+    use std::sync::Arc;
+
+    fn prim() -> Primitive {
+        Primitive {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            local_aabb: Aabb {
+                min: Vec3::splat(-0.5),
+                max: Vec3::splat(0.5),
+            },
+            has_normals: true,
+        }
+    }
+
+    fn shade(node: u32, draw: u32) -> [f32; 4] {
+        [node as f32 * 0.1, draw as f32 * 0.1, 0.5, 0.75]
+    }
+
+    /// 根の並びに部品4個。部品 n は形状 (n + k) % 2 の描画を k = 0..(n % 3 + 1) 個持つので、
+    /// 1つの部品のインスタンスが2つのまとまりに散らばる。
+    fn scattered() -> Arc<Model> {
+        let mut nodes = Vec::new();
+        let mut draws = Vec::new();
+        for n in 0..4u32 {
+            let start = draws.len() as u32;
+            for k in 0..(n % 3 + 1) {
+                draws.push(Draw {
+                    prim: PrimId((n + k) % 2),
+                    base_color: shade(n, k),
+                });
+            }
+            let local = Affine3A::from_translation(Vec3::new(n as f32, 0.0, 0.0));
+            nodes.push(Node {
+                name: format!("部品{n}"),
+                gltf_index: n,
+                parent: None,
+                subtree_end: n + 1,
+                depth: 0,
+                local,
+                world: local,
+                draws: start..draws.len() as u32,
+                world_aabb: Aabb::empty(),
+            });
+        }
+        Arc::new(Model {
+            nodes,
+            draws,
+            primitives: vec![prim(), prim()],
+            bounds: Aabb::empty(),
+            stats: ModelStats::default(),
+            warnings: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn slots_follow_node_then_draw_order() {
+        let model = scattered();
+        let list = build(&*model, &|_| true);
+        for n in 0..4u32 {
+            let slots = list.node_slots(&(n..n + 1));
+            let draws = model.draws(NodeId(n));
+            assert_eq!(slots.len(), draws.len());
+            for (i, &slot) in slots.iter().enumerate() {
+                let raw = list.raw[slot as usize];
+                assert_eq!(list.nodes[slot as usize], n);
+                assert_eq!(raw.ids[0], n);
+                let expected = draws[i].base_color;
+                assert_eq!(&raw.color[..3], &expected[..3], "部品{n} 描画{i}");
+            }
+        }
+        // 部品1は2つのまとまりにまたがる（位置が連続しない）。
+        let one = list.node_slots(&(1..2));
+        assert_eq!(one.len(), 2);
+        assert_ne!(one[0] + 1, one[1]);
+    }
+
+    #[test]
+    fn patch_rewrites_color_and_keeps_ids() {
+        let model = scattered();
+        let mut doc = Document::new(Arc::clone(&model));
+        let mut list = build(&doc, &|_| true);
+        let before = list.clone();
+        let paint = [0.2, 0.4, 0.6, 0.75];
+        let count = doc.subtree_colors(NodeKey(2)).unwrap().len();
+        let range = doc
+            .set_subtree_colors(NodeKey(2), &vec![paint; count])
+            .unwrap();
+        assert_eq!(range, 2..3);
+
+        let patched = patch(&mut list, &doc, &range);
+        assert_eq!(patched.mismatched, 0);
+        let mut expected_slots = before.node_slots(&range).to_vec();
+        expected_slots.sort_unstable();
+        assert_eq!(patched.slots, expected_slots);
+        // 範囲の部品だけが新しい色で、透明度は描画でも 1。行列と番号と印は変わらない。
+        for slot in 0..list.raw.len() {
+            let (new, old) = (list.raw[slot], before.raw[slot]);
+            assert_eq!(new.world, old.world);
+            assert_eq!(new.normal, old.normal);
+            assert_eq!(new.ids, old.ids);
+            if expected_slots.contains(&(slot as u32)) {
+                assert_eq!(new.color, [0.2, 0.4, 0.6, 1.0]);
+            } else {
+                assert_eq!(new.color, old.color);
+            }
+        }
+        assert_eq!(list.nodes, before.nodes);
+        assert_eq!(list.batches, before.batches);
+        assert_eq!(list.slots, before.slots);
+        // 作り直したときと同じ値になる。
+        assert_eq!(list, build(&doc, &|_| true));
+    }
+
+    #[test]
+    fn patch_moves_and_keeps_color_when_only_the_matrix_changed() {
+        let model = scattered();
+        let mut doc = Document::new(Arc::clone(&model));
+        let mut list = build(&doc, &|_| true);
+        let moved = Affine3A::from_translation(Vec3::new(0.0, 3.0, 0.0));
+        let range = doc.set_local(NodeKey(1), moved).unwrap();
+        let patched = patch(&mut list, &doc, &range);
+        assert_eq!(patched.slots.len(), 2);
+        assert_eq!(list, build(&doc, &|_| true));
+    }
+
+    #[test]
+    fn patch_skips_hidden_and_keeps_color_on_mismatch() {
+        let model = scattered();
+        let mut doc = Document::new(Arc::clone(&model));
+        // 部品1を隠して作ったインスタンス。部品1の色を変えても、位置が無いので何も起きない。
+        let mut list = build(&doc, &|id| id.0 != 1);
+        let before = list.clone();
+        doc.set_subtree_colors(NodeKey(1), &[[0.9, 0.9, 0.9, 1.0]; 2])
+            .unwrap();
+        let patched = patch(&mut list, &doc, &(1..2));
+        assert!(patched.slots.is_empty());
+        assert_eq!(patched.mismatched, 0);
+        assert_eq!(list, before);
+
+        // 描画の数と位置の数が合わない部品（ここでは別のモデルの部品0）は、色を前の値のまま。
+        let mut list = build(&doc, &|_| true);
+        let mut other = (*model).clone();
+        other.draws[0].base_color = [0.0, 1.0, 0.0, 1.0];
+        other.draws.insert(
+            0,
+            Draw {
+                prim: PrimId(1),
+                base_color: [1.0, 0.0, 0.0, 1.0],
+            },
+        );
+        for node in &mut other.nodes {
+            node.draws = if node.draws.start == 0 {
+                0..node.draws.end + 1
+            } else {
+                node.draws.start + 1..node.draws.end + 1
+            };
+        }
+        let old0 = list.raw[list.node_slots(&(0..1))[0] as usize];
+        let patched = patch(&mut list, &other, &(0..1));
+        assert_eq!(patched.mismatched, 1);
+        let new0 = list.raw[list.node_slots(&(0..1))[0] as usize];
+        assert_eq!(new0.color, old0.color);
+        // 部品の数が違う相手では何もしない。
+        let mut fewer = (*model).clone();
+        fewer.nodes.pop();
+        let before = list.clone();
+        assert_eq!(patch(&mut list, &fewer, &(0..4)), Patched::default());
+        assert_eq!(list, before);
+    }
 
     #[test]
     fn mirrored_flag_follows_the_world_not_the_given_flags() {

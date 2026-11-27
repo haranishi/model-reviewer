@@ -69,6 +69,15 @@ pub enum Edit {
         index: usize,
         view: SavedView,
     },
+    /// 部品とその子孫の、すべての描画の基本色の赤・緑・青を `rgb`（リニア）にする。透明度は
+    /// 描画ごとの元の値を保つ。`before` は描画ごとの元の色（`Document::subtree_colors` の並び）。
+    /// 進むときは、いまの色で `before` を埋め直してから入れる。戻るときは `before` を入れる。
+    /// 並びの対応は、履歴が1列であることに頼る（戻すときの文書は、進んだ直後と同じ形）。
+    SetColors {
+        key: NodeKey,
+        before: Vec<[f32; 4]>,
+        rgb: [f32; 3],
+    },
 }
 
 impl Edit {
@@ -81,6 +90,9 @@ impl Edit {
             Self::AddNote(note) | Self::RemoveNote { note, .. } => note.note.text.len() as u64,
             Self::EditNote { before, after, .. } => (before.len() + after.len()) as u64,
             Self::AddView(view) | Self::RemoveView { view, .. } => view.name.len() as u64,
+            Self::SetColors { before, .. } => {
+                (before.len() * std::mem::size_of::<[f32; 4]>()) as u64
+            }
         };
         std::mem::size_of::<Self>() as u64 + heap
     }
@@ -89,14 +101,17 @@ impl Edit {
     pub fn changes_document(&self) -> bool {
         matches!(
             self,
-            Self::SetLocal { .. } | Self::Insert { .. } | Self::Remove { .. }
+            Self::SetLocal { .. }
+                | Self::Insert { .. }
+                | Self::Remove { .. }
+                | Self::SetColors { .. }
         )
     }
 
     /// 表示・注釈・視点を変えるか（レビューの版を進めるか）。挿入と削除は、表示の設定と
-    /// 注釈も動かすので両方を変える。
+    /// 注釈も動かすので両方を変える。変形と色はレビューを変えない。
     pub fn changes_review(&self) -> bool {
-        !matches!(self, Self::SetLocal { .. })
+        !matches!(self, Self::SetLocal { .. } | Self::SetColors { .. })
     }
 
     /// `key` の部分木を削除する `Edit`。`History::execute` に渡すと、取り除いた中身
@@ -168,6 +183,8 @@ pub struct Applied {
     pub remaps: Vec<Remap>,
     /// 変形で `world` が変わった番号の範囲（構造が変わったときは使わない）。
     pub touched: Vec<Range<u32>>,
+    /// 色だけが変わった部品の番号の範囲（構造が変わったときは使わない）。
+    pub recolored: Vec<Range<u32>>,
     /// 部品の表の構造が変わった（インスタンスを作り直す）。
     pub structure: bool,
     /// 表示状態が変わった。
@@ -524,6 +541,24 @@ fn apply_edit(
                 review.release_id(view.id);
             }
         }
+        Edit::SetColors { key, before, rgb } => {
+            let range = if forward {
+                let current = doc.subtree_colors(*key)?;
+                if current.len() != before.len() {
+                    return Err(DocError::InvalidPiece);
+                }
+                let colors: Vec<[f32; 4]> = current
+                    .iter()
+                    .map(|color| [rgb[0], rgb[1], rgb[2], color[3]])
+                    .collect();
+                let range = doc.set_subtree_colors(*key, &colors)?;
+                *before = current;
+                range
+            } else {
+                doc.set_subtree_colors(*key, before)?
+            };
+            out.recolored.push(range);
+        }
         Edit::RemoveView { index, view } => {
             if forward {
                 if !review.remove_view(view.id) {
@@ -638,4 +673,170 @@ fn remove_piece(
     out.structure = true;
     out.visibility = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::doc::tests::{BLUE, GREEN, GREY, RED, sample};
+
+    const PAINT: [f32; 3] = [0.25, 0.5, 0.75];
+
+    fn recolor(doc: &Document, key: NodeKey) -> Step {
+        let before = doc.subtree_colors(key).unwrap();
+        Step::new(
+            "色の変更",
+            vec![Edit::SetColors {
+                key,
+                before,
+                rgb: PAINT,
+            }],
+            Some(key),
+        )
+    }
+
+    fn bits(colors: &[[f32; 4]]) -> Vec<[u32; 4]> {
+        colors.iter().map(|c| c.map(f32::to_bits)).collect()
+    }
+
+    #[test]
+    fn undo_restores_per_draw_colors() {
+        let mut doc = sample();
+        let mut review = ReviewState::new(&doc);
+        let mut history = History::default();
+        let step = recolor(&doc, NodeKey(0));
+        let (applied, pushed) = history.execute(step, &mut doc, &mut review).unwrap();
+        assert_eq!(pushed, Pushed::Kept);
+        assert_eq!(applied.label, "色の変更");
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap(),
+            vec![
+                [0.25, 0.5, 0.75, 1.0],
+                [0.25, 0.5, 0.75, 0.5],
+                [0.25, 0.5, 0.75, 1.0]
+            ]
+        );
+        // 別の根の部品は変わらない。
+        assert_eq!(doc.subtree_colors(NodeKey(3)).unwrap(), vec![GREY]);
+
+        let undone = history.undo(&mut doc, &mut review).unwrap();
+        assert_eq!(undone.recolored, vec![0..3]);
+        assert_eq!(
+            bits(&doc.subtree_colors(NodeKey(0)).unwrap()),
+            bits(&[RED, GREEN, BLUE])
+        );
+        let redone = history.redo(&mut doc, &mut review).unwrap();
+        assert_eq!(redone.recolored, vec![0..3]);
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap()[1],
+            [0.25, 0.5, 0.75, 0.5]
+        );
+        history.undo(&mut doc, &mut review).unwrap();
+        assert_eq!(
+            bits(&doc.subtree_colors(NodeKey(0)).unwrap()),
+            bits(&[RED, GREEN, BLUE])
+        );
+    }
+
+    #[test]
+    fn set_colors_keeps_alpha() {
+        let mut doc = sample();
+        let mut review = ReviewState::new(&doc);
+        let mut history = History::default();
+        history
+            .execute(recolor(&doc, NodeKey(1)), &mut doc, &mut review)
+            .unwrap();
+        let alphas: Vec<f32> = doc
+            .subtree_colors(NodeKey(1))
+            .unwrap()
+            .iter()
+            .map(|c| c[3])
+            .collect();
+        assert_eq!(alphas, vec![RED[3], GREEN[3]]);
+    }
+
+    #[test]
+    fn recolor_bumps_document_rev_only() {
+        let mut doc = sample();
+        let mut review = ReviewState::new(&doc);
+        let mut history = History::default();
+        let edit = Edit::SetColors {
+            key: NodeKey(1),
+            before: vec![RED, GREEN],
+            rgb: PAINT,
+        };
+        assert!(edit.changes_document());
+        assert!(!edit.changes_review());
+        assert_eq!(edit.bytes(), std::mem::size_of::<Edit>() as u64 + 2 * 16);
+        let (applied, _) = history
+            .execute(recolor(&doc, NodeKey(1)), &mut doc, &mut review)
+            .unwrap();
+        assert_eq!(applied.recolored, vec![1..2]);
+        assert!(applied.touched.is_empty());
+        assert!(applied.remaps.is_empty());
+        assert!(!applied.structure);
+        assert!(!applied.visibility);
+        assert!(applied.doc_rev > 0);
+        assert_eq!(applied.review_rev, 0);
+        assert_eq!(history.doc_rev(), applied.doc_rev);
+        assert_eq!(history.review_rev(), 0);
+        let undone = history.undo(&mut doc, &mut review).unwrap();
+        assert_eq!(undone.doc_rev, 0);
+        assert_eq!(undone.review_rev, 0);
+    }
+
+    #[test]
+    fn mismatched_before_changes_nothing() {
+        let mut doc = sample();
+        let mut review = ReviewState::new(&doc);
+        let mut history = History::default();
+        let step = Step::new(
+            "色の変更",
+            vec![Edit::SetColors {
+                key: NodeKey(0),
+                before: vec![RED],
+                rgb: PAINT,
+            }],
+            None,
+        );
+        assert_eq!(
+            history.execute(step, &mut doc, &mut review).unwrap_err(),
+            DocError::InvalidPiece
+        );
+        assert!(history.is_empty());
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap(),
+            vec![RED, GREEN, BLUE]
+        );
+        let bad = Step::new(
+            "色の変更",
+            vec![Edit::SetColors {
+                key: NodeKey(0),
+                before: vec![RED, GREEN, BLUE],
+                rgb: [f32::NAN, 0.0, 0.0],
+            }],
+            None,
+        );
+        assert_eq!(
+            history.execute(bad, &mut doc, &mut review).unwrap_err(),
+            DocError::NonFinite
+        );
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap(),
+            vec![RED, GREEN, BLUE]
+        );
+    }
+
+    #[test]
+    fn oversized_recolor_runs_and_clears_history() {
+        let mut doc = sample();
+        let mut review = ReviewState::new(&doc);
+        let mut history = History::with_limits(64, 10);
+        let (_, pushed) = history
+            .execute(recolor(&doc, NodeKey(0)), &mut doc, &mut review)
+            .unwrap();
+        assert_eq!(pushed, Pushed::ClearedTooLarge);
+        assert!(!history.can_undo());
+        assert_eq!(doc.subtree_colors(NodeKey(2)).unwrap()[0][0], PAINT[0]);
+    }
 }

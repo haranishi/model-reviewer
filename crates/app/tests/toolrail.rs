@@ -382,8 +382,8 @@ const OLD_TOOL_HINTS: [(Tool, &str); 7] = [
     ),
 ];
 
-/// 直す前のヘルプの表（したいこと・マウス・トラックパッド・キー）。キーのつなぎは全角の「＋」。
-const OLD_HELP_ROWS: [[&str; 4]; 28] = [
+/// 既存の28行と、数値入力・矢印の3行。既存の行は変更前の全角の「＋」で記録している。
+const DEFAULT_HELP_ROWS: [[&str; 4]; 31] = [
     ["したいこと", "マウス", "トラックパッド", "キー"],
     [
         "新規作成（空の状態から作り始める）",
@@ -454,6 +454,24 @@ const OLD_HELP_ROWS: [[&str; 4]; 28] = [
         "右の「変形」の欄を押して入力、または欄を左右にドラッグ",
         "同じ",
         "Enter で確定、Esc で戻す",
+    ],
+    [
+        "向きを固定して数値を打つ",
+        "移動・回転・拡大の道具で部品を選ぶ",
+        "同じ",
+        "X・Y・Z で軸を選び、数値を入力",
+    ],
+    [
+        "格子1つぶん動かす",
+        "移動の道具で部品を選ぶ",
+        "同じ",
+        "矢印で移動、Shift で10分の1",
+    ],
+    [
+        "打った量を確定する／やめる",
+        "数値の入力中",
+        "同じ",
+        "Enter で確定、Esc でやめる",
     ],
     [
         "取り消し／やり直し",
@@ -584,8 +602,8 @@ fn default_labels_keep_existing_text() {
     );
     // ヘルプの表: キーの列はつなぎの「＋」→「+」だけが変わり、ほかの列は変わらない。
     let rows = help::operation_rows(&keys);
-    assert_eq!(rows.len(), OLD_HELP_ROWS.len());
-    for (row, old) in rows.iter().zip(OLD_HELP_ROWS) {
+    assert_eq!(rows.len(), DEFAULT_HELP_ROWS.len());
+    for (row, old) in rows.iter().zip(DEFAULT_HELP_ROWS) {
         assert_eq!(row[..3], old[..3], "{old:?}");
         assert_eq!(row[3], old[3].replace('＋', "+"), "{old:?}");
     }
@@ -627,7 +645,11 @@ fn default_labels_keep_existing_text() {
     // Windows と Linux の書き方。
     let other = Keymap::default().labels(Platform::Other);
     let rows = help::operation_rows(&other);
-    assert_eq!(rows[16][3], "Ctrl+Z ／ Shift+Ctrl+Z");
+    let undo = rows
+        .iter()
+        .find(|row| row[0] == "取り消し／やり直し")
+        .unwrap();
+    assert_eq!(undo[3], "Ctrl+Z ／ Shift+Ctrl+Z");
     assert_eq!(
         help::key_note(&other, Platform::Other),
         "中ボタンは使わない。数字は文字キーの段で、テンキーは使わない。1文字のキーと Ctrl+Z は、入力欄に文字を打っている間は働かない。macOS では Ctrl の代わりに Cmd。"

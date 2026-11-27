@@ -20,6 +20,7 @@ use model_reviewer_core::scene::{Draw, NodeId, SceneRead};
 use model_reviewer_core::shapes::{self, SHAPE_COLOR, ShapeKind};
 
 use super::Session;
+use crate::keymap::Action;
 use crate::ui::status::grouped;
 
 /// ハンドルの画面上の長さ（ポイント。ux.md の約90ポイント）。
@@ -29,7 +30,6 @@ pub const GIZMO_SIZE: f32 = 90.0;
 const CLEARED_TOO_LARGE: &str = "操作が大きいため、これより前へは戻せません";
 const NOT_FINITE: &str = "変形の結果が有限でないため、確定しませんでした";
 const ZERO_SIZE: &str = "大きさが0になるため、確定しませんでした";
-const NO_MODEL: &str = "［新規作成］（Cmd+N）か、モデルを開くと図形を置けます";
 
 /// 変形の出どころ。
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +47,15 @@ pub enum TransformSource {
 pub struct KeyEntry {
     pub handle: Handle,
     pub text: String,
+}
+
+impl Session {
+    pub(crate) fn key_entry(&self) -> Option<&KeyEntry> {
+        match &self.transform.as_ref()?.source {
+            TransformSource::Keys(entry) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
 /// 変形中の状態。文書はまだ書き換えていない。
@@ -274,6 +283,9 @@ pub(super) fn commit_transform(session: &mut Session) {
     };
     session.scene_dirty.drag = true;
     if transform.delta == Affine3A::IDENTITY {
+        if matches!(transform.source, TransformSource::Keys(_)) {
+            session.status_text.clear();
+        }
         return;
     }
     let started = Instant::now();
@@ -342,7 +354,10 @@ pub(super) fn commit_local_matrix(
 }
 
 pub(super) fn cancel_transform(session: &mut Session) {
-    if session.transform.take().is_some() {
+    if let Some(transform) = session.transform.take() {
+        if matches!(transform.source, TransformSource::Keys(_)) {
+            session.status_text.clear();
+        }
         session.scene_dirty.drag = true;
     }
 }
@@ -614,14 +629,11 @@ pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
         return;
     }
     let target = session.camera.target;
-    let Some(doc) = session.doc.as_mut() else {
-        session.status_text = NO_MODEL.to_owned();
+    let (Some(doc), Some(_)) = (session.doc.as_mut(), session.review.as_ref()) else {
+        let new = session.key_labels.with_key(Action::FileNew, "［新規作成］");
+        session.status_text = format!("{new}か、モデルを開くと図形を置けます");
         return;
     };
-    if session.review.is_none() {
-        session.status_text = NO_MODEL.to_owned();
-        return;
-    }
     let started = Instant::now();
     let size = shapes::size_for(doc.bounds().radius());
     // 作り方（種類と大きさ）を覚えておくと、右のパネルの「寸法」で直せる（要件9.1）。

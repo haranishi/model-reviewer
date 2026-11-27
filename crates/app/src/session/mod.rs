@@ -208,6 +208,7 @@ pub struct Session {
     pub keys: KeysState,
     /// 設定ファイルの持ち手。既定は場所の無いもの（読まない・書かない）。
     pub store: Store,
+    pub(crate) scripted: bool,
 }
 
 impl Default for Session {
@@ -293,6 +294,7 @@ impl Default for Session {
             key_labels: KeyLabels::default(),
             keys: KeysState::default(),
             store: Store::none(),
+            scripted: false,
         }
     }
 }
@@ -337,7 +339,12 @@ impl Session {
         let doc_rev = self.history.doc_rev();
         let camera = self.camera;
         let shown = self.shown_generation;
+        let key_rev = self.keymap.rev();
         self.apply_inner(cmd);
+        if self.keymap.rev() != key_rev {
+            keys::save_changes(self);
+        }
+        self.clear_keys_for_dialog();
         // 道具・部品の表・視点・モデルが変わったら、吸着の候補は古い（次の移動で探し直す）。
         if self.tool != tool
             || self.history.doc_rev() != doc_rev
@@ -536,7 +543,6 @@ impl Session {
             Command::ToggleSection => section::toggle_section(self),
             Command::SetDisplayUnit(unit) => measure::set_display_unit(self, unit),
             Command::SetStlUnit(unit) => set_stl_unit(self, unit),
-            // 第4段階の分。中身は WP-J1（設定）と WP-K1（キーで動かす）が書く。
             Command::SetKeysOpen(open) => keys::set_open(self, open),
             Command::BeginKeyCapture(action) => keys::begin_capture(self, action),
             Command::CancelKeyCapture => keys::cancel_capture(self),
@@ -607,6 +613,13 @@ impl Session {
 
     pub(crate) fn set_egui_ctx(&mut self, ctx: &egui::Context) {
         self.egui_ctx = Some(ctx.clone());
+    }
+
+    /// 非同期の読み込み・書き出しでも、ダイアログを表示する前に取り込みと確認を解く。
+    pub(crate) fn clear_keys_for_dialog(&mut self) {
+        if self.dialog.is_some() {
+            self.keys.clear_pending();
+        }
     }
 
     /// 部品を読む口。モデルが無ければ `None`。
@@ -771,17 +784,15 @@ impl Session {
     /// 書き出し中、または未保存・入力途中なら閉じるのを止め、確認を出す。止めるときは `true`。
     pub fn on_close_requested(&mut self) -> bool {
         if self.is_exporting() {
-            self.dialog = Some(exporting_close_dialog());
             self.status_text = "書き出し中は閉じられません".to_owned();
-            return true;
-        }
-        if !self.needs_confirm() || self.quit_after_confirm {
+            self.dialog = Some(exporting_close_dialog());
+        } else if !self.needs_confirm() || self.quit_after_confirm {
             return false;
-        }
-        if self.pending.is_none() {
+        } else if self.pending.is_none() {
             self.pending = Some(Pending::Quit);
             self.dialog = Some(self.discard_dialog());
         }
+        self.clear_keys_for_dialog();
         true
     }
 
@@ -937,6 +948,7 @@ impl Session {
         forbid_on_commit: bool,
         options: LoadOptions,
     ) {
+        self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
         if let Some(active) = self.loader.take() {
             active.cancel();
@@ -978,6 +990,7 @@ impl Session {
     /// 空のモデルを、読み込んだモデルと同じ受け渡し（`Incoming` → 転送 → `commit_pending`）へ流す。
     /// ファイルは読まず、何も書かない（要件1.10）。
     pub(super) fn start_new_document(&mut self) {
+        self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
         if let Some(active) = self.loader.take() {
             active.cancel();

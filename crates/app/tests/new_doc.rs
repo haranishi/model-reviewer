@@ -533,10 +533,11 @@ fn status_bar_names_the_new_document() {
     harness.get_by_label("新規（未書き出し）");
     // 図形を置けないときの文（何も開いていない）。
     let mut empty = Session::default();
+    empty.key_labels = empty.keymap.labels(model_reviewer::keymap::Platform::Other);
     empty.apply(Command::AddShape(ShapeKind::Cube));
     assert_eq!(
         empty.status_text,
-        "［新規作成］（Cmd+N）か、モデルを開くと図形を置けます"
+        "［新規作成］（Ctrl+N）か、モデルを開くと図形を置けます"
     );
 }
 

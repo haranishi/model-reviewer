@@ -1,8 +1,9 @@
 //! ショートカットの設定の画面の状態と、割り当てを変える `Command`。どれも履歴と未保存の印に入らない。
-//!
-//! いまは形だけを置いている（WP-J1 が中身を書く）。`apply` から呼ぶ関数は、どれも何もしない。
 
-use crate::keymap::{Action, Chord, Refusal};
+use crate::command::LaunchArgs;
+use crate::keymap::store::Store;
+use crate::keymap::{Action, Chord, Platform, Refusal};
+use crate::ui::ids;
 
 use super::Session;
 
@@ -28,38 +29,122 @@ pub struct KeyConflict {
     pub holder: Action,
 }
 
+impl KeysState {
+    pub(super) fn clear_pending(&mut self) {
+        *self = Self {
+            open: self.open,
+            ..Self::default()
+        };
+    }
+}
+
+impl Session {
+    /// 実行ファイルの入口が選んだ場所だけを読む。
+    pub(crate) fn from_launch(launch: &LaunchArgs) -> Self {
+        let mut session = Self {
+            scripted: launch.script.is_some(),
+            ..Self::default()
+        };
+        if let Some(path) = &launch.keymap {
+            let opened = Store::open(path.clone());
+            session.key_labels = opened.keymap.labels(Platform::current());
+            session.keymap = opened.keymap;
+            session.store = opened.store;
+            session.notice = opened.notice.unwrap_or_default();
+        }
+        session
+    }
+}
+
 pub(super) fn set_open(session: &mut Session, open: bool) {
-    let _ = (session, open);
+    if open && session.dialog.is_some() {
+        return;
+    }
+    session.keys = KeysState {
+        open,
+        ..KeysState::default()
+    };
+    if open && let Some(ctx) = &session.egui_ctx {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ids::HELP_OPEN), false));
+    }
 }
 
 pub(super) fn begin_capture(session: &mut Session, action: Action) {
-    let _ = (session, action);
+    if session.keys.open && session.dialog.is_none() {
+        session.keys.clear_pending();
+        session.keys.capture = Some(action);
+        if let Some(ctx) = &session.egui_ctx {
+            crate::ui::surrender_focus(ctx);
+        }
+    }
 }
 
 pub(super) fn cancel_capture(session: &mut Session) {
-    let _ = session;
+    session.keys.clear_pending();
 }
 
 pub(super) fn capture(session: &mut Session, key: Result<Chord, Refusal>) {
-    let _ = (session, key);
+    let Some(action) = session.keys.capture else {
+        return;
+    };
+    match key {
+        Ok(chord) => assign(session, action, chord, false),
+        Err(reason) => session.keys.refusal = Some((action, reason)),
+    }
 }
 
 pub(super) fn resolve_conflict(session: &mut Session, replace: bool) {
-    let _ = (session, replace);
+    if let Some(conflict) = session.keys.conflict {
+        if replace {
+            assign(session, conflict.action, conflict.chord, true);
+        } else {
+            session.keys.clear_pending();
+        }
+    }
+}
+
+fn assign(session: &mut Session, action: Action, chord: Chord, replace: bool) {
+    session.keys.clear_pending();
+    if let Err(holder) = session.keymap.assign(action, chord, replace) {
+        session.keys.conflict = Some(KeyConflict {
+            action,
+            chord,
+            holder,
+        });
+    }
 }
 
 pub(super) fn clear(session: &mut Session, action: Action) {
-    let _ = (session, action);
+    session.keys.clear_pending();
+    session.keymap.clear(action);
 }
 
 pub(super) fn reset(session: &mut Session, action: Action) {
-    let _ = (session, action);
+    match action.default_chord() {
+        Some(chord) => assign(session, action, chord, false),
+        None => clear(session, action),
+    }
 }
 
 pub(super) fn arm_reset_all(session: &mut Session, armed: bool) {
-    let _ = (session, armed);
+    session.keys.clear_pending();
+    session.keys.reset_all_armed = armed;
 }
 
 pub(super) fn reset_all(session: &mut Session) {
-    let _ = session;
+    if session.keys.reset_all_armed {
+        session.keys.clear_pending();
+        session.keymap.reset_all();
+    }
+}
+
+pub(super) fn save_changes(session: &mut Session) {
+    session.key_labels = session.keymap.labels(Platform::current());
+    if session.store.saves() {
+        session.notice = session
+            .store
+            .save(&session.keymap)
+            .err()
+            .unwrap_or_default();
+    }
 }

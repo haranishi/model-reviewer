@@ -593,6 +593,7 @@ fn a_part_with_a_draft_is_not_deleted() {
 #[test]
 fn shapes_need_a_model_and_structure_edits_wait_for_loading() {
     let mut empty = Session::default();
+    empty.key_labels = empty.keymap.labels(model_reviewer::keymap::Platform::Mac);
     empty.apply(Command::AddShape(
         model_reviewer_core::shapes::ShapeKind::Sphere,
     ));

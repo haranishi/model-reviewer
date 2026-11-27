@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Read;
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -105,7 +106,7 @@ pub enum StoreState {
     NoPath,
     /// ファイルが無かった、または読めた。保存できる。
     Ready,
-    /// 読めない形だった。保存できる（初めて保存する直前に `.broken` へ名前を替えて残す）。
+    /// 読めない形だった。保存できる（初めて保存する直前に元の内容を `.broken` に残す）。
     Broken,
     /// このアプリより新しい版。保存しない。
     Newer,
@@ -226,8 +227,8 @@ impl Store {
 
     /// 既定と違う割り当てだけを書く。保存しない様子なら何もせず `Ok`。失敗の理由は日本語の文。
     ///
-    /// 同じフォルダの一時ファイルに書き切ってから付け替える。壊れたファイルは、初めて保存する
-    /// 直前に `<名前>.broken` へ名前を替えて残す（すでにあれば置き換える）。
+    /// 同じフォルダの一時ファイルに書き切ってから付け替える。壊れたファイルの内容は、初めて
+    /// 保存する直前に `<名前>.broken` に残す（すでにあれば置き換える）。
     pub fn save(&mut self, keymap: &Keymap) -> Result<(), String> {
         if !self.saves() {
             return Ok(());
@@ -249,29 +250,18 @@ impl Store {
                 io_reason(&err)
             )
         })?;
+        let tmp = write_temp(&path, |file| file.write_all(&bytes))
+            .map_err(|err| format!("設定を書けませんでした（{}）", io_reason(&err)))?;
         if self.state == StoreState::Broken {
             let mut broken = name.to_os_string();
             broken.push(".broken");
-            match std::fs::rename(&path, parent.join(broken)) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(format!(
-                        "読めなかった設定ファイルを残せないため、保存しませんでした（{}）",
-                        io_reason(&err)
-                    ));
-                }
+            if let Err(err) = keep_broken(&path, &parent.join(broken)) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!(
+                    "読めなかった設定ファイルを残せないため、保存しませんでした（{}）",
+                    io_reason(&err)
+                ));
             }
-            self.state = StoreState::Ready;
-        }
-        let mut tmp_name = OsString::from(".");
-        tmp_name.push(name);
-        tmp_name.push(".tmp");
-        let tmp = parent.join(tmp_name);
-        // 付け替える前に装置へ書き切る（途中で止まっても前のファイルが残るように）。
-        if let Err(err) = write_synced(&tmp, &bytes) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("設定を書けませんでした（{}）", io_reason(&err)));
         }
         if let Err(err) = std::fs::rename(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
@@ -280,6 +270,7 @@ impl Store {
                 io_reason(&err)
             ));
         }
+        self.state = StoreState::Ready;
         Ok(())
     }
 
@@ -423,11 +414,60 @@ fn file_bytes(keymap: &Keymap, extra: &Map<String, Value>) -> Vec<u8> {
     bytes
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+/// 同じフォルダに、新規作成できた一時名を取る。同時に保存中の別の窓のファイルには触れない。
+fn create_temp<T>(
+    path: &Path,
+    mut create: impl FnMut(&Path) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut base = OsString::from(".");
+    base.push(
+        path.file_name()
+            .ok_or_else(|| io::Error::other("ファイル名がありません"))?,
+    );
+    loop {
+        let mut name = base.clone();
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        name.push(format!(".{}.{id}.tmp", std::process::id()));
+        let candidate = path.with_file_name(name);
+        match create(&candidate) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            result => return result.map(|file| (candidate, file)),
+        }
+    }
+}
+
+fn write_temp(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<PathBuf> {
+    let (tmp, mut file) = create_temp(path, |tmp| File::create_new(tmp))?;
+    let result = write(&mut file).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(err) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(tmp)
+}
+
+/// 2つの窓が同じ壊れた設定から起動しても、先の窓が直した設定で元の控えを上書きしない。
+fn keep_broken(path: &Path, backup: &Path) -> io::Result<()> {
+    let snapshot = match create_temp(backup, |tmp| std::fs::hard_link(path, tmp)) {
+        Ok((tmp, ())) => tmp,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        // ハードリンクを使えないファイルシステムでは、同じ内容の控えを作る。
+        Err(_) => {
+            let mut source = File::open(path)?;
+            write_temp(backup, |file| io::copy(&mut source, file).map(|_| ()))?
+        }
+    };
+    let result = match Store::open(snapshot.clone()).store.state {
+        StoreState::Broken => std::fs::rename(&snapshot, backup),
+        StoreState::Newer => Err(io::Error::other(NEWER_NOTICE)),
+        StoreState::Unreadable(reason) => Err(io::Error::other(reason)),
+        _ => Ok(()),
+    };
+    let _ = std::fs::remove_file(snapshot);
+    result
 }
 
 fn io_reason(err: &std::io::Error) -> String {

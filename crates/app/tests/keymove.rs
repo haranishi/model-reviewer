@@ -1,13 +1,13 @@
-//! キーで動かす（向きの固定・数値の入力・矢印）。キーの振り分けを通さず、`Session::apply` に
-//! `Command` を直接渡して確かめる。GPUは使わない。
+//! キーで動かす操作を、変形のコマンドと画面へ届くキーの両方から確かめる。GPUは使わない。
 
 mod support;
 
+use egui::{Event, Key, Modifiers};
 use glam::{Affine3A, Vec3};
 use model_reviewer::command::{Command, Handle, KeyInput, Tool};
 use model_reviewer::session::{Session, TransformSource};
 use model_reviewer_core::camera::grid_spacing;
-use model_reviewer_core::scene::NodeId;
+use model_reviewer_core::scene::{NodeId, SceneRead};
 use model_reviewer_core::section::Axis;
 use model_reviewer_core::units::UnitLabel;
 
@@ -48,6 +48,227 @@ fn entry_text(session: &Session) -> Option<(Handle, String)> {
 
 fn delta_translation(session: &Session) -> Vec3 {
     session.transform.as_ref().unwrap().delta.translation.into()
+}
+
+fn press(key: Key, modifiers: Modifiers) -> Event {
+    Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn dispatch(ctx: &egui::Context, s: &mut Session, events: Vec<Event>) -> Vec<Command> {
+    let raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    let mut cmds = Vec::new();
+    ctx.run_ui(raw, |ui| {
+        cmds = model_reviewer::shortcut_commands(ui.ctx(), s)
+    })
+    .textures_delta
+    .clear();
+    for command in cmds.iter().cloned() {
+        s.apply(command);
+    }
+    cmds
+}
+
+fn key(s: &mut Session, key: Key, mods: Modifiers) -> Vec<Command> {
+    dispatch(&egui::Context::default(), s, vec![press(key, mods)])
+}
+
+#[test]
+fn xyz_lock_axis_only_with_edit_tool_and_selection() {
+    for tool in [Tool::Move, Tool::Rotate, Tool::Scale] {
+        let mut s = selected(tool);
+        for (letter, axis) in [(Key::X, Axis::X), (Key::Y, Axis::Y), (Key::Z, Axis::Z)] {
+            assert_eq!(
+                key(&mut s, letter, Modifiers::NONE),
+                [Command::BeginKeyTransform(axis)]
+            );
+        }
+        key(&mut s, Key::Escape, Modifiers::NONE);
+        assert!(s.transform.is_none());
+        assert_eq!(
+            key(&mut s, Key::Z, Modifiers::SHIFT),
+            [Command::SetDisplay(
+                model_reviewer::command::DisplayMode::XRay
+            )]
+        );
+        s.apply(Command::Select(None));
+        assert_eq!(key(&mut s, Key::X, Modifiers::NONE), [Command::ToggleSnap]);
+        assert!(key(&mut s, Key::Y, Modifiers::NONE).is_empty());
+        assert!(key(&mut s, Key::ArrowRight, Modifiers::NONE).is_empty());
+    }
+    let mut s = selected(Tool::Move);
+    s.load = model_reviewer::LoadPhase::Reading;
+    assert!(key(&mut s, Key::ArrowRight, Modifiers::NONE).is_empty());
+    assert!(key(&mut s, Key::Z, Modifiers::NONE).is_empty());
+    assert!(s.history.is_empty());
+}
+
+#[test]
+fn x_still_toggles_snap_with_select_tool() {
+    for tool in [Tool::Select, Tool::Measure] {
+        let mut s = selected(tool);
+        let snap = s.snap.enabled;
+        assert_eq!(key(&mut s, Key::X, Modifiers::NONE), [Command::ToggleSnap]);
+        assert_ne!(s.snap.enabled, snap);
+        assert_eq!(
+            key(&mut s, Key::Z, Modifiers::NONE),
+            [Command::SetDisplay(
+                model_reviewer::command::DisplayMode::FacesAndLines
+            )]
+        );
+        assert!(s.transform.is_none());
+    }
+}
+
+#[test]
+fn backspace_edits_amount_not_part() {
+    let mut s = selected(Tool::Move);
+    let n = s.scene().unwrap().node_count();
+    for k in [
+        Key::X,
+        Key::Minus,
+        Key::Num1,
+        Key::Period,
+        Key::Num2,
+        Key::Num5,
+        Key::Backspace,
+    ] {
+        key(&mut s, k, Modifiers::NONE);
+    }
+    assert_eq!(entry_text(&s), Some((Handle::MoveX, "-1.2".into())));
+    assert_eq!(s.scene().unwrap().node_count(), n);
+    assert!(s.history.is_empty());
+    key(&mut s, Key::Enter, Modifiers::NONE);
+    assert!(near(position(&s).x, NEAR_CENTER.x - 1.2));
+    assert_eq!(s.history.len(), 1);
+}
+
+#[test]
+fn other_keys_are_ignored_while_typing_amount() {
+    let mut s = selected(Tool::Rotate);
+    key(&mut s, Key::Y, Modifiers::NONE);
+    for (k, mods) in [
+        (Key::G, Modifiers::NONE),
+        (Key::Z, Modifiers::COMMAND),
+        (Key::Delete, Modifiers::NONE),
+        (Key::F1, Modifiers::NONE),
+        (Key::N, Modifiers::COMMAND),
+        (Key::Num5, Modifiers::SHIFT),
+    ] {
+        assert!(key(&mut s, k, mods).is_empty());
+    }
+    let camera = s.camera;
+    key(&mut s, Key::Num1, Modifiers::NONE);
+    key(&mut s, Key::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(entry_text(&s), Some((Handle::RotY, "2".into())));
+    assert_eq!(s.camera, camera);
+    assert!(s.history.is_empty());
+    key(&mut s, Key::Escape, Modifiers::NONE);
+    assert!(s.transform.is_none() && !s.status_text.contains("Enter"));
+}
+
+#[test]
+fn key_repeat_does_not_nudge() {
+    let mut s = selected(Tool::Move);
+    let grid = grid_spacing(s.camera.distance);
+    let ctx = egui::Context::default();
+    let down = press(Key::ArrowDown, Modifiers::SHIFT);
+    assert_eq!(
+        dispatch(&ctx, &mut s, vec![down.clone()]),
+        [Command::Nudge {
+            axis: Axis::Y,
+            sign: -1,
+            fine: true
+        }]
+    );
+    assert!(dispatch(&ctx, &mut s, vec![down]).is_empty());
+    assert!(near(position(&s).y, NEAR_CENTER.y - grid * 0.1));
+    assert_eq!(s.history.len(), 1);
+}
+
+#[test]
+fn view_click_cancels_amount() {
+    let mut s = selected(Tool::Move);
+    let before = local(&s);
+    key(&mut s, Key::X, Modifiers::NONE);
+    key(&mut s, Key::Num2, Modifiers::NONE);
+    s.apply(Command::ViewClick {
+        ndc: glam::Vec2::ZERO,
+    });
+    assert!(s.transform.is_none());
+    assert_eq!(local(&s), before);
+    assert!(s.history.is_empty() && !s.has_unsaved());
+}
+
+#[test]
+fn axis_entry_releases_widget_focus_for_arrows_and_enter() {
+    let (mut h, seen) = support::harness(selected(Tool::Move), egui::vec2(1100.0, 720.0));
+    h.key_press(Key::Tab);
+    h.run();
+    assert!(h.ctx.memory(|m| m.focused().is_some()) && !h.ctx.text_edit_focused());
+    h.key_press(Key::ArrowRight);
+    h.run();
+    assert!(h.state().history.is_empty());
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|cmd| matches!(cmd, Command::Nudge { .. }))
+    );
+    h.key_press(Key::X);
+    h.run();
+    assert_eq!(entry_text(h.state()), Some((Handle::MoveX, String::new())));
+    assert!(h.ctx.memory(|m| m.focused().is_none()));
+    h.key_press(Key::ArrowUp);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    assert!(h.state().transform.is_none());
+    let grid = grid_spacing(h.state().camera.distance);
+    assert!(near(position(h.state()).x, NEAR_CENTER.x + grid));
+}
+
+#[test]
+fn fast_keys_use_the_result_of_the_preceding_key() {
+    use eframe::App as _;
+    let ctx = egui::Context::default();
+    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+    let mut app =
+        model_reviewer::App::new(&cc, model_reviewer::parse_args(["model-reviewer"]).unwrap());
+    *app.session_mut() = selected(Tool::Select);
+    let events = [
+        Key::G,
+        Key::X,
+        Key::Num1,
+        Key::Num2,
+        Key::Backspace,
+        Key::Enter,
+    ]
+    .into_iter()
+    .map(|k| press(k, Modifiers::NONE))
+    .collect();
+    let raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    let mut frame = eframe::Frame::_new_kittest();
+    ctx.run_ui(raw, |ui| app.ui(ui, &mut frame))
+        .textures_delta
+        .clear();
+    let s = app.session();
+    assert_eq!(s.tool, Tool::Move);
+    assert!(s.transform.is_none());
+    assert!(near(position(s).x, NEAR_CENTER.x + 1.0));
+    assert_eq!(s.history.len(), 1);
 }
 
 #[test]

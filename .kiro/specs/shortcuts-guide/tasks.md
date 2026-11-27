@@ -52,14 +52,18 @@ WP-M1 表と振り分け（単独・最初）
   - 合格: `guide_default_table_matches_registry`、`guide_fixed_table_matches_registry`、`guide_links_resolve`、`guide_has_all_pages_within_limit`。手順の JSON が JSON として読め、`op` が `docs/verify.md` の一覧にある名前だけであること（`guide_scripts_use_known_ops`。手順を読む関数は公開されていないので、実行での確認は進行役）
   - _Boundary: `docs/guide/`、`app/tests/guide.rs`、`app/e2e/guide-*.json`、`README.ja.md`、`README.md`_ ／ _Requirements: 9.1〜9.6, 10.2, 13.3_
 
-- [ ] 3. 接合（S1・V1・K1 の後。共有の大きなファイルに触れる）
-- [ ] 3.1 WP-J1 つなぐ（[design-settings.md](design-settings.md) の `Command` の表と「取り込みの振り分け」、[design-testing.md](design-testing.md)）
+- [x] 3. 接合（S1・V1・K1 の後。共有の大きなファイルに触れる）
+- [x] 3.1 WP-J1 つなぐ（[design-settings.md](design-settings.md) の `Command` の表と「取り込みの振り分け」、[design-testing.md](design-testing.md)）
   - `session/keys.rs`: `Command` の9つの中身と、変わったときの保存、失敗の知らせ、`key_labels` の作り直し。`app.rs`: 設定の画面が開いている間の振り分けと取り込み。`main.rs`: 本物の環境変数を渡して `resolve_path` を呼ぶだけ（`--keymap` ＞ 自動操作なら無し ＞ OSごとの場所）。`App::new`: `Store::open` と、起動時の知らせ
   - キーで動かす: `app.rs` に、数値の入力の途中の振り分けと、向きの固定・矢印の振り分け（design-keymove.md の順）。`ViewClick` で変形をやめる1行。状態欄の文、ヘルプの3行、`KeyRow.note` の組み立て、`dump_state` の `transform.key_entry`、`e2e/keymove-1.json`
   - `ui/mod.rs`: 設定の小窓を出す、`KeysInput` と各部品の `keys` を `Session` から組み立てる。ヘルプと小窓が同時に開かないこと
   - 自動操作: `dump_state` の `keys`、比較から外す項目、`e2e/keys-1.json`・`keys-2.json`。`docs/verify.md` に、手順の表と `--keymap`、「手順書の画像」の節
   - 合格: design-testing.md の「取り込み」の行と、「振り分け」の残り（`capture_takes_the_next_key`、`escape_cancels_capture`、`refused_key_keeps_capturing`、`clipboard_event_explains_itself`、`conflict_replace_unbinds_the_holder`、`rebound_key_works_immediately`、`change_is_saved_and_restored`、`no_keys_fire_while_window_is_open`、`dialog_takes_priority_over_window`、`script_without_keymap_uses_defaults`、`failed_save_keeps_binding_and_notifies`、`xyz_lock_axis_only_with_edit_tool_and_selection`、`x_still_toggles_snap_with_select_tool`、`backspace_edits_amount_not_part`、`other_keys_are_ignored_while_typing_amount`、`key_repeat_does_not_nudge`、`view_click_cancels_amount`）。既存の試験が通る（期待が変わった試験は、名前と理由を報告する）
   - _Boundary: `app/src/{app,main,lib,command}.rs`、`app/src/session/{mod,keys,pick}.rs`、`app/src/ui/{mod,ids,status,help}.rs`、`app/src/automation.rs`、`app/src/automation/`、`app/tests/keys_flow.rs`、`app/tests/keymove.rs`（振り分けの分）、`app/e2e/{keys-*,keymove-1}.json`、`docs/verify.md`_ ／ _Depends: 2.1, 2.2, 2.3_ ／ _Requirements: 1.4, 2.6, 3.3〜3.6, 3.10, 5.4, 5.5, 7.1, 7.2, 7.4, 8.3, 11.2, 11.6, 11.8, 11.9, 12.6, 12.7, 13.3, 13.4_
+  - 検証結果は4検査とも成功。全体で609件成功（従来586件＋23件、うち上記の指定17件）、失敗0件、既存の53件は未実行。自動操作3本は手順の読み込みまで確認した。
+  - 既存試験の期待を直した理由。`default_labels_keep_existing_text` は元の28行を保ってヘルプの3行を追加した。`status_bar_names_the_new_document` と `shapes_need_a_model_and_structure_edits_wait_for_loading` は、新規作成の表示をそれぞれ Ctrl と Cmd に固定し、実行OSに依存せず両方を検証する。
+  - 依存側で数字と PageUp の名前、矢印・Minus・Period・Enter を名前から読めることを確認した。試験では図形の道具がボタンと同じ操作で選べること、軸を選ぶとボタンが入力位置を手放すこと、保存の失敗が `Session.notice` に出ること、複数の窓で保存しても壊れた元ファイルが残ることを確認した。
+  - C3が色を足すときは、状態の `selection` が既存の数値IDまたは `null` である点に注意する。F1では [実機の自動操作](../../../docs/verify.md) の `keys-1` → `keys-2` を同じ検証用の保存先で行い、`keymove-1` は既定のキーで行う。画像・実キー・日本語入力・各OSの実際の保存先は実機確認に残した。
 
 - [ ] 4. 最後の確認（進行役が行う。実機・画像の目視・実キー）
 - [ ] 4.1 WP-F1 確認と記録

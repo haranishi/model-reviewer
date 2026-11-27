@@ -154,6 +154,24 @@ pub fn reset_text(row: &KeyRow) -> String {
 
 pub fn show(ui: &mut egui::Ui, input: &KeysInput, out: &mut Vec<Command>) {
     let ctx = ui.ctx().clone();
+    if input.capture.is_some() {
+        // 取り込みは raw.events を読む。同じ押下でボタンを押したり検索文字を変えたりしない。
+        ui.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Ime(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Paste(_)
+                        | egui::Event::PasteImage(_)
+                )
+            })
+        });
+        ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
     let screen = ctx.content_rect();
     let inner_w = (screen.width() - 48.0).clamp(280.0, 760.0);
     // 見出し・検索の欄・下のボタンの分を残す。
@@ -210,9 +228,8 @@ pub fn show(ui: &mut egui::Ui, input: &KeysInput, out: &mut Vec<Command>) {
     });
     // [すべて初期値に戻す] の1回目の後に、ほかの所を押したら取り消す。
     if input.reset_all_armed
-        && pushed
-            .iter()
-            .any(|command| !matches!(command, Command::ResetAllKeys))
+        && !pushed.contains(&Command::ResetAllKeys)
+        && (!pushed.is_empty() || ctx.input(|i| i.pointer.any_click()))
     {
         out.push(Command::ArmResetAllKeys(false));
     }
@@ -304,7 +321,7 @@ fn row_ui(ui: &mut egui::Ui, input: &KeysInput, row: &KeyRow, out: &mut Vec<Comm
         reg_visible(ui, &ids::keys_row_id(ids::KEYS_ROW, action), &key);
         if key.clicked() && !capturing {
             // 検索の欄に入力の位置が残っていると、振り分けが「入力中」で止まりキーが届かない。
-            ui.memory_mut(|memory| memory.surrender_focus(filter_id()));
+            super::surrender_focus(ui.ctx());
             out.push(Command::BeginKeyCapture(action));
         }
         if row.changed {

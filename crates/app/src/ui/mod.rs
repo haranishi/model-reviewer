@@ -6,6 +6,7 @@
 
 use crate::automation::{WidgetEntry, WidgetFrame};
 use crate::command::{Command, PanelKind};
+use crate::keymap::Platform;
 use crate::session::Session;
 
 pub mod annotations;
@@ -31,6 +32,14 @@ pub mod viewbar;
 pub mod viewcube;
 pub mod viewport;
 pub mod views;
+
+pub(crate) fn surrender_focus(ctx: &egui::Context) {
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+}
 
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u32; 2] {
     begin_widgets(ui.ctx());
@@ -82,8 +91,23 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u3
     sync_panel(parts_open, session.panel_parts, PanelKind::Parts, out);
     sync_panel(notes_open, session.panel_notes, PanelKind::Notes, out);
     sync_panel(details_open, session.panel_details, PanelKind::Details, out);
-    dialogs::show(ui, session, out);
-    help::show(ui, out);
+    let platform = Platform::current();
+    if session.dialog.is_some() {
+        dialogs::show(ui, session, out);
+    } else if session.keys.open {
+        let input = keys::KeysInput {
+            rows: keys::build_rows(&session.keymap, platform),
+            capture: session.keys.capture,
+            conflict: session.keys.conflict,
+            refusal: session.keys.refusal,
+            reset_all_armed: session.keys.reset_all_armed,
+            store_note: session.store.note(session.scripted).map(str::to_owned),
+            platform,
+        };
+        keys::show(ui, &input, out);
+    } else {
+        help::show_with(ui, &session.key_labels, platform, out);
+    }
     pixels
 }
 

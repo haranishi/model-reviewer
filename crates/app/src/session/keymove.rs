@@ -93,7 +93,7 @@ fn handle_for(tool: Tool, axis: Axis) -> Option<Handle> {
     Some(handles[axis.index()])
 }
 
-fn axis_letter(handle: Handle) -> &'static str {
+pub(crate) fn axis_letter(handle: Handle) -> &'static str {
     match handle {
         Handle::MoveX | Handle::RotX | Handle::ScaleX | Handle::ScaleAll => "X",
         Handle::MoveY | Handle::RotY | Handle::ScaleY => "Y",

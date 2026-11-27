@@ -4,12 +4,14 @@
 mod support;
 
 use egui::{Event, Key, Modifiers};
-use model_reviewer::Session;
-use model_reviewer::command::{Command, DisplayMode, Tool, ViewDir};
-use model_reviewer::keymap::{Action, Chord};
+use model_reviewer::command::{Command, DisplayMode, ShapeKind, Tool, ViewDir};
+use model_reviewer::keymap::store::{Os, StoreSource, resolve_path};
+use model_reviewer::keymap::{Action, Chord, Refusal};
 use model_reviewer::shortcut_commands;
 use model_reviewer::ui::ids;
+use model_reviewer::{App, LaunchArgs, Session};
 use model_reviewer_core::scene::NodeId;
+use std::{fs, path::PathBuf};
 
 fn press(key: Key, modifiers: Modifiers) -> Event {
     Event::Key {
@@ -69,6 +71,369 @@ fn with_display(display: DisplayMode) -> Session {
     let mut session = support::session();
     session.display = display;
     session
+}
+
+fn begin(session: &mut Session, action: Action) {
+    session.apply(Command::SetKeysOpen(true));
+    session.apply(Command::BeginKeyCapture(action));
+}
+
+fn send(session: &mut Session, events: Vec<Event>) {
+    for command in dispatch_events(&egui::Context::default(), session, events) {
+        session.apply(command);
+    }
+}
+
+fn bind(session: &mut Session, action: Action, key: Key) {
+    begin(session, action);
+    send(session, vec![press(key, NONE)]);
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "model-reviewer-keys-flow-{name}-{}",
+        std::process::id()
+    ));
+    fs::create_dir(&dir).unwrap();
+    dir
+}
+
+fn headless(launch: LaunchArgs) -> App {
+    App::new(
+        &eframe::CreationContext::_new_kittest(egui::Context::default()),
+        launch,
+    )
+}
+
+#[test]
+fn capture_takes_the_next_key() {
+    let mut s = selected();
+    begin(&mut s, Action::ToolMove);
+    send(
+        &mut s,
+        vec![
+            Event::Text("T".into()),
+            press(Key::T, SHIFT),
+            press(Key::S, NONE),
+        ],
+    );
+    assert_eq!(
+        s.keymap.chord(Action::ToolMove),
+        Chord::parse("Shift+T").ok()
+    );
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("Shift+T"));
+    assert!(s.keys.capture.is_none());
+    assert_eq!(s.tool, Tool::Select);
+    assert!(s.history.is_empty());
+    assert!(!s.has_unsaved());
+}
+
+#[test]
+fn escape_cancels_capture() {
+    let mut s = Session::default();
+    begin(&mut s, Action::ToolMove);
+    send(&mut s, vec![press(Key::Escape, NONE)]);
+    assert!(s.keys.open && s.keys.capture.is_none());
+    assert_eq!(s.keymap.rev(), 0);
+    send(&mut s, vec![press(Key::Escape, NONE)]);
+    assert!(!s.keys.open);
+}
+
+#[test]
+fn refused_key_keeps_capturing() {
+    let mut s = Session::default();
+    begin(&mut s, Action::ToolMove);
+    send(&mut s, vec![press(Key::Enter, NONE)]);
+    assert_eq!(s.keys.refusal, Some((Action::ToolMove, Refusal::Fixed)));
+    assert_eq!(s.keys.capture, Some(Action::ToolMove));
+    assert_eq!(s.keymap.rev(), 0);
+    send(&mut s, vec![press(Key::T, NONE)]);
+    assert!(s.keys.refusal.is_none() && s.keys.capture.is_none());
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("T"));
+}
+
+#[test]
+fn clipboard_event_explains_itself() {
+    let mut s = Session::default();
+    begin(&mut s, Action::ToolMove);
+    for event in [Event::Copy, Event::Cut, Event::Paste("文字".into())] {
+        let cmds = dispatch_events(
+            &egui::Context::default(),
+            &s,
+            vec![event, press(Key::T, NONE)],
+        );
+        assert_eq!(cmds, [Command::CaptureKey(Err(Refusal::TextEditing))]);
+        for cmd in cmds {
+            s.apply(cmd);
+        }
+        assert_eq!(
+            s.keys.refusal,
+            Some((Action::ToolMove, Refusal::TextEditing))
+        );
+        assert_eq!(s.keys.capture, Some(Action::ToolMove));
+        assert_eq!(s.keymap.rev(), 0);
+    }
+}
+
+#[test]
+fn conflict_replace_unbinds_the_holder() {
+    let mut s = selected();
+    bind(&mut s, Action::ToolRotate, Key::G);
+    assert_eq!(s.keys.conflict.unwrap().holder, Action::ToolMove);
+    assert!(s.keys.capture.is_none());
+    assert_eq!(s.keymap.rev(), 0);
+    send(&mut s, vec![press(Key::Escape, NONE)]);
+    assert!(s.keys.open && s.keys.conflict.is_none());
+    assert_eq!(s.keymap.rev(), 0);
+    bind(&mut s, Action::ToolRotate, Key::G);
+    s.apply(Command::ResolveKeyConflict { replace: true });
+    assert!(s.keys.conflict.is_none());
+    assert_eq!(s.key_labels.get(Action::ToolRotate), Some("G"));
+    assert_eq!(s.key_labels.get(Action::ToolMove), None);
+    // 行を初期値に戻すときも、重なる相手から黙って取り上げない。
+    s.apply(Command::ResetKey(Action::ToolMove));
+    assert_eq!(s.keys.conflict.unwrap().holder, Action::ToolRotate);
+    s.apply(Command::ResolveKeyConflict { replace: false });
+    assert_eq!(s.key_labels.get(Action::ToolRotate), Some("G"));
+    s.apply(Command::ResetAllKeys);
+    assert_eq!(s.key_labels.get(Action::ToolMove), None);
+    s.apply(Command::ArmResetAllKeys(true));
+    s.apply(Command::ResetAllKeys);
+    assert!(!s.keys.reset_all_armed);
+    assert!(Action::ALL.iter().all(|&a| !s.keymap.is_changed(a)));
+}
+
+#[test]
+fn rebound_key_works_immediately() {
+    let mut s = selected();
+    bind(&mut s, Action::ToolMove, Key::T);
+    s.apply(Command::SetKeysOpen(false));
+    send(&mut s, vec![press(Key::G, NONE)]);
+    assert_eq!(s.tool, Tool::Select);
+    send(&mut s, vec![press(Key::T, NONE)]);
+    assert_eq!(s.tool, Tool::Move);
+    s.apply(Command::ClearKey(Action::ToolMove));
+    assert!(dispatch(&s, Key::T, NONE).is_empty());
+    assert_eq!(s.key_labels.get(Action::ToolMove), None);
+    s.apply(Command::ResetKey(Action::ToolMove));
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("G"));
+
+    bind(&mut s, Action::ToolShape, Key::B);
+    s.apply(Command::SetKeysOpen(false));
+    let commands = dispatch(&s, Key::B, NONE);
+    assert_eq!(commands, [Command::SetTool(Tool::Shape)]);
+    for command in commands {
+        s.apply(command);
+    }
+    assert_eq!(s.tool, Tool::Shape);
+
+    let mut empty = Session::default();
+    bind(&mut empty, Action::FileNew, Key::T);
+    empty.apply(Command::AddShape(ShapeKind::Cube));
+    assert_eq!(
+        empty.status_text,
+        "［新規作成］（T）か、モデルを開くと図形を置けます"
+    );
+    empty.apply(Command::ClearKey(Action::FileNew));
+    empty.apply(Command::AddShape(ShapeKind::Cube));
+    assert_eq!(
+        empty.status_text,
+        "［新規作成］か、モデルを開くと図形を置けます"
+    );
+}
+
+#[test]
+fn change_is_saved_and_restored() {
+    let dir = scratch("restore");
+    let path = dir.join("keymap.json");
+    let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    launch.keymap = Some(path.clone());
+    let mut app = headless(launch.clone());
+    bind(app.session_mut(), Action::ToolMove, Key::G);
+    assert!(!path.exists(), "同じ割り当てでファイルを作らない");
+    bind(app.session_mut(), Action::ToolMove, Key::T);
+    app.session_mut()
+        .apply(Command::ClearKey(Action::ToolRotate));
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        json["bindings"],
+        serde_json::json!({"tool.move":"T","tool.rotate":null})
+    );
+    let restored = headless(launch.clone());
+    let s = restored.session();
+    assert_eq!(s.store.source(), StoreSource::File);
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("T"));
+    assert_eq!(s.key_labels.get(Action::ToolRotate), None);
+    assert_eq!(s.keymap.chord(Action::ToolMove), Chord::parse("T").ok());
+    fs::write(&path, b"{").unwrap();
+    let broken = headless(launch);
+    assert!(broken.session().notice.contains("初期値"));
+    assert_eq!(fs::read(path).unwrap(), b"{");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn no_keys_fire_while_window_is_open() {
+    let mut s = selected();
+    s.apply(Command::SetKeysOpen(true));
+    for (key, mods) in [
+        (Key::G, NONE),
+        (Key::Z, CMD),
+        (Key::Delete, NONE),
+        (Key::F1, NONE),
+    ] {
+        assert!(dispatch(&s, key, mods).is_empty());
+    }
+    assert!(s.keys.open && s.selection.is_some());
+    s.apply(Command::BeginKeyCapture(Action::FileNew));
+    s.apply(Command::NewDocument);
+    assert!(s.keys.capture.is_none());
+}
+
+#[test]
+fn help_opens_settings_and_escape_first_leaves_the_filter() {
+    fn click(h: &mut egui_kittest::Harness<Session>, name: &str) {
+        // 新しい小窓や絞り込み後の行は、寸法が決まった次のフレームで中央に移る。
+        for _ in 0..4 {
+            h.step();
+        }
+        let button = support::widget_rect(h, name).unwrap().center();
+        support::click(h, button);
+    }
+    let (mut h, _) = support::harness(selected(), egui::vec2(960.0, 600.0));
+    h.key_press(Key::F1);
+    h.run();
+    click(&mut h, ids::HELP_KEYS);
+    h.run();
+    assert!(h.state().keys.open);
+    assert!(support::widget_rect(&h, ids::HELP_CLOSE).is_none());
+    click(&mut h, ids::KEYS_FILTER);
+    h.event(Event::Text("移動".into()));
+    h.run();
+    assert!(h.ctx.text_edit_focused());
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(h.state().keys.open && !h.ctx.text_edit_focused());
+    let row = ids::keys_row_id(ids::KEYS_ROW, Action::ToolMove);
+    click(&mut h, &row);
+    assert_eq!(h.state().keys.capture, Some(Action::ToolMove));
+    h.key_press(Key::Tab);
+    h.run();
+    assert_eq!(
+        h.state().keys.refusal,
+        Some((Action::ToolMove, Refusal::Navigation))
+    );
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(
+        h.state().keys.refusal,
+        Some((Action::ToolMove, Refusal::Fixed))
+    );
+    click(&mut h, ids::KEYS_FILTER);
+    h.event(Event::Paste("貼り付け".into()));
+    h.run();
+    assert_eq!(
+        h.state().keys.refusal,
+        Some((Action::ToolMove, Refusal::TextEditing))
+    );
+    assert!(support::widget_rect(&h, &row).is_some());
+    h.key_press(Key::T);
+    h.run();
+    assert_eq!(h.state().key_labels.get(Action::ToolMove), Some("T"));
+    click(&mut h, ids::KEYS_RESET_ALL);
+    assert!(h.state().keys.reset_all_armed);
+    click(&mut h, ids::KEYS_FILTER);
+    assert!(!h.state().keys.reset_all_armed);
+    assert_eq!(h.state().key_labels.get(Action::ToolMove), Some("T"));
+}
+
+#[test]
+fn dialog_takes_priority_over_window() {
+    let mut s = selected();
+    s.apply(Command::DuplicateSelected);
+    begin(&mut s, Action::ToolMove);
+    s.apply(Command::NewDocument);
+    assert!(s.dialog.is_some() && s.keys.open && s.keys.capture.is_none());
+    assert!(dispatch(&s, Key::T, NONE).is_empty());
+    assert_eq!(dispatch(&s, Key::Escape, NONE), [Command::CancelPending]);
+    s.apply(Command::CancelPending);
+    assert!(s.has_unsaved() && s.keys.open);
+    s.apply(Command::BeginKeyCapture(Action::FileNew));
+    assert!(s.on_close_requested());
+    assert!(s.keys.capture.is_none());
+}
+
+#[test]
+fn script_without_keymap_uses_defaults() {
+    let dir = scratch("script");
+    let script = dir.join("script.json");
+    fs::write(&script, br#"{"steps":[]}"#).unwrap();
+    let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    launch.script = Some(script);
+    launch.out = Some(dir.clone());
+    launch.keymap = resolve_path(None, launch.script.is_some(), Os::current(), &|_| {
+        panic!("環境を読んだ")
+    });
+    let mut app = headless(launch.clone());
+    assert_eq!(app.session().store.path(), None);
+    assert_eq!(
+        app.session().store.note(true),
+        Some("自動操作のため、変更は保存されません")
+    );
+    bind(app.session_mut(), Action::ToolMove, Key::T);
+    assert_eq!(app.session().key_labels.get(Action::ToolMove), Some("T"));
+    assert_eq!(
+        headless(launch).session().key_labels.get(Action::ToolMove),
+        Some("G")
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_save_keeps_binding_and_notifies() {
+    let dir = scratch("failure");
+    let path = dir.join("keymap.json");
+    let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    launch.keymap = Some(path.clone());
+    let mut app = headless(launch);
+    fs::create_dir(&path).unwrap();
+    bind(app.session_mut(), Action::ToolMove, Key::T);
+    let s = app.session_mut();
+    assert!(s.notice.contains("設定ファイルを置き換えられませんでした"));
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("T"));
+    s.apply(Command::SetKeysOpen(false));
+    s.apply(Command::NewDocument);
+    send(s, vec![press(Key::T, NONE)]);
+    assert_eq!(s.tool, Tool::Move);
+    assert!(s.keymap.is_changed(Action::ToolMove) && !s.has_unsaved());
+    assert!(path.is_dir());
+    fs::remove_dir(&path).unwrap();
+    bind(s, Action::ToolMove, Key::F7);
+    assert!(s.notice.is_empty());
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["bindings"]["tool.move"], "F7");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn two_sessions_keep_the_original_backup_and_each_others_temp() {
+    let dir = scratch("two-sessions");
+    let path = dir.join("keymap.json");
+    fs::write(&path, b"{").unwrap();
+    let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    launch.keymap = Some(path.clone());
+    let mut first = headless(launch.clone());
+    let mut second = headless(launch);
+    // 別の保存が使っている一時ファイルを残して再現する。
+    let in_use = dir.join(".keymap.json.tmp");
+    fs::write(&in_use, b"writing").unwrap();
+    bind(first.session_mut(), Action::ToolMove, Key::T);
+    bind(second.session_mut(), Action::ToolMove, Key::F7);
+    assert_eq!(fs::read(&in_use).unwrap(), b"writing");
+    assert_eq!(fs::read(dir.join("keymap.json.broken")).unwrap(), b"{");
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["bindings"]["tool.move"], "F7");
+    fs::remove_dir_all(dir).unwrap();
 }
 
 /// 既定のままなら、第3段階のキーがすべて同じ `Command` になる（足した4つと変わった所を含む）。

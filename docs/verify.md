@@ -2,13 +2,7 @@
 
 ## テスト
 
-README の4コマンドは、GPUが無くても通る範囲です。CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。GPUがある環境では次も実行します。
-
-```
-cargo test --workspace -- --include-ignored
-```
-
-`#[ignore]` のテストは、通常の `cargo test` では ignored と数えられ、成功には数えません。内訳は次のとおりです。
+README の4コマンドはGPUが無くても実行できます。CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。次の試験は通常 ignored と数えます。GPUがある環境では `cargo test --workspace -- --include-ignored` で実行します。
 
 - GPUの描画テスト（`crates/render/tests/gpu.rs`）: 中心が背景色でない、選択で画像が変わる、大きさ0では描かない、汚れの無いフレームでは描かない、転送に失敗しても表示中のモデルが残る。基準画像との1画素比較はしません。
 - アプリの通し（`crates/app/tests/gpu_flow.rs`）と、画面の画像を書き出すテスト（`ui_shots.rs`。`UI_SHOT=<接頭辞>` で `target/ui-check/` に出力）。
@@ -17,7 +11,7 @@ cargo test --workspace -- --include-ignored
 
 ## 実機の自動操作
 
-OSの入力は使わないので、本物のマウスは動きません。ウィンドウは開きますが、前面には出ません。作業場所の直下で実行します。
+作業場所の直下で実行します。ウィンドウは背面で開き、本物のマウスは動きません。`--script` では既定のキーを使い、割り当ての変更はその起動中だけ有効です。`--keymap <ファイル>` を渡すと、そのファイルから読み込み、変更を保存します。
 
 ```
 target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target/e2e
@@ -34,6 +28,8 @@ target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target
 | `inspect-1` | 角や辺に吸着する計測、断面（軸・位置・反転、消えた側の当たり）、表示の単位 |
 | `stl-1` → `stl-2` | 見本の STL（20×30×40 mm の箱）を開く・角から角で 20 mm・注釈・円柱の寸法・GLB へ書き出し・レビュー保存。起動し直して一致 |
 | `new-1` | 何も開かずに［新規作成］・原点に大きさ 1 の立方体・レビュー保存が断られる・GLB へ書き出すと作業の対象が移る・Cmd+N で空に戻る |
+| `keys-1` → `keys-2` | 移動を T に変更し、回転との重複を取り消す。再起動して割り当てを比較し、初期化後に G で移動する。両方とも同じ新規の検証用フォルダを指定する（例 `--out target/e2e-keys --keymap target/e2e-keys/keymap.json`） |
+| `keymove-1` | X へ 12.5 動かして数値欄で指定した位置と比較し、矢印3回を取り消す。Y に90度回し、Z の拡大を Esc でやめる |
 | `heavy-edit`・`heavy-inspect` | 下の重いモデルで性能を測る（先に生成する）。`heavy-inspect` は吸着の探索300回・断面の矢印のドラッグ・重い STL を開く |
 
 終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。手順の `op` は `open_model`（STL の単位の仮定 `stl_unit` を省略できる）、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
@@ -46,6 +42,10 @@ cargo run --release -p model-reviewer-testdata -- stress-nested 100000 200 targe
 cargo run --release -p model-reviewer-testdata -- stl-stress 5000000 binary target/stress.stl
 cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii target/stress-ascii.stl
 ```
+
+## 手順書の画像
+
+`guide-*.json` の追加後、各手順を `--out target/guide` で実行します。`--keymap` は省略します。出力した画像を1枚ずつ開いてから `docs/guide/images/` に置き、撮影したOS、ウィンドウの大きさ、画面の倍率をここに記録します。
 
 ## 性能値の定義
 

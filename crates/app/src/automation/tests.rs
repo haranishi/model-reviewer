@@ -9,6 +9,7 @@ use crate::session::Session;
 use crate::ui::ids;
 use serde_json::{Number, json};
 use std::fs;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -35,6 +36,56 @@ fn scratch(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[test]
+fn shortcut_and_keymove_scripts_parse() {
+    let out = scratch("keys-parse");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("e2e");
+    for name in ["keys-1.json", "keys-2.json", "keymove-1.json"] {
+        load_script(&scripts.join(name), &out).unwrap_or_else(|err| panic!("{name}: {err}"));
+    }
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn state_includes_bindings_window_and_numeric_entry() {
+    use super::state::{comparable, state_value};
+    use crate::command::{Axis, Command, KeyInput, ShapeKind};
+    use crate::keymap::{Action, Chord};
+    let mut s = Session::default();
+    s.apply(Command::SetKeysOpen(true));
+    s.apply(Command::BeginKeyCapture(Action::ToolRotate));
+    assert_eq!(state_value(&s)["keys"]["window"]["capture"], "tool.rotate");
+    s.apply(Command::CaptureKey(Chord::parse("G")));
+    assert_eq!(state_value(&s)["keys"]["window"]["conflict"], "tool.move");
+    s.apply(Command::ResolveKeyConflict { replace: true });
+    assert_eq!(
+        state_value(&s)["keys"],
+        json!({
+            "source":"default", "saved":false, "changed":{"tool.move":null, "tool.rotate":"G"},
+            "window":{"open":true, "capture":null,"conflict":null}
+        })
+    );
+    s.apply(Command::SetKeysOpen(false));
+    s.apply(Command::NewDocument);
+    s.apply(Command::AddShape(ShapeKind::Cube));
+    s.apply(Command::BeginKeyTransform(Axis::Z));
+    s.apply(Command::KeyTransformInput(KeyInput::Char('-')));
+    let actual = state_value(&s);
+    assert_eq!(
+        actual["transform"]["key_entry"],
+        json!({"axis":"z","text":"-"})
+    );
+    let mut restored = actual.clone();
+    restored["keys"]["source"] = json!("file");
+    restored["keys"]["saved"] = json!(true);
+    restored["history"] = json!({});
+    assert_eq!(comparable(actual.clone()), comparable(restored.clone()));
+    restored["keys"]["changed"] = json!({});
+    assert_ne!(comparable(actual), comparable(restored));
+    s.apply(Command::CancelTransform);
+    assert!(state_value(&s)["transform"]["key_entry"].is_null());
 }
 
 #[test]

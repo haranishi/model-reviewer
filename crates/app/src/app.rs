@@ -6,12 +6,12 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::automation::Automation;
-use crate::command::{Command, DisplayMode, LaunchArgs, ShapeKind, Tool, ViewDir};
+use crate::command::{Axis, Command, DisplayMode, KeyInput, LaunchArgs, ShapeKind, Tool, ViewDir};
 use crate::fonts;
 use crate::gpu_view::GpuView;
-use crate::keymap::{Action, Chord};
+use crate::keymap::{Action, Chord, Refusal};
 use crate::metrics::{self, Counts, FrameClock};
-use crate::session::Session;
+use crate::session::{Session, tool_has_gizmo};
 use crate::theme;
 use crate::ui;
 
@@ -30,7 +30,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: LaunchArgs) -> Self {
         fonts::install(&cc.egui_ctx);
         theme::install(&cc.egui_ctx);
-        let mut session = Session::default();
+        let mut session = Session::from_launch(&launch);
         session.set_egui_ctx(&cc.egui_ctx);
         let gpu = GpuView::new(cc);
         if gpu.has_device() {
@@ -58,6 +58,12 @@ impl App {
 
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
+    }
+
+    fn apply_ui_command(&mut self, command: Command) {
+        if let Some(command) = resolve_dialog(&self.session, command) {
+            self.session.apply(command);
+        }
     }
 
     /// 描いた回数と送ったバイト数（試験用）。GPUが無ければ `None`。
@@ -106,20 +112,21 @@ impl eframe::App for App {
         self.session
             .observe_export_memory(self.session.metrics.physical_mem);
         self.session.set_egui_ctx(ui.ctx());
+        self.session.clear_keys_for_dialog();
         self.session.pixels_per_point = ui.pixels_per_point();
         let mut commands = Vec::new();
         let pixels = ui::show(ui, &self.session, &mut commands);
-        commands.extend(shortcut_commands(ui.ctx(), &self.session));
+        let mut shortcuts = FrameShortcuts::read(ui.ctx(), &self.session);
+        for command in commands {
+            self.apply_ui_command(command);
+        }
+        // 速く打った G・X・数字が同じフレームでも、直前のキーで変わった道具と変形を見る。
+        while let Some(command) = shortcuts.next_command(ui.ctx(), &self.session) {
+            self.apply_ui_command(command);
+        }
         let dropped = dropped_paths(ui);
         if !dropped.is_empty() {
-            commands.push(Command::DroppedFiles(dropped));
-        }
-        let resolved: Vec<Command> = commands
-            .into_iter()
-            .filter_map(|command| resolve_dialog(&self.session, command))
-            .collect();
-        for command in resolved {
-            self.session.apply(command);
+            self.session.apply(Command::DroppedFiles(dropped));
         }
         self.session.set_viewport(pixels);
         self.gpu.frame(ui.ctx(), &mut self.session);
@@ -175,94 +182,187 @@ pub(crate) fn help_open(ctx: &egui::Context) -> bool {
     })
 }
 
-/// キーの出来事を読むのはここだけ。順は「ダイアログ → ヘルプ → 設定の画面 → Esc → 入力中なら
-/// 終わり → 固定のキー（Delete・Backspace）→ 表」（design-keymap.md）。
-///
-/// Esc は、ダイアログ中は閉じる・やめるだけ。入力欄に文字を打っている間は、下書きの取り消しか
-/// 入力欄を離れるだけ。それ以外は、変形の取り消し、下書き、選択以外の道具から選択への復帰、
-/// 選択の解除の順で1回に1つ（要件5.5）。
-///
-/// 表のキーは、ポインタの場所（3Dビュー・一覧・ボタン・パネル）によらず働く（要件2.5）。入力欄で
-/// ない部品が入力の位置を持っている間だけ、Delete・Backspace・矢印・Enter を捨てる。1フレームに
-/// 複数のキーが届いたら、届いた順に積む。
-pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session) -> Vec<Command> {
-    if let Some(dialog) = &session.dialog {
-        if key_press(ctx, egui::Key::Escape).is_some() {
-            return dialog_escape_command(dialog).into_iter().collect();
-        }
-        return Vec::new();
-    }
-    if help_open(ctx) {
-        if key_press(ctx, egui::Key::Escape).is_some() {
-            ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), false));
-        }
-        return Vec::new();
-    }
-    if session.keys.open {
-        // 取り込みと検索の欄の Esc は WP-J1 が足す。割り当てた操作は働かせない。
-        if key_press(ctx, egui::Key::Escape).is_some() {
-            return vec![Command::SetKeysOpen(false)];
-        }
-        return Vec::new();
-    }
-    let typing = ctx.text_edit_focused();
-    if key_press(ctx, egui::Key::Escape).is_some() {
-        if text_escape_consumed(ctx) {
-            return Vec::new();
-        }
-        if typing {
-            if let Some(focused) = ctx.memory(|memory| memory.focused()) {
-                ctx.memory_mut(|memory| memory.surrender_focus(focused));
-            }
-            return if session.draft.is_some() {
-                vec![Command::CancelDraft]
+/// 現在の状態で、このフレームのキーに対応する操作を返す。
+pub fn shortcut_commands(ctx: &egui::Context, session: &Session) -> Vec<Command> {
+    let mut frame = FrameShortcuts::read(ctx, session);
+    std::iter::from_fn(|| frame.next_command(ctx, session)).collect()
+}
+
+/// 小窓・Esc・入力欄はフレームを占有する。それ以外のキーは届いた順に振り分ける。
+enum FrameShortcuts {
+    Exclusive(Option<Command>),
+    Keys {
+        presses: std::vec::IntoIter<(egui::Key, egui::Modifiers)>,
+        deleted: bool,
+    },
+}
+
+impl FrameShortcuts {
+    fn read(ctx: &egui::Context, session: &Session) -> Self {
+        let presses = ctx.input(|i| i.events.iter().filter_map(pressed_key).collect::<Vec<_>>());
+        let escape = presses.iter().any(|&(key, _)| key == egui::Key::Escape);
+        if let Some(dialog) = &session.dialog {
+            return Self::Exclusive(if escape {
+                dialog_escape_command(dialog)
             } else {
-                Vec::new()
-            };
+                None
+            });
         }
-        return escape_command(session).into_iter().collect();
-    }
-    if typing {
-        return Vec::new();
-    }
-    // 入力欄でない部品（一覧の行やボタン）が入力の位置を持っている。Tab で移っている人の操作を奪わない。
-    let widget_focused = ctx.memory(|memory| memory.focused()).is_some();
-    let mut out = Vec::new();
-    let mut deleted = false;
-    for (key, modifiers) in key_presses(ctx) {
-        match key {
-            // 削除は固定のキー。部品を選んでいるときだけ、1フレームに1回。
-            egui::Key::Delete | egui::Key::Backspace => {
-                if !widget_focused
-                    && !deleted
-                    && session.selection.is_some()
-                    && plain(modifiers)
-                    && !modifiers.shift
-                {
-                    out.push(Command::DeleteSelected);
-                    deleted = true;
-                }
-                continue;
+        if help_open(ctx) {
+            if escape {
+                ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), false));
             }
-            // 矢印と Enter は、いまは何もしない（キーで動かす分は WP-J1 が足す）。
-            egui::Key::Enter
-            | egui::Key::ArrowLeft
-            | egui::Key::ArrowRight
-            | egui::Key::ArrowUp
-            | egui::Key::ArrowDown => continue,
-            _ => {}
+            return Self::Exclusive(None);
         }
-        let Ok(chord) = Chord::from_event(key, modifiers) else {
-            continue;
-        };
-        let Some(action) = session.keymap.action_for(chord) else {
-            continue;
-        };
-        if let Some(command) = action_command(ctx, session, action) {
-            out.push(command);
+        if session.keys.open {
+            return Self::Exclusive(settings_key(ctx, session, escape));
+        }
+        if escape {
+            if text_escape_consumed(ctx) {
+                return Self::Exclusive(None);
+            }
+            if ctx.text_edit_focused() {
+                ui::surrender_focus(ctx);
+                return Self::Exclusive(session.draft.is_some().then_some(Command::CancelDraft));
+            }
+            return Self::Exclusive(escape_command(session));
+        }
+        if ctx.text_edit_focused() {
+            return Self::Exclusive(None);
+        }
+        Self::Keys {
+            presses: presses.into_iter(),
+            deleted: false,
         }
     }
-    out
+
+    fn next_command(&mut self, ctx: &egui::Context, session: &Session) -> Option<Command> {
+        let (presses, deleted) = match self {
+            Self::Exclusive(command) => return command.take(),
+            Self::Keys { presses, deleted } => (presses, deleted),
+        };
+        for (key, modifiers) in presses {
+            if session.dialog.is_some() || session.keys.open || help_open(ctx) {
+                break;
+            }
+            if let Some(command) = pressed_command(ctx, session, key, modifiers) {
+                if command == Command::DeleteSelected && std::mem::replace(deleted, true) {
+                    continue;
+                }
+                return Some(command);
+            }
+        }
+        None
+    }
+}
+
+fn settings_key(ctx: &egui::Context, session: &Session, escape: bool) -> Option<Command> {
+    if session.keys.capture.is_some() {
+        return ctx.input(|input| {
+            input.raw.events.iter().find_map(|event| match event {
+                egui::Event::Copy
+                | egui::Event::Cut
+                | egui::Event::Paste(_)
+                | egui::Event::PasteImage(_) => {
+                    Some(Command::CaptureKey(Err(Refusal::TextEditing)))
+                }
+                _ => pressed_key(event).map(|(key, mods)| {
+                    if key == egui::Key::Escape {
+                        Command::CancelKeyCapture
+                    } else {
+                        Command::CaptureKey(Chord::from_event(key, mods))
+                    }
+                }),
+            })
+        });
+    }
+    if !escape {
+        return None;
+    }
+    if session.keys.conflict.is_some() {
+        return Some(Command::ResolveKeyConflict { replace: false });
+    }
+    let filter = egui::Id::unique(ui::ids::KEYS_FILTER);
+    // egui は Esc のフレームの先頭で入力位置を外す。検索中の1回目は欄を離れるだけ。
+    if ctx.memory(|m| m.has_focus(filter) || m.had_focus_last_frame(filter)) {
+        ctx.memory_mut(|m| m.surrender_focus(filter));
+        return None;
+    }
+    Some(Command::SetKeysOpen(false))
+}
+
+fn pressed_command(
+    ctx: &egui::Context,
+    session: &Session,
+    key: egui::Key,
+    mods: egui::Modifiers,
+) -> Option<Command> {
+    use egui::Key;
+    let arrow = match key {
+        Key::ArrowLeft => Some((Axis::X, -1)),
+        Key::ArrowRight => Some((Axis::X, 1)),
+        Key::ArrowDown => Some((Axis::Y, -1)),
+        Key::ArrowUp => Some((Axis::Y, 1)),
+        _ => None,
+    };
+    if (arrow.is_some() || matches!(key, Key::Enter | Key::Backspace | Key::Delete))
+        && ctx.memory(|m| m.focused().is_some())
+    {
+        return None;
+    }
+
+    let entering = session.key_entry().is_some();
+    let editing = tool_has_gizmo(session.tool) && session.selection.is_some();
+    if editing && mods.is_none() {
+        let axis = match key {
+            Key::X => Some(Axis::X),
+            Key::Y => Some(Axis::Y),
+            Key::Z => Some(Axis::Z),
+            _ => None,
+        };
+        if let Some(axis) = axis {
+            if session.edits_locked() || (session.transform.is_some() && !entering) {
+                return None;
+            }
+            ui::surrender_focus(ctx);
+            return Some(Command::BeginKeyTransform(axis));
+        }
+    }
+    if let Some((axis, sign)) = arrow {
+        if !(mods.is_none() || mods.shift_only()) || session.edits_locked() {
+            return None;
+        }
+        let fine = mods.shift;
+        if entering {
+            return Some(Command::KeyTransformInput(KeyInput::Step {
+                up: sign > 0,
+                fine,
+            }));
+        }
+        return (editing && session.tool == Tool::Move && session.transform.is_none())
+            .then_some(Command::Nudge { axis, sign, fine });
+    }
+    if entering {
+        if mods.any() {
+            return None;
+        }
+        let input = match key {
+            Key::Enter => return Some(Command::CommitTransform),
+            Key::Backspace => KeyInput::Backspace,
+            Key::Minus => KeyInput::Char('-'),
+            Key::Period => KeyInput::Char('.'),
+            _ => match key.name().as_bytes() {
+                [digit @ b'0'..=b'9'] => KeyInput::Char(char::from(*digit)),
+                _ => return None,
+            },
+        };
+        return Some(Command::KeyTransformInput(input));
+    }
+    if matches!(key, Key::Delete | Key::Backspace) {
+        return (mods.is_none() && session.selection.is_some()).then_some(Command::DeleteSelected);
+    }
+    let chord = Chord::from_event(key, mods).ok()?;
+    action_command(ctx, session, session.keymap.action_for(chord)?)
 }
 
 /// 操作を、同じ操作のボタンと同じ `Command` にする。押せない状態なら `None`。
@@ -390,43 +490,18 @@ fn escape_command(session: &crate::session::Session) -> Option<Command> {
     }
 }
 
-fn key_press(ctx: &egui::Context, wanted: egui::Key) -> Option<egui::Modifiers> {
-    ctx.input(|input| {
-        input.events.iter().find_map(|event| match event {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                repeat: false,
-                modifiers,
-                ..
-            } if *key == wanted => Some(*modifiers),
-            _ => None,
-        })
-    })
-}
-
-/// 押されたキー（押し続けを除く）を、届いた順に。
-fn key_presses(ctx: &egui::Context) -> Vec<(egui::Key, egui::Modifiers)> {
-    ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                } => Some((*key, *modifiers)),
-                _ => None,
-            })
-            .collect()
-    })
-}
-
-fn plain(modifiers: egui::Modifiers) -> bool {
-    !modifiers.command && !modifiers.ctrl && !modifiers.alt
+/// 割り当ての取り込みも変形も、1回の押下につき1つだけ受け取る。
+fn pressed_key(event: &egui::Event) -> Option<(egui::Key, egui::Modifiers)> {
+    match event {
+        egui::Event::Key {
+            key,
+            modifiers,
+            pressed: true,
+            repeat: false,
+            ..
+        } => Some((*key, *modifiers)),
+        _ => None,
+    }
 }
 
 fn dropped_paths(ui: &egui::Ui) -> Vec<PathBuf> {

@@ -8,16 +8,23 @@ use std::sync::Arc;
 
 use eframe::egui;
 use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, wgpu};
+use model_reviewer::keymap::store::{Os, resolve_path};
 
 fn main() {
     install_logger();
-    let launch = match model_reviewer::parse_args(std::env::args_os()) {
+    let mut launch = match model_reviewer::parse_args(std::env::args_os()) {
         Ok(launch) => launch,
         Err(err) => {
             eprintln!("{err}");
             std::process::exit(2);
         }
     };
+    launch.keymap = resolve_path(
+        launch.keymap.as_deref(),
+        launch.script.is_some(),
+        Os::current(),
+        &|name| std::env::var_os(name),
+    );
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("model-reviewer")
         .with_inner_size([1280.0, 800.0])

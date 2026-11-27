@@ -21,6 +21,7 @@ fn input(tool: Tool) -> ToolRailInput {
         tool,
         has_model: true,
         edit_blocked: None,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     }
 }
 
@@ -182,6 +183,7 @@ fn without_a_model_only_select_works_and_tells_why() {
         tool: Tool::Select,
         has_model: false,
         edit_blocked: None,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     });
     harness.step();
     for (name, tool) in TOOLS {
@@ -207,6 +209,7 @@ fn blocked_editing_disables_edit_tools_and_shapes_with_the_reason() {
         tool: Tool::Shape,
         has_model: true,
         edit_blocked: Some(reason.to_owned()),
+        keys: model_reviewer::keymap::KeyLabels::default(),
     });
     harness.step();
     harness.step();
@@ -308,6 +311,7 @@ fn render_toolrail_for_visual_check() {
                 tool: Tool::Select,
                 has_model: false,
                 edit_blocked: None,
+                keys: model_reviewer::keymap::KeyLabels::default(),
             },
             Some(ids::TOOL_ROTATE),
         ),

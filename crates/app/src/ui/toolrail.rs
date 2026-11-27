@@ -13,6 +13,7 @@ use model_reviewer_core::gizmo::Tool;
 use model_reviewer_core::shapes::{ShapeKind, name_ja};
 
 use crate::command::Command;
+use crate::keymap::KeyLabels;
 use crate::theme;
 
 use super::ids;
@@ -31,6 +32,8 @@ pub struct ToolRailInput {
     pub has_model: bool,
     /// 編集できない理由（読み込み中・書き出し中など）。`Some` の間、編集の道具と図形を無効にする。
     pub edit_blocked: Option<String>,
+    /// 今のキーの文字（説明の文と道具の列の1文字に使う。WP-V1 がつなぐ）。
+    pub keys: KeyLabels,
 }
 
 struct ToolDef {

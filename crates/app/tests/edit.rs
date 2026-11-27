@@ -138,7 +138,7 @@ fn drag_handle(harness: &mut Harness<Session>, name: &str, delta: egui::Vec2, es
 
 fn select_arm_with_move(harness: &mut Harness<Session>) {
     harness.state_mut().apply(Command::Select(Some(ARM)));
-    // 1文字のキーは、ポインタがパネルの上にあると働かない（第1段階の約束）。
+    // このあとのハンドルのドラッグに合わせて、ポインタを3Dビューに置いてから押す。
     let view = rect_of(harness, ids::VIEWPORT).center();
     harness.event(egui::Event::PointerMoved(view));
     harness.step();
@@ -513,6 +513,7 @@ fn shape_buttons_are_disabled_without_a_model() {
         tool: Tool::Shape,
         has_model: false,
         edit_blocked: None,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     };
     assert_eq!(
         model_reviewer::ui::toolrail::shape_disabled_reason(&input).as_deref(),

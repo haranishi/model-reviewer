@@ -6,9 +6,10 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::automation::Automation;
-use crate::command::{Command, DisplayMode, LaunchArgs, Tool, ViewDir};
+use crate::command::{Command, DisplayMode, LaunchArgs, ShapeKind, Tool, ViewDir};
 use crate::fonts;
 use crate::gpu_view::GpuView;
+use crate::keymap::{Action, Chord};
 use crate::metrics::{self, Counts, FrameClock};
 use crate::session::Session;
 use crate::theme;
@@ -174,10 +175,16 @@ pub(crate) fn help_open(ctx: &egui::Context) -> bool {
     })
 }
 
-/// Esc はここでだけ振り分ける。ダイアログ中は閉じる・やめるだけ。
-/// 入力欄に文字を打っている間は、下書きの取り消しか入力欄を離れるだけ。
-/// それ以外は、変形の取り消し、下書き、選択以外の道具から選択への復帰、選択の解除の順で
-/// 1回に1つ（要件5.5）。
+/// キーの出来事を読むのはここだけ。順は「ダイアログ → ヘルプ → 設定の画面 → Esc → 入力中なら
+/// 終わり → 固定のキー（Delete・Backspace）→ 表」（design-keymap.md）。
+///
+/// Esc は、ダイアログ中は閉じる・やめるだけ。入力欄に文字を打っている間は、下書きの取り消しか
+/// 入力欄を離れるだけ。それ以外は、変形の取り消し、下書き、選択以外の道具から選択への復帰、
+/// 選択の解除の順で1回に1つ（要件5.5）。
+///
+/// 表のキーは、ポインタの場所（3Dビュー・一覧・ボタン・パネル）によらず働く（要件2.5）。入力欄で
+/// ない部品が入力の位置を持っている間だけ、Delete・Backspace・矢印・Enter を捨てる。1フレームに
+/// 複数のキーが届いたら、届いた順に積む。
 pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session) -> Vec<Command> {
     if let Some(dialog) = &session.dialog {
         if key_press(ctx, egui::Key::Escape).is_some() {
@@ -188,6 +195,13 @@ pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session)
     if help_open(ctx) {
         if key_press(ctx, egui::Key::Escape).is_some() {
             ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), false));
+        }
+        return Vec::new();
+    }
+    if session.keys.open {
+        // 取り込みと検索の欄の Esc は WP-J1 が足す。割り当てた操作は働かせない。
+        if key_press(ctx, egui::Key::Escape).is_some() {
+            return vec![Command::SetKeysOpen(false)];
         }
         return Vec::new();
     }
@@ -208,136 +222,130 @@ pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session)
         }
         return escape_command(session).into_iter().collect();
     }
-    let over_panel = ctx.is_pointer_over_egui() && !ui::viewport::pointer_on_viewport(ctx);
     if typing {
         return Vec::new();
     }
+    // 入力欄でない部品（一覧の行やボタン）が入力の位置を持っている。Tab で移っている人の操作を奪わない。
+    let widget_focused = ctx.memory(|memory| memory.focused()).is_some();
     let mut out = Vec::new();
-    // 新規作成（Windows と Linux では Ctrl+N）。ポインタの場所によらず働かせる（要件1.2）ので、
-    // 「パネルの上」の確かめの前に置く。N だけの注釈の切り替えとは修飾で分かれる。
-    if let Some(modifiers) = key_press(ctx, egui::Key::N)
-        && modifiers.command
-        && !modifiers.alt
-        && !modifiers.shift
-    {
-        out.push(Command::NewDocument);
-    }
-    if over_panel {
-        return out;
-    }
-    // 取り消しとやり直し（Windows と Linux では Ctrl）。入力欄の中の Cmd+Z は文字の取り消しなので、
-    // 上の「入力中」で先に返している。
-    if let Some(modifiers) = key_press(ctx, egui::Key::Z)
-        && modifiers.command
-        && !modifiers.alt
-    {
-        out.push(if modifiers.shift {
-            Command::Redo
-        } else {
-            Command::Undo
-        });
-    }
-    // 複製（Cmd+D）と削除（Delete・Backspace）。部品を選んでいるときだけ。
-    if session.selection.is_some() {
-        if let Some(modifiers) = key_press(ctx, egui::Key::D)
-            && modifiers.command
-            && !modifiers.alt
-            && !modifiers.shift
-        {
-            out.push(Command::DuplicateSelected);
+    let mut deleted = false;
+    for (key, modifiers) in key_presses(ctx) {
+        match key {
+            // 削除は固定のキー。部品を選んでいるときだけ、1フレームに1回。
+            egui::Key::Delete | egui::Key::Backspace => {
+                if !widget_focused
+                    && !deleted
+                    && session.selection.is_some()
+                    && plain(modifiers)
+                    && !modifiers.shift
+                {
+                    out.push(Command::DeleteSelected);
+                    deleted = true;
+                }
+                continue;
+            }
+            // 矢印と Enter は、いまは何もしない（キーで動かす分は WP-J1 が足す）。
+            egui::Key::Enter
+            | egui::Key::ArrowLeft
+            | egui::Key::ArrowRight
+            | egui::Key::ArrowUp
+            | egui::Key::ArrowDown => continue,
+            _ => {}
         }
-        if [egui::Key::Delete, egui::Key::Backspace]
-            .into_iter()
-            .filter_map(|key| key_press(ctx, key))
-            .any(|modifiers| plain(modifiers) && !modifiers.shift)
-        {
-            out.push(Command::DeleteSelected);
-        }
-    }
-    for (key, tool) in [
-        (egui::Key::V, Tool::Select),
-        (egui::Key::G, Tool::Move),
-        (egui::Key::R, Tool::Rotate),
-        (egui::Key::S, Tool::Scale),
-        (egui::Key::M, Tool::Measure),
-    ] {
-        if let Some(modifiers) = key_press(ctx, key)
-            && plain(modifiers)
-            && !modifiers.shift
-            && session.tool != tool
-        {
-            out.push(Command::SetTool(tool));
-        }
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::A)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::FitAll);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::F)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::FitSelection);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::Home)
-        && plain(modifiers)
-    {
-        out.push(Command::Home);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::H)
-        && plain(modifiers)
-    {
-        if modifiers.shift {
-            out.push(Command::ShowAll);
-        } else {
-            out.push(Command::HideSelected);
-        }
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::N)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::SetAnnotateMode(!session.annotate_mode));
-    }
-    // 数字は文字キーの段（テンキーは使わない）。
-    for (key, command) in [
-        (egui::Key::Num1, Command::SnapView(ViewDir::Front)),
-        (egui::Key::Num3, Command::SnapView(ViewDir::Right)),
-        (egui::Key::Num7, Command::SnapView(ViewDir::Top)),
-        (egui::Key::Num5, Command::ToggleProjection),
-    ] {
-        if let Some(modifiers) = key_press(ctx, key)
-            && plain(modifiers)
-            && !modifiers.shift
-        {
+        let Ok(chord) = Chord::from_event(key, modifiers) else {
+            continue;
+        };
+        let Some(action) = session.keymap.action_for(chord) else {
+            continue;
+        };
+        if let Some(command) = action_command(ctx, session, action) {
             out.push(command);
         }
     }
-    // 吸着（X）と断面（C）。修飾つき（Cmd+X・Cmd+C）は切り取りとコピーなので受けない。
-    if let Some(modifiers) = key_press(ctx, egui::Key::X)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::ToggleSnap);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::C)
-        && plain(modifiers)
-        && !modifiers.shift
-        && session.model.is_some()
-    {
-        out.push(Command::ToggleSection);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::Z)
-        && plain(modifiers)
-    {
-        out.push(Command::SetDisplay(toggled_display(
-            session.display,
-            modifiers.shift,
-        )));
-    }
     out
+}
+
+/// 操作を、同じ操作のボタンと同じ `Command` にする。押せない状態なら `None`。
+/// 第3段階からあるキーの条件は、そのときの分岐の条件を写している（既定のままなら働きが同じ）。
+/// 足した操作の条件は、ボタンの側の条件と同じ。
+fn action_command(
+    ctx: &egui::Context,
+    session: &crate::session::Session,
+    action: Action,
+) -> Option<Command> {
+    let has_model = session.model.is_some();
+    let exporting = session.is_exporting();
+    let can_edit = has_model && session.edit_block_reason().is_none();
+    // 道具の切り替え。変形の途中（数値の欄をドラッグしているときも含む）は断る。
+    let tool = |tool: Tool| {
+        (session.tool != tool && session.transform.is_none()).then_some(Command::SetTool(tool))
+    };
+    let shape = |kind: ShapeKind| can_edit.then_some(Command::AddShape(kind));
+    match action {
+        Action::FileNew => Some(Command::NewDocument),
+        Action::FileOpen => (!exporting).then_some(Command::OpenModelDialog),
+        Action::FileSaveReview => (has_model && !exporting).then_some(Command::SaveReviewDialog),
+        Action::FileLoadReview => (!exporting).then_some(Command::LoadReviewDialog),
+        Action::FileExport => {
+            (has_model && !session.edits_locked()).then_some(Command::ExportGlbDialog)
+        }
+        Action::EditUndo => Some(Command::Undo),
+        Action::EditRedo => Some(Command::Redo),
+        Action::EditDuplicate => session
+            .selection
+            .is_some()
+            .then_some(Command::DuplicateSelected),
+        Action::ToolSelect => tool(Tool::Select),
+        Action::ToolMove => tool(Tool::Move),
+        Action::ToolRotate => tool(Tool::Rotate),
+        Action::ToolScale => tool(Tool::Scale),
+        Action::ToolMeasure => tool(Tool::Measure),
+        Action::ToolShape => tool(Tool::Shape).filter(|_| can_edit),
+        Action::ToolAnnotate => session
+            .transform
+            .is_none()
+            .then_some(Command::SetAnnotateMode(!session.annotate_mode)),
+        Action::ShapeCube => shape(ShapeKind::Cube),
+        Action::ShapeSphere => shape(ShapeKind::Sphere),
+        Action::ShapeCylinder => shape(ShapeKind::Cylinder),
+        Action::ShapePlane => shape(ShapeKind::Plane),
+        Action::MeasureSnap => Some(Command::ToggleSnap),
+        Action::MeasureClear => session
+            .measurement
+            .first
+            .is_some()
+            .then_some(Command::ClearMeasure),
+        Action::ViewFitAll => Some(Command::FitAll),
+        Action::ViewFitSelection => Some(Command::FitSelection),
+        Action::ViewHome => Some(Command::Home),
+        Action::ViewFront => Some(Command::SnapView(ViewDir::Front)),
+        Action::ViewRight => Some(Command::SnapView(ViewDir::Right)),
+        Action::ViewTop => Some(Command::SnapView(ViewDir::Top)),
+        Action::ViewBack => Some(Command::SnapView(ViewDir::Back)),
+        Action::ViewLeft => Some(Command::SnapView(ViewDir::Left)),
+        Action::ViewBottom => Some(Command::SnapView(ViewDir::Bottom)),
+        Action::ViewProjection => Some(Command::ToggleProjection),
+        Action::DisplayFacesLines => {
+            Some(Command::SetDisplay(toggled_display(session.display, false)))
+        }
+        Action::DisplayXray => Some(Command::SetDisplay(toggled_display(session.display, true))),
+        Action::DisplayFaces => (session.display != DisplayMode::Faces)
+            .then_some(Command::SetDisplay(DisplayMode::Faces)),
+        Action::DisplayLines => (session.lines_supported && session.display != DisplayMode::Lines)
+            .then_some(Command::SetDisplay(DisplayMode::Lines)),
+        Action::DisplayGrid => Some(Command::SetGrid(!session.grid_visible)),
+        // 断面はモデルがあるときだけ（第3段階の分岐と同じ）。
+        Action::DisplaySection => has_model.then_some(Command::ToggleSection),
+        Action::PartsHideSelected => Some(Command::HideSelected),
+        Action::PartsShowAll => Some(Command::ShowAll),
+        Action::UnitsDisplayNext => Some(Command::SetDisplayUnit(session.units.next_display())),
+        Action::AppHelp => {
+            // ヘルプは egui の一時の記憶で開く（ここへ来るのは閉じているときだけ）。
+            ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), true));
+            None
+        }
+        Action::AppKeys => Some(Command::SetKeysOpen(true)),
+    }
 }
 
 /// Z は面と「面と線」、Shift+Z は透かしの切り替え。どちらも、外すときは面へ戻す。
@@ -394,6 +402,26 @@ fn key_press(ctx: &egui::Context, wanted: egui::Key) -> Option<egui::Modifiers> 
             } if *key == wanted => Some(*modifiers),
             _ => None,
         })
+    })
+}
+
+/// 押されたキー（押し続けを除く）を、届いた順に。
+fn key_presses(ctx: &egui::Context) -> Vec<(egui::Key, egui::Modifiers)> {
+    ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+            .collect()
     })
 }
 

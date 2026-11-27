@@ -477,7 +477,7 @@ fn cmd_n_works_over_panels_but_not_while_typing() {
     harness.event(egui::Event::PointerMoved(panel.center()));
     harness.step();
     assert!(harness.ctx.is_pointer_over_egui());
-    // パネルの上では、1文字のキー（A の全体表示）は働かない。Cmd+N は働く。
+    // パネルの上でも、1文字のキー（A の全体表示）と Cmd+N が働く（第4段階の要件2.5 で変えた）。
     harness.event(egui::Event::Key {
         key: egui::Key::A,
         physical_key: None,
@@ -486,7 +486,7 @@ fn cmd_n_works_over_panels_but_not_while_typing() {
         modifiers: egui::Modifiers::NONE,
     });
     harness.step();
-    assert!(!seen.lock().unwrap().contains(&Command::FitAll));
+    assert!(seen.lock().unwrap().contains(&Command::FitAll));
     key_n(&mut harness);
     assert!(seen.lock().unwrap().contains(&Command::NewDocument));
     assert!(is_empty_new(harness.state()));

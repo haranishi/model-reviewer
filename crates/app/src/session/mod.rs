@@ -22,6 +22,8 @@ use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
 use crate::exporter::{self, ExportHandle, ExportHooks, ExportStage};
+use crate::keymap::store::Store;
+use crate::keymap::{KeyLabels, Keymap};
 use crate::loader::{self, LoadEvent, LoadHandle, LoadHooks, LoadOptions, LoadPhase, LoadedModel};
 use crate::metrics::Metrics;
 use crate::ui::ids;
@@ -30,6 +32,8 @@ mod camera;
 mod dims;
 mod edit;
 mod export;
+pub mod keymove;
+mod keys;
 mod measure;
 mod notes;
 mod open;
@@ -42,9 +46,11 @@ mod view;
 
 pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
-    GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
+    GIZMO_SIZE, KeyEntry, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits,
+    tool_has_gizmo,
 };
 pub use export::{NEW_EXPORT_NOTE, export_scene, note_ja, nothing_to_export, stl_export_note};
+pub use keys::{KeyConflict, KeysState};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
 pub use pick::ray_hit;
@@ -194,6 +200,14 @@ pub struct Session {
     home_on_resize: bool,
     upload_cpu: Duration,
     upload_frames: u64,
+    /// 操作とキーの表。割り当ての変更は履歴にも未保存の印にも入れない。
+    pub keymap: Keymap,
+    /// 画面のキーの文字。`keymap.rev()` が変わったときだけ作り直す。
+    pub key_labels: KeyLabels,
+    /// ショートカットの設定の画面の状態。
+    pub keys: KeysState,
+    /// 設定ファイルの持ち手。既定は場所の無いもの（読まない・書かない）。
+    pub store: Store,
 }
 
 impl Default for Session {
@@ -275,6 +289,10 @@ impl Default for Session {
             home_on_resize: false,
             upload_cpu: Duration::ZERO,
             upload_frames: 0,
+            keymap: Keymap::default(),
+            key_labels: KeyLabels::default(),
+            keys: KeysState::default(),
+            store: Store::none(),
         }
     }
 }
@@ -518,6 +536,19 @@ impl Session {
             Command::ToggleSection => section::toggle_section(self),
             Command::SetDisplayUnit(unit) => measure::set_display_unit(self, unit),
             Command::SetStlUnit(unit) => set_stl_unit(self, unit),
+            // 第4段階の分。中身は WP-J1（設定）と WP-K1（キーで動かす）が書く。
+            Command::SetKeysOpen(open) => keys::set_open(self, open),
+            Command::BeginKeyCapture(action) => keys::begin_capture(self, action),
+            Command::CancelKeyCapture => keys::cancel_capture(self),
+            Command::CaptureKey(key) => keys::capture(self, key),
+            Command::ResolveKeyConflict { replace } => keys::resolve_conflict(self, replace),
+            Command::ClearKey(action) => keys::clear(self, action),
+            Command::ResetKey(action) => keys::reset(self, action),
+            Command::ArmResetAllKeys(armed) => keys::arm_reset_all(self, armed),
+            Command::ResetAllKeys => keys::reset_all(self),
+            Command::BeginKeyTransform(axis) => keymove::begin(self, axis),
+            Command::KeyTransformInput(key) => keymove::input(self, key),
+            Command::Nudge { axis, sign, fine } => keymove::nudge(self, axis, sign, fine),
         }
     }
 

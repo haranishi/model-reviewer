@@ -113,3 +113,23 @@ pub const STATUS_DISPLAY_UNIT: &str = "status.display_unit";
 // ---- 第5段階 ----
 // 何も開いていない画面の［新規作成］（ui::empty）。
 pub const EMPTY_NEW: &str = "empty.new";
+
+// ---- 第4段階 ----
+// ショートカットの設定の画面（ui::keys）。行ごとの名前は `<前置き>.<操作の名前>`
+// （`keys.row.tool.move` など）。見えている行だけ登録する。
+pub const KEYS_FILTER: &str = "keys.filter";
+pub const KEYS_ROW: &str = "keys.row";
+pub const KEYS_CLEAR: &str = "keys.clear";
+pub const KEYS_RESET: &str = "keys.reset";
+pub const KEYS_CONFLICT_REPLACE: &str = "keys.conflict.replace";
+pub const KEYS_CONFLICT_CANCEL: &str = "keys.conflict.cancel";
+pub const KEYS_RESET_ALL: &str = "keys.reset_all";
+pub const KEYS_CLOSE: &str = "keys.close";
+// ヘルプの［ショートカットの設定］と［場所を写す］（ui::help）。
+pub const HELP_KEYS: &str = "help.keys";
+pub const HELP_GUIDE_COPY: &str = "help.guide_copy";
+
+/// 行ごとの部品の名前（`keys_row_id(KEYS_ROW, Action::ToolMove)` → `keys.row.tool.move`）。
+pub fn keys_row_id(prefix: &str, action: crate::keymap::Action) -> String {
+    format!("{prefix}.{}", action.id())
+}

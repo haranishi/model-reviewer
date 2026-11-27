@@ -21,6 +21,7 @@ fn input(lines_supported: bool) -> ViewBarInput {
         projection: Projection::Perspective,
         grid_visible: true,
         lines_supported,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     }
 }
 
@@ -143,6 +144,7 @@ fn pressing_buttons_pushes_commands() {
         projection: Projection::Orthographic,
         grid_visible: false,
         lines_supported: true,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     };
     harness.step();
     assert_eq!(
@@ -235,6 +237,7 @@ fn render_viewbar_for_visual_check() {
                 projection: Projection::Orthographic,
                 grid_visible: false,
                 lines_supported: true,
+                keys: model_reviewer::keymap::KeyLabels::default(),
             },
             None,
         ),

@@ -11,6 +11,7 @@ use model_reviewer_core::camera::Projection;
 use model_reviewer_render::DisplayMode;
 
 use crate::command::Command;
+use crate::keymap::KeyLabels;
 use crate::theme;
 
 use super::ids;
@@ -26,13 +27,15 @@ const BAND: f32 = 3.0;
 /// 組と組の間。
 const GROUP_GAP: f32 = 10.0;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ViewBarInput {
     pub display: DisplayMode,
     pub projection: Projection,
     pub grid_visible: bool,
     /// `SceneRenderer::supports_lines`。GPUが無いとき（試験）は偽。
     pub lines_supported: bool,
+    /// 今のキーの文字（説明の文に使う。WP-V1 がつなぐ）。
+    pub keys: KeyLabels,
 }
 
 /// [断面] を出さずに置く。

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use glam::Vec2;
 use model_reviewer_core::scene::NodeId;
 
+use crate::keymap::{Action, Chord, Refusal};
+
 pub use model_reviewer_core::camera::{Projection, ViewDir};
 pub use model_reviewer_core::gizmo::{Handle, Tool, Trs};
 pub use model_reviewer_core::section::{Axis, SectionPlane};
@@ -141,6 +143,53 @@ pub enum Command {
     /// 部品が0個の空の文書を開く。履歴と未保存の印には入らない（文書ごと入れ替える）。
     /// 未保存の変更があれば、別のモデルを開くときと同じ確認を通す。
     NewDocument,
+
+    // ---- 第4段階：ショートカットの設定（session/keys.rs）。どれも履歴と未保存の印に入らない ----
+    /// 設定の画面の開閉。開くときはヘルプを閉じる。閉じるときは取り込み・重なり・理由・
+    /// 「すべて初期値に戻す」の1回目を消す。
+    SetKeysOpen(bool),
+    /// 行のキーの部品を押した。次に届いたキーを取り込む。
+    BeginKeyCapture(Action),
+    /// 取り込み中の Esc。割り当ては変えない。
+    CancelKeyCapture,
+    /// 取り込み中に届いたキー。`Err` なら理由を出して取り込みを続ける。
+    CaptureKey(Result<Chord, Refusal>),
+    /// 重なりの確認の［置き換える］（`true`）と［やめる］（`false`）。
+    ResolveKeyConflict {
+        replace: bool,
+    },
+    /// ［外す］。
+    ClearKey(Action),
+    /// ［初期値に戻す］。
+    ResetKey(Action),
+    /// ［すべて初期値に戻す］の1回目（`true`）と、ほかを押したとき（`false`）。
+    ArmResetAllKeys(bool),
+    /// ［すべて初期値に戻す］の2回目。
+    ResetAllKeys,
+
+    // ---- 第4段階：キーで動かす（session/keymove.rs）。確定するまで履歴と未保存の印に入らない ----
+    /// 移動・回転・拡大の道具で、向きを固定して数値の入力を始める（途中なら軸だけ替える）。
+    BeginKeyTransform(Axis),
+    /// 数値の入力の途中のキー。
+    KeyTransformInput(KeyInput),
+    /// 矢印で格子1つぶん動かす（移動の道具）。`sign` は +1 か -1。`fine` は 10分の1。
+    Nudge {
+        axis: Axis,
+        sign: i8,
+        fine: bool,
+    },
+}
+
+/// 数値の入力の途中のキー。`Char` は 0〜9・'.'・'-' だけ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyInput {
+    Char(char),
+    Backspace,
+    /// 矢印。今の量に1歩を足す（`up`）か引く。`fine` は 10分の1。
+    Step {
+        up: bool,
+        fine: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +247,9 @@ pub struct LaunchArgs {
     pub script: Option<PathBuf>,
     pub out: Option<PathBuf>,
     pub log_metrics: bool,
+    /// `--keymap` の設定ファイル。場所を決めるのは実行ファイルの入口だけ（`App::new` は渡された
+    /// 場所しか読み書きしない）。
+    pub keymap: Option<PathBuf>,
 }
 
 pub fn is_review_path(path: &Path) -> bool {
@@ -206,7 +258,7 @@ pub fn is_review_path(path: &Path) -> bool {
 }
 
 pub fn usage() -> &'static str {
-    "使い方: model-reviewer [GLBまたはレビューJSON] [--script 手順.json] [--out 出力フォルダ] [--log-metrics]"
+    "使い方: model-reviewer [GLBまたはレビューJSON] [--script 手順.json] [--out 出力フォルダ] [--keymap 設定.json] [--log-metrics]"
 }
 
 pub fn parse_args<I, S>(args: I) -> Result<LaunchArgs, String>
@@ -223,6 +275,7 @@ where
         script: None,
         out: None,
         log_metrics: false,
+        keymap: None,
     };
     while let Some(arg) = iter.next() {
         let os = arg.as_ref();
@@ -231,6 +284,8 @@ where
             launch.script = Some(next_path(&mut iter, "--script")?);
         } else if text == "--out" {
             launch.out = Some(next_path(&mut iter, "--out")?);
+        } else if text == "--keymap" {
+            launch.keymap = Some(next_path(&mut iter, "--keymap")?);
         } else if text == "--log-metrics" {
             launch.log_metrics = true;
         } else if text.starts_with('-') {
@@ -296,5 +351,19 @@ mod tests {
         assert!(extra.contains("1つ"));
         let missing = parse_args(["model-reviewer", "--script"]).unwrap_err();
         assert!(missing.contains("--script"));
+    }
+
+    #[test]
+    fn keymap_flag_is_parsed() {
+        let args = parse_args(["model-reviewer", "--keymap", "keys/keymap.json", "a.glb"]).unwrap();
+        assert_eq!(args.keymap.unwrap(), Path::new("keys/keymap.json"));
+        assert_eq!(args.positional.unwrap(), Path::new("a.glb"));
+        let none = parse_args(["model-reviewer", "a.glb"]).unwrap();
+        assert_eq!(none.keymap, None);
+        let missing = parse_args(["model-reviewer", "--keymap"]).unwrap_err();
+        assert!(missing.contains("--keymap"));
+        let flag = parse_args(["model-reviewer", "--keymap", "--script"]).unwrap_err();
+        assert!(flag.contains("--keymap"));
+        assert!(super::usage().contains("--keymap"));
     }
 }

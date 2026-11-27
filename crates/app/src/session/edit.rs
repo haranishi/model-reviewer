@@ -38,6 +38,15 @@ pub enum TransformSource {
     Gizmo(Drag),
     /// 数値の欄のドラッグ。
     Field,
+    /// キーで向きを固定し、数値を打っている途中（要件11）。
+    Keys(KeyEntry),
+}
+
+/// キーで打っている途中の量。`text` は「-12.5」など。空もある。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyEntry {
+    pub handle: Handle,
+    pub text: String,
 }
 
 /// 変形中の状態。文書はまだ書き換えていない。
@@ -54,11 +63,12 @@ pub struct Transform {
 }
 
 impl Transform {
-    /// 掴んでいるハンドル。数値の欄なら `None`。
+    /// 掴んでいるハンドル（キーで向きを固定しているときは、その向きのハンドル）。数値の欄なら `None`。
     pub fn handle(&self) -> Option<Handle> {
         match &self.source {
             TransformSource::Gizmo(drag) => Some(drag.handle()),
             TransformSource::Field => None,
+            TransformSource::Keys(entry) => Some(entry.handle),
         }
     }
 }

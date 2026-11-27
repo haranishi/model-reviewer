@@ -575,6 +575,16 @@ pub fn apply_world_delta(
     local.is_finite().then_some(local)
 }
 
+/// 軸に沿った量から、ワールドでの差分の行列を作る。`axes` と `pivot` は `GizmoFrame` と同じもの。
+/// 移動は距離（シーンの単位）、回転は度、拡大は倍率。有限でない量と、0 以下の倍率は `None`。
+/// `ScaleAll` は `None`。カメラは使わない（視線と軸が平行でも値が出る）。
+///
+/// いまは形だけを置いている（WP-K1 が中身を書く）。常に `None`。
+pub fn key_delta(handle: Handle, pivot: Vec3, axes: [Vec3; 3], value: f32) -> Option<DragState> {
+    let _ = (handle, pivot, axes, value);
+    None
+}
+
 /// 位置・回転・大きさ。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trs {

@@ -17,6 +17,7 @@ pub mod gizmo_view;
 pub mod help;
 pub mod ids;
 pub mod inspector;
+pub mod keys;
 pub mod measure_panel;
 pub mod measure_view;
 pub mod overlay;

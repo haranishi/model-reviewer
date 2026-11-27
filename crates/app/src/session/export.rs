@@ -20,7 +20,8 @@ use crate::exporter::{self, ExportDone, ExportEvent, ExportFailure, ExportReques
 use crate::metrics;
 use crate::ui::ids;
 
-use super::{ExportJob, Session, failure_dialog};
+use super::{ExportJob, Session, SourceKind, failure_dialog};
+use model_reviewer_core::units::UnitLabel;
 
 /// 文書の現在の状態から、書き出しスレッドへ渡す部品の表の写しを作る。
 pub fn export_scene(doc: &Document) -> ExportScene {
@@ -47,6 +48,31 @@ pub fn export_scene(doc: &Document) -> ExportScene {
     }
 }
 
+/// 書き出しの土台の種類。STL なら、開いたときの単位と部品の名前で読み直して合成する。
+fn export_base(session: &Session) -> exporter::ExportBase {
+    match session.source_kind {
+        SourceKind::Glb => exporter::ExportBase::File,
+        SourceKind::Stl { unit } => exporter::ExportBase::Stl {
+            unit,
+            name: session
+                .model
+                .as_ref()
+                .and_then(|model| model.nodes.first())
+                .map(|node| node.name.clone())
+                .unwrap_or_default(),
+        },
+    }
+}
+
+/// STL から書き出したときに結果の一覧へ足す1行（要件8.2）。
+pub fn stl_export_note(unit: UnitLabel) -> String {
+    format!(
+        "STL から GLB を作りました。座標の値は元のまま（{}）で、部品の大きさ {} でメートルに合わせています",
+        unit.suffix(),
+        unit.meters()
+    )
+}
+
 pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     if session.is_exporting() {
         session.status_text = "すでに書き出し中です".to_owned();
@@ -70,7 +96,7 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         target: path,
         scene: export_scene(doc),
         forbidden: session.opened_files.clone(),
-        base_kind: exporter::ExportBase::File,
+        base_kind: export_base(session),
     };
     session.export_error = None;
     session.export_failed = false;
@@ -167,12 +193,19 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         (a, b) => a.or(b),
     };
 
+    // STL から書き出すと、次からは新しい GLB が土台になる。シーンは最初からメートルなので、
+    // 単位（前提と表示）は変えない（数値が動かない）。
+    let mut lines: Vec<String> = done.notes.iter().map(note_ja).collect();
+    if let SourceKind::Stl { unit } = session.source_kind {
+        lines.push(stl_export_note(unit));
+        session.source_kind = SourceKind::Glb;
+    }
     session.mark_doc_exported();
     session.status_text = format!("書き出しました（作業の対象を {file_name} へ切り替えました）");
-    if done.notes.is_empty() {
+    if lines.is_empty() {
         session.dialog = None;
     } else {
-        session.dialog = Some(result_dialog(&file_name, &done.notes));
+        session.dialog = Some(result_dialog(&file_name, &lines));
     }
 }
 
@@ -211,11 +244,8 @@ pub fn note_ja(note: &ExportNote) -> String {
     }
 }
 
-fn result_dialog(file_name: &str, notes: &[ExportNote]) -> DialogRequest {
-    let lines: Vec<String> = notes
-        .iter()
-        .map(|note| format!("・{}", note_ja(note)))
-        .collect();
+fn result_dialog(file_name: &str, notes: &[String]) -> DialogRequest {
+    let lines: Vec<String> = notes.iter().map(|note| format!("・{note}")).collect();
     DialogRequest {
         title: "書き出しました".to_owned(),
         body: format!(

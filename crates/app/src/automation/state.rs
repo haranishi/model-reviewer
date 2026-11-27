@@ -114,6 +114,14 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "offset": f64::from(plane.offset),
             "flipped": plane.flipped,
         })),
+        // 開いているモデルの元の形式（`glb` か `stl`。STL から書き出した後は `glb`）。
+        "source_kind": match session.source_kind {
+            crate::session::SourceKind::Glb => "glb",
+            crate::session::SourceKind::Stl { .. } => "stl",
+        },
+        // 選んだ部品の外形と寸法（シーンの単位）。`selection` は第2段階からの番号の項目なので、
+        // 意味を変えずに別の項目にした。
+        "selection_dims": crate::session::selection_dims(session).map(|view| dims_json(&view)),
         "triangles": session.placed_triangles(),
         "grid": {
             "visible": session.grid_visible,
@@ -124,6 +132,30 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
 
 /// 状態の比較で見ない項目。履歴は開き直すと空になる（保存されるものではない）。
 pub(in crate::automation) const NOT_COMPARED: [&str; 1] = ["history"];
+
+fn dims_json(view: &crate::session::DimsView) -> Value {
+    use model_reviewer_core::shapes::Dims;
+    let dims = view
+        .shape
+        .and_then(|shape| shape.dims)
+        .map(|dims| match dims {
+            Dims::Cube { x, y, z } => {
+                json!({ "kind": "cube", "x": f64::from(x), "y": f64::from(y), "z": f64::from(z) })
+            }
+            Dims::Sphere { d } => json!({ "kind": "sphere", "d": f64::from(d) }),
+            Dims::Cylinder { d, h } => {
+                json!({ "kind": "cylinder", "d": f64::from(d), "h": f64::from(h) })
+            }
+            Dims::Plane { x, z } => {
+                json!({ "kind": "plane", "x": f64::from(x), "z": f64::from(z) })
+            }
+        });
+    json!({
+        "extent": view.extent.map(|e| [f64::from(e[0]), f64::from(e[1]), f64::from(e[2])]),
+        "editable": view.shape.is_some_and(|shape| shape.dims.is_some() && shape.blocked.is_none()),
+        "dims": dims,
+    })
+}
 
 /// 置いた点の種類（置いた数だけ）。
 fn measure_kinds(session: &Session) -> Vec<&'static str> {

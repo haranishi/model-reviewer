@@ -6,6 +6,7 @@
 //! 欄の持ち方は `ui::inspector` と同じ（文書の版を鍵にした一時メモリ、文字の入力は欄を離れた
 //! フレームで確定、`has_focus` を使わない）。受け付けない値は欄を元へ戻し、欄の下に理由を出す。
 
+use model_reviewer_core::doc::NodeKey;
 use model_reviewer_core::gizmo::Trs;
 use model_reviewer_core::shapes::{DIM_MAX, DIM_MIN, Dims, ShapeKind, ShapeSpec, scale_for};
 use model_reviewer_core::units::Units;
@@ -88,7 +89,7 @@ pub fn reject_reason(scene_value: f32) -> Option<&'static str> {
 /// 一時メモリ。鍵が変われば捨てる。
 #[derive(Clone, Debug, PartialEq)]
 struct Memory {
-    key: (u64, u8, u32),
+    key: (Option<NodeKey>, u64, u8, u32),
     /// 欄の値（表示の単位）。
     values: Vec<f64>,
     previewing: bool,
@@ -143,8 +144,11 @@ pub fn show(ui: &mut egui::Ui, view: &DimsView, out: &mut Vec<Command>) {
         .iter()
         .map(|v| f64::from(units.to_display(*v)))
         .collect();
-    let id = ui.scope_id().with("dims");
+    // 欄の一時メモリと egui の入力位置を、部品ごとに分ける。分けないと、選択を替えたときに
+    // 前の部品へ打ちかけた文字が、同じ場所に出た次の部品の欄に残り、離れたときに当てはまる。
+    let id = ui.scope_id().with("dims").with(view.node);
     let key = (
+        view.node,
         view.doc_rev,
         kind_code(shape.spec.kind),
         shape.spec.size.to_bits(),
@@ -171,16 +175,19 @@ pub fn show(ui: &mut egui::Ui, view: &DimsView, out: &mut Vec<Command>) {
         base: &base,
         escape,
     };
-    egui::Grid::new(id.with("grid"))
-        .num_columns(2)
-        .spacing(egui::vec2(10.0, 6.0))
-        .show(ui, |ui| {
-            for (index, (name, label)) in fields_of(shape.spec.kind).iter().enumerate() {
-                ui.label(*label);
-                field(ui, &mut memory, &context, index, name, label, out);
-                ui.end_row();
-            }
-        });
+    // 欄の名前（egui の入力位置の鍵）は並びの位置から作られるので、部品ごとの鍵の下に置く。
+    ui.push_id(id, |ui| {
+        egui::Grid::new(id.with("grid"))
+            .num_columns(2)
+            .spacing(egui::vec2(10.0, 6.0))
+            .show(ui, |ui| {
+                for (index, (name, label)) in fields_of(shape.spec.kind).iter().enumerate() {
+                    ui.label(*label);
+                    field(ui, &mut memory, &context, index, name, label, out);
+                    ui.end_row();
+                }
+            });
+    });
     if let Some(error) = memory.error {
         ui.label(egui::RichText::new(error).color(theme::ERROR));
     }

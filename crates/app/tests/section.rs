@@ -406,3 +406,39 @@ fn dragging_the_arrow_moves_the_plane() {
     );
     assert!(harness.state().history.is_empty());
 }
+
+#[test]
+fn section_range_is_the_visible_whole() {
+    let mut session = support::session();
+    // 手前（z = 1〜3）を隠すと、見えている全体は奥（z = −3〜−1）だけ。
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let bounds = model_reviewer::session::section_bounds(&session).expect("範囲");
+    assert!(support::close3(bounds.min, Vec3::new(-1.0, -1.0, -3.0)));
+    assert!(support::close3(bounds.max, Vec3::new(1.0, 1.0, -1.0)));
+    // 入れると、見えている全体の中央（z = −2）から始まる。
+    session.apply(Command::ToggleSection);
+    let plane = session.section.expect("断面");
+    assert_eq!(plane.axis, Axis::Z);
+    assert!(
+        support::near(plane.offset, FAR_CENTER.z),
+        "{}",
+        plane.offset
+    );
+    // 位置は見えている全体に収める（隠した手前の中は指せない）。
+    session.apply(Command::SetSection(Some(SectionPlane {
+        offset: NEAR_CENTER.z,
+        ..plane
+    })));
+    assert!(support::near(session.section.unwrap().offset, -1.0));
+    // 全部を隠したときは、全体の箱を使う（断面を入れられなくはならない）。
+    session.apply(Command::SetVisible {
+        node: NodeId(1),
+        visible: false,
+    });
+    let all = model_reviewer::session::section_bounds(&session).unwrap();
+    assert!(support::close3(all.min, Vec3::new(-1.0, -1.0, -3.0)));
+    assert!(support::close3(all.max, Vec3::new(1.0, 1.0, 3.0)));
+}

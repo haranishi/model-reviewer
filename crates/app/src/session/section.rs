@@ -6,14 +6,32 @@
 //! 位置は置くたびに、いまの文書の境界箱へ収める（編集で箱が変わっても、勝手には動かさない）。
 
 use model_reviewer_core::math::Aabb;
-use model_reviewer_core::scene::SceneRead;
+use model_reviewer_core::scene::{NodeId, SceneRead};
 use model_reviewer_core::section::{Axis, SectionPlane};
 
 use super::Session;
 
-/// 断面の位置を収める範囲（見えている全体の境界箱）。モデルが無ければ `None`。
+/// 断面の位置を収める範囲（見えている全体の境界箱。要件3.1・3.3）。隠した部品は含めない。
+/// 全部を隠しているときは、全体の境界箱にする（断面を入れられなくならないように）。
+/// モデルが無ければ `None`。
 pub fn section_bounds(session: &Session) -> Option<Aabb> {
-    session.doc.as_ref().map(|doc| doc.bounds())
+    let doc = session.doc.as_ref()?;
+    let Some(review) = session.review.as_ref() else {
+        return Some(doc.bounds());
+    };
+    let visible = doc
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| review.visibility.effective(NodeId(*index as u32)))
+        .fold(Aabb::empty(), |bounds, (_, node)| {
+            bounds.union(node.world_aabb)
+        });
+    Some(if visible.is_empty() {
+        doc.bounds()
+    } else {
+        visible
+    })
 }
 
 /// 断面を置く（`None` で外す）。置く前に境界箱へ収める。

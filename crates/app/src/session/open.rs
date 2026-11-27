@@ -3,19 +3,19 @@
 use std::path::PathBuf;
 
 use crate::command::is_review_path;
-use crate::loader;
+use crate::loader::{self, LoadOptions};
 
 use super::{Pending, Session};
 
-pub(super) fn open_guarded(session: &mut Session, path: PathBuf) {
+pub(super) fn open_guarded(session: &mut Session, path: PathBuf, options: LoadOptions) {
     if session.is_exporting() {
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
-    if session.hold(Pending::OpenModel(path.clone())) {
+    if session.hold(Pending::OpenModel(path.clone(), options)) {
         return;
     }
-    open_model(session, path);
+    open_model(session, path, options);
 }
 
 pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
@@ -29,14 +29,14 @@ pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
     load_review(session, path);
 }
 
-pub fn open_model(session: &mut Session, path: PathBuf) {
+pub fn open_model(session: &mut Session, path: PathBuf, options: LoadOptions) {
     if session.is_exporting() {
         session.end_discard_bypass();
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
     session.restore = None;
-    session.start_model_load(path);
+    session.start_model_load(path, options);
 }
 
 pub fn load_review(session: &mut Session, path: PathBuf) {
@@ -57,7 +57,7 @@ pub fn dropped(session: &mut Session, paths: Vec<PathBuf>) {
         session.notice.clear();
     }
     if loader::file_starts_with_glb(&first) || !is_review_path(&first) {
-        open_guarded(session, first);
+        open_guarded(session, first, LoadOptions::default());
     } else {
         review_guarded(session, first);
     }
@@ -68,6 +68,6 @@ pub(super) fn open_launch(session: &mut Session, path: PathBuf) {
     if is_review_path(&path) && !loader::file_starts_with_glb(&path) {
         review_guarded(session, path);
     } else {
-        open_guarded(session, path);
+        open_guarded(session, path, LoadOptions::default());
     }
 }

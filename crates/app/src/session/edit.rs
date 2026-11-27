@@ -584,7 +584,7 @@ fn after_applied(session: &mut Session, applied: &Applied, from_history: bool) {
 }
 
 /// 図形を視点の注視点に置き、選択して移動の道具へ切り替える（要件9.1・9.2）。形状は
-/// `Document::add_primitive` で足し、取り消しても残す（モデルを閉じると消える）。
+/// `Document::add_shape_primitive` で足し、取り消しても残す（モデルを閉じると消える）。
 pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
     if session.block_edit_if_locked() {
         return;
@@ -600,7 +600,11 @@ pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
     }
     let started = Instant::now();
     let size = shapes::size_for(doc.bounds().radius());
-    let prim = doc.add_primitive(Arc::new(shapes::build(kind, size)));
+    // 作り方（種類と大きさ）を覚えておくと、右のパネルの「寸法」で直せる（要件9.1）。
+    let prim = doc.add_shape_primitive(
+        Arc::new(shapes::build(kind, size)),
+        shapes::ShapeSpec { kind, size },
+    );
     let local = Affine3A::from_translation(if target.is_finite() {
         target
     } else {

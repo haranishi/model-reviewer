@@ -13,7 +13,7 @@ mod app;
 #[cfg(target_os = "macos")]
 mod macos;
 
-pub use app::{App, shortcut_commands};
+pub use app::{App, export_file_name, shortcut_commands};
 pub use command::{
     Command, DialogButton, DialogRequest, LaunchArgs, PanelKind, SceneDirty, is_review_path,
     parse_args, usage,

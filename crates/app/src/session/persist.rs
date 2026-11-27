@@ -174,7 +174,19 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         }
     };
     let expected = identity_of(&file);
+    // STL は同じファイルでも単位の仮定が違えば部品の大きさが違う。レビューの単位（無ければ mm）と
+    // 開いている単位が違うときは、その場で当てはめず、レビューの単位で開き直す（要件8.5）。
+    let same_unit = match session.source_kind {
+        super::SourceKind::Glb => true,
+        super::SourceKind::Stl { unit } => {
+            file.model
+                .stl_unit
+                .unwrap_or(model_reviewer_core::units::UnitLabel::Mm)
+                == unit
+        }
+    };
     let same_loaded = session.model.is_some()
+        && same_unit
         && session
             .model_ref
             .as_ref()
@@ -367,8 +379,15 @@ fn apply_in_place(session: &mut Session, file: &ReviewFile) {
             // 足した図形の形状はGPUと当たり判定の索引に送ってある。番号をそろえるため、同じ順に
             // 引き継ぐ（部品は戻すが、形状の番号は作業の間ずっと同じ物を指す）。
             if let Some(old) = session.doc.as_ref() {
-                for prim in old.added_primitives() {
-                    doc.add_primitive(std::sync::Arc::clone(prim));
+                let base = old.base().primitives.len() as u32;
+                for (index, prim) in old.added_primitives().iter().enumerate() {
+                    let id = model_reviewer_core::scene::PrimId(base + index as u32);
+                    let prim = std::sync::Arc::clone(prim);
+                    // 図形の作り方の記録も引き継ぐ（同じ形状を指す部品の寸法を直せるように）。
+                    match old.shape_spec(id) {
+                        Some(spec) => doc.add_shape_primitive(prim, spec),
+                        None => doc.add_primitive(prim),
+                    };
                 }
             }
             doc

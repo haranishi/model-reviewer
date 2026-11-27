@@ -86,10 +86,11 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u3
     pixels
 }
 
-/// 右のパネル。上に部品の一覧、下に「変形」、計測の道具のときはその下に「計測」。
+/// 右のパネル。上から 部品の一覧 → 変形 → 寸法（部品を選んでいるとき）→ 計測（計測の道具のとき）。
 /// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
-    let below = transform_height(session) + measure_height(session);
+    let dims = crate::session::selection_dims(session);
+    let below = transform_height(session) + dims_height(dims.as_ref()) + measure_height(session);
     let list_h = (ui.available_height() - below).max(80.0);
     let width = ui.available_width();
     ui.allocate_ui(egui::vec2(width, list_h), |ui| {
@@ -97,12 +98,23 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
         tree::show(ui, session, out);
     });
     if session.model.is_some() {
-        ui.separator();
-        inspector::show(ui, &inspector_input(session), out);
-        if measuring(session) {
-            ui.separator();
-            measure_panel::show(ui, &measure_panel_input(session), out);
-        }
+        // 低い画面では下の欄が入りきらないことがある。状態欄に重ならないよう、残りの高さの中で
+        // 縦にスクロールさせる（入りきるときはスクロールの棒は出ない）。
+        egui::ScrollArea::vertical()
+            .id_salt("parts.below")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.separator();
+                inspector::show(ui, &inspector_input(session), out);
+                if let Some(view) = dims.as_ref() {
+                    ui.separator();
+                    dims::show(ui, view, out);
+                }
+                if measuring(session) {
+                    ui.separator();
+                    measure_panel::show(ui, &measure_panel_input(session), out);
+                }
+            });
     }
 }
 
@@ -133,6 +145,22 @@ pub fn measure_panel_input(session: &Session) -> measure_panel::MeasurePanelInpu
         kinds: session.measurement.kinds,
         units: session.units,
     }
+}
+
+/// 「寸法」に空ける高さ。見出しと外形の3行に、読み込んだ部品は説明の1行（狭い幅では2行に
+/// 折り返す）、足した図形は欄の行と理由の1行を足す。
+pub fn dims_height(view: Option<&crate::session::DimsView>) -> f32 {
+    let Some(view) = view else {
+        return 0.0;
+    };
+    let head = 8.0 + 20.0 + 3.0 * 22.0;
+    let tail = match view.shape {
+        Some(shape) if shape.dims.is_some() && shape.blocked.is_none() => {
+            dims::fields_of(shape.spec.kind).len() as f32 * 30.0 + 22.0
+        }
+        _ => 44.0,
+    };
+    head + tail
 }
 
 /// 一覧の下に空ける高さ（「変形」の見出しと、軸の名前・位置・回転・大きさの4行）。

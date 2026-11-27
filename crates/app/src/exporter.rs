@@ -2,6 +2,7 @@
 //!
 //! 約束:
 //! - 元のファイルを読み直し、大きさとハッシュが開いたときの値と同じことを確かめる（違えば書かない）。
+//!   土台が STL なら、照合の後に STL を読み、最小の GLB を合成して土台にする（STL は書き換えない）。
 //! - 保存先と同じフォルダの一時ファイルへ書き、`model_reviewer_gltf::export::verify` で照合してから
 //!   名前を付け替える。失敗したら一時ファイルを消し、保存先には何も残さない。
 //! - 「開く」で開いたファイル（`forbidden`）へは書き出さない（正規化したパスか同じファイルなら断る）。
@@ -21,8 +22,9 @@ use std::time::{Duration, Instant};
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::units::UnitLabel;
 use model_reviewer_gltf::export::{
-    ExportError, ExportNote, ExportScene, build, verify_locals, write_container,
+    ExportError, ExportNote, ExportScene, build, synthesize_base, verify_locals, write_container,
 };
+use model_reviewer_stl::{StlOptions, load_stl};
 
 use crate::loader;
 use crate::metrics;
@@ -285,6 +287,13 @@ fn run_export(
     if actual_identity != request.base_identity {
         return Err(ExportFailure::BaseChanged);
     }
+    // 土台が STL なら、読み直した STL から最小の GLB を作り、それを土台にする（要件8.1）。STL の
+    // バイト列は合成が終わったら手放す（土台のバイト列を常駐させない）。
+    let base_bytes = match &request.base_kind {
+        ExportBase::File => base_bytes,
+        ExportBase::Stl { unit, name } => synthesize_from_stl(&base_bytes, *unit, name)?,
+    };
+    sample_peak(&mut peak_mem);
     let read_time = started.elapsed();
     sample_peak(&mut peak_mem);
 
@@ -360,6 +369,25 @@ fn run_export(
         },
         peak_mem,
     })
+}
+
+/// STL のバイト列から、読み込みと同じ `Model` を作り直して最小の GLB にする。開いたときと同じ
+/// 名前と単位で読むので、部品0・描画0・形状0が文書と同じ物を指す（`synthesize_base` の約束）。
+fn synthesize_from_stl(
+    bytes: &[u8],
+    unit: UnitLabel,
+    name: &str,
+) -> Result<Vec<u8>, ExportFailure> {
+    let model = load_stl(
+        bytes,
+        &StlOptions {
+            name,
+            unit,
+            allow_trailing: true,
+        },
+    )
+    .map_err(|err| ExportFailure::Io(format!("元の STL を読めません（{}）", err.message_ja())))?;
+    synthesize_base(&model).map_err(ExportFailure::Export)
 }
 
 fn is_forbidden(candidate: &Path, forbidden: &[PathBuf]) -> bool {

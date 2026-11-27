@@ -15,6 +15,9 @@ use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::scene::Model;
 use model_reviewer_core::units::UnitLabel;
 use model_reviewer_gltf::{LoadError, load_glb};
+use model_reviewer_stl::{StlOptions, detect as detect_stl, load_stl};
+
+use crate::session::SourceKind;
 
 /// 画面に出す工程。割合を持つのはGPU転送だけ。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,6 +57,16 @@ pub struct LoadOptions {
     pub stl_unit: Option<UnitLabel>,
 }
 
+impl LoadOptions {
+    /// STL を開くときの単位の仮定（指定が無ければ mm。要件7.6・8.5）。
+    pub fn stl_unit_or_default(self) -> UnitLabel {
+        self.stl_unit.unwrap_or(UnitLabel::Mm)
+    }
+}
+
+/// GLB でも STL でもないファイルの知らせ（要件5.2）。
+pub const NEITHER_GLB_NOR_STL: &str = "GLB でも STL でもありません";
+
 /// 各工程の前に呼ぶ試験用の関数。本番は空。
 #[derive(Clone, Default)]
 pub struct LoadHooks {
@@ -67,6 +80,8 @@ pub(crate) struct LoadedModel {
     pub generation: u64,
     pub model: Arc<Model>,
     pub model_ref: ModelRef,
+    /// 元の形式（STL なら単位の仮定つき）。
+    pub source_kind: SourceKind,
     pub file_bytes: u64,
     pub read: Duration,
     pub identity: Duration,
@@ -117,6 +132,7 @@ pub(crate) fn spawn(
     generation: u64,
     path: PathBuf,
     expected_identity: Option<ModelIdentity>,
+    options: LoadOptions,
     hooks: LoadHooks,
     ctx: Option<egui::Context>,
 ) -> LoadHandle {
@@ -131,8 +147,11 @@ pub(crate) fn spawn(
             let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 load_thread(
                     generation,
-                    path,
-                    expected_identity,
+                    Request {
+                        path,
+                        expected_identity,
+                        options,
+                    },
                     hooks,
                     flag,
                     &sender,
@@ -164,15 +183,26 @@ pub(crate) fn spawn(
     LoadHandle { cancel, rx }
 }
 
-fn load_thread(
-    generation: u64,
+/// 読み込む物（読み込みのスレッドへ渡す）。
+struct Request {
     path: PathBuf,
     expected_identity: Option<ModelIdentity>,
+    options: LoadOptions,
+}
+
+fn load_thread(
+    generation: u64,
+    request: Request,
     hooks: LoadHooks,
     cancel: Arc<AtomicBool>,
     tx: &mpsc::Sender<LoadEvent>,
     ctx: &Option<egui::Context>,
 ) {
+    let Request {
+        path,
+        expected_identity,
+        options,
+    } = request;
     let cancelled = || cancel.load(Ordering::Acquire);
     let emit = |event: LoadEvent| -> bool {
         if tx.send(event).is_err() {
@@ -229,13 +259,24 @@ fn load_thread(
         return;
     }
 
-    if !is_glb(&bytes) {
-        let _ = emit(LoadEvent::Failed {
-            generation,
-            message: LoadError::NotGlb.message_ja(),
-        });
-        return;
-    }
+    // 形式は中身で決める（要件5.2）。`glTF` の印が無ければ STL として確かめる。拡張子が `.stl`
+    // なら、判定に通らなくても読んでみて、具体的な理由を出す（末尾の余りも警告にして読む）。
+    let format = if is_glb(&bytes) {
+        Format::Glb
+    } else {
+        let stl_extension = has_stl_extension(&path);
+        if stl_extension || detect_stl(&bytes, false).is_some() {
+            Format::Stl {
+                allow_trailing: stl_extension,
+            }
+        } else {
+            let _ = emit(LoadEvent::Failed {
+                generation,
+                message: NEITHER_GLB_NOR_STL.to_owned(),
+            });
+            return;
+        }
+    };
 
     call_hook(&hooks.before_parse);
     if !emit(LoadEvent::Stage {
@@ -245,26 +286,58 @@ fn load_thread(
         return;
     }
     let started = Instant::now();
-    let model = match load_glb(&bytes) {
-        Ok(model) => model,
-        Err(err) => {
-            log::error!("failed to parse model: {err}");
+    let parsed = match format {
+        Format::Glb => load_glb(&bytes)
+            .map(|model| (model, SourceKind::Glb))
+            .map_err(|err| {
+                log::error!("failed to parse model: {err}");
+                err.message_ja()
+            }),
+        Format::Stl { allow_trailing } => {
+            let unit = options.stl_unit_or_default();
+            let name = stl_part_name(&path);
+            load_stl(
+                &bytes,
+                &StlOptions {
+                    name: &name,
+                    unit,
+                    allow_trailing,
+                },
+            )
+            .map(|model| (model, SourceKind::Stl { unit }))
+            .map_err(|err| {
+                log::error!("failed to parse stl: {err}");
+                err.message_ja()
+            })
+        }
+    };
+    let (model, source_kind) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => {
             let _ = emit(LoadEvent::Failed {
                 generation,
-                message: err.message_ja(),
+                message,
             });
             return;
         }
     };
     let parse = started.elapsed();
-    // `load_glb` の途中では止められない。届いた結果は世代番号で捨てる。
+    // `load_glb`・`load_stl` の途中では止められない。届いた結果は世代番号で捨てる。
+    // 読んだバイト列はここで手放す（索引を作る間に常駐させない）。
+    let file_bytes = bytes.len() as u64;
+    drop(bytes);
     let model = Arc::new(model);
-    let model_ref = model_ref_for(&path, identity);
+    let stl_unit = match source_kind {
+        SourceKind::Glb => None,
+        SourceKind::Stl { unit } => Some(unit),
+    };
+    let model_ref = model_ref_for(&path, identity, stl_unit);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
         model_ref,
-        file_bytes: bytes.len() as u64,
+        source_kind,
+        file_bytes,
         read,
         identity: identity_elapsed,
         parse,
@@ -299,6 +372,27 @@ fn call_hook(hook: &Option<Arc<dyn Fn() + Send + Sync>>) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Format {
+    Glb,
+    Stl { allow_trailing: bool },
+}
+
+/// 拡張子が `.stl`（大文字小文字を問わない）か。
+pub fn has_stl_extension(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("stl"))
+}
+
+/// STL の部品の名前（ファイル名から拡張子を除いたもの）。空にはしない（空の名前は、書き出した
+/// GLB を開き直すと別の名前になる）。
+pub fn stl_part_name(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or_else(|| "STL".to_owned())
+}
+
 fn is_glb(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[..4] == b"glTF"
 }
@@ -321,7 +415,7 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
     }
 }
 
-fn model_ref_for(path: &Path, identity: ModelIdentity) -> ModelRef {
+fn model_ref_for(path: &Path, identity: ModelIdentity, stl_unit: Option<UnitLabel>) -> ModelRef {
     let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let file_name = absolute
         .file_name()
@@ -332,7 +426,7 @@ fn model_ref_for(path: &Path, identity: ModelIdentity) -> ModelRef {
         path: absolute.display().to_string(),
         relative_path: None,
         identity,
-        stl_unit: None,
+        stl_unit,
     }
 }
 

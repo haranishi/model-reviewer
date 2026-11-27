@@ -226,6 +226,19 @@ impl LoadWarning {
 }
 
 impl Model {
+    /// 部品・描画・形状が0個のモデル。新規の文書の形状の土台にする。範囲は空、数は 0、
+    /// 警告は無い。読み込み（`load_glb`）からは出てこない（メッシュの無いファイルは断る）。
+    pub fn empty() -> Model {
+        Model {
+            nodes: Vec::new(),
+            draws: Vec::new(),
+            primitives: Vec::new(),
+            bounds: Aabb::empty(),
+            stats: ModelStats::default(),
+            warnings: Vec::new(),
+        }
+    }
+
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
     }
@@ -357,6 +370,31 @@ mod tests {
             },
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn empty_model_makes_empty_document() {
+        use super::SceneRead;
+        use crate::doc::Document;
+
+        let model = Model::empty();
+        assert!(model.nodes.is_empty());
+        assert!(model.draws.is_empty());
+        assert!(model.primitives.is_empty());
+        assert!(model.bounds.is_empty());
+        assert_eq!(model.stats, ModelStats::default());
+        assert!(model.warnings.is_empty());
+        assert_eq!(model.node_count(), 0);
+        assert_eq!(model.primitive_count(), 0);
+        assert_eq!(model.node_by_gltf_index(0), None);
+
+        let model = std::sync::Arc::new(model);
+        let doc = Document::new(model.clone());
+        assert_eq!(doc.node_count(), 0);
+        assert_eq!(doc.primitive_count(), 0);
+        assert!(doc.bounds().is_empty());
+        assert_eq!(doc.find_file_index(0), None);
+        assert!(doc.shares_geometry_with(&model));
     }
 
     #[test]

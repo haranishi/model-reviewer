@@ -119,6 +119,17 @@ pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
     })
 }
 
+/// 書き出しの土台を組み立てる入口。ノードが0個のファイルで `NoMesh` になったときだけ、
+/// 空のモデルを返す（新規の文書の土台 `export::empty_base`）。ほかは `assemble` と同じ。
+/// `load_glb` はこれを使わない（メッシュの無いファイルを開く操作は、今までどおり断る）。
+pub(crate) fn assemble_base(opened: Opened<'_>) -> Result<Model, LoadError> {
+    let no_nodes = opened.document.as_json().nodes.is_empty();
+    match assemble(opened) {
+        Err(LoadError::NoMesh) if no_nodes => Ok(Model::empty()),
+        other => other,
+    }
+}
+
 struct Frame {
     index: usize,
     parent_world: Affine3A,

@@ -69,8 +69,9 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
         .into_iter()
         .map(|index| index as u32)
         .collect();
-    let model =
-        build::assemble(opened).map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
+    // ノードが0個の土台（新規の文書の `empty_base`）は、空のモデルを土台のモデルにする。
+    let model = build::assemble_base(opened)
+        .map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
     let mut loaded = vec![false; node_count];
     for node in &model.nodes {
         if let Some(flag) = loaded.get_mut(node.gltf_index as usize) {

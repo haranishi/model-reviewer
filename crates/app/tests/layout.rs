@@ -623,3 +623,117 @@ fn right_panel_dims_and_measure_fit_above_the_status_bar() {
         );
     }
 }
+
+/// ヘルプの下の [ショートカットの設定] と手順書の場所（第4段階の要件1.6）。幅960×600で表の下に
+/// 収まり、押すとヘルプを閉じて設定の画面を開く。[場所を写す] は手順書の場所を写す。
+#[test]
+fn help_offers_keys_and_guide_location_at_960() {
+    use egui_kittest::kittest::Queryable;
+    use model_reviewer::command::Command;
+    use model_reviewer::keymap::{Keymap, Platform};
+    use model_reviewer::ui::help;
+
+    struct Probe {
+        out: Vec<Command>,
+    }
+    let keys = Keymap::default().labels(Platform::Mac);
+    let mut harness = Harness::builder()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_size(egui::vec2(960.0, 600.0))
+        .with_context_setup(|ctx| {
+            model_reviewer::fonts::install(ctx);
+            help::toggle(ctx);
+        })
+        .build_ui_state(
+            move |ui, probe: &mut Probe| {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(egui::Id::NULL, WidgetFrame::default()));
+                help::show_with(ui, &keys, Platform::Mac, &mut probe.out);
+            },
+            Probe { out: Vec::new() },
+        );
+    let entries = |harness: &Harness<'static, Probe>| -> Vec<(String, egui::Rect)> {
+        harness
+            .ctx
+            .data(|data| data.get_temp::<WidgetFrame>(egui::Id::NULL))
+            .unwrap_or_default()
+            .entries()
+            .iter()
+            .map(|e| {
+                (
+                    e.name.clone(),
+                    egui::Rect::from_min_max(e.min.into(), e.max.into()),
+                )
+            })
+            .collect()
+    };
+    let mut last = Vec::new();
+    for _ in 0..300 {
+        harness.step();
+        let now = entries(&harness);
+        if now == last {
+            break;
+        }
+        last = now;
+    }
+    let rect = |name: &str| {
+        last.iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("部品が無い: {name}"))
+            .1
+    };
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 600.0));
+    let settings = rect(ids::HELP_KEYS);
+    let copy = rect(ids::HELP_GUIDE_COPY);
+    let close = rect(ids::HELP_CLOSE);
+    for r in [settings, copy, close] {
+        assert!(screen.contains_rect(r), "{r:?}");
+    }
+    assert!(settings.right() < copy.left(), "{settings:?} {copy:?}");
+    assert!(copy.bottom() <= close.top(), "{copy:?} {close:?}");
+    harness.get_by_label(&format!("手順書: {}", help::GUIDE_PATH));
+    // 表のキーは今の割り当てから。
+    harness.get_by_label("Cmd+Z ／ Shift+Cmd+Z");
+
+    let press = |harness: &mut Harness<'static, Probe>, at: egui::Pos2| {
+        harness.event(egui::Event::PointerMoved(at));
+        harness.step();
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            harness.step();
+        }
+    };
+    press(&mut harness, copy.center());
+    let url = help::guide_url().expect("Cargo.toml に repository がある");
+    assert!(url.ends_with("/blob/HEAD/docs/guide/README.md"), "{url}");
+    assert!(url.starts_with("https://"), "{url}");
+    // 写した文字は、押したフレーム（離したフレーム）の出力にある。
+    assert!(
+        harness
+            .output()
+            .platform_output
+            .commands
+            .contains(&egui::OutputCommand::CopyText(url.clone())),
+        "{:?}",
+        harness.output().platform_output.commands
+    );
+    assert!(
+        harness.state().out.is_empty(),
+        "写すだけで Command を積まない"
+    );
+
+    press(&mut harness, settings.center());
+    assert_eq!(harness.state().out, vec![Command::SetKeysOpen(true)]);
+    harness.step();
+    let open = harness.ctx.data(|data| {
+        data.get_temp::<bool>(egui::Id::unique(ids::HELP_OPEN))
+            .unwrap_or(false)
+    });
+    assert!(!open, "設定の画面を開くときはヘルプを閉じる");
+}

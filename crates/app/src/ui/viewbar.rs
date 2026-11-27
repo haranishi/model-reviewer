@@ -6,12 +6,13 @@
 //!
 //! 選ばれているボタンは、色だけでなく琥珀の帯と太字でも示す（`chip`。道具の列も使う）。
 //! 押せないボタンは薄く描き、触れると理由が出る。いま選ばれているボタンを押しても何も積まない。
+//! 説明の文のキーは、入力の `keys`（今の割り当て）から作る。
 
 use model_reviewer_core::camera::Projection;
 use model_reviewer_render::DisplayMode;
 
 use crate::command::Command;
-use crate::keymap::KeyLabels;
+use crate::keymap::{Action, KeyLabels};
 use crate::theme;
 
 use super::ids;
@@ -34,7 +35,7 @@ pub struct ViewBarInput {
     pub grid_visible: bool,
     /// `SceneRenderer::supports_lines`。GPUが無いとき（試験）は偽。
     pub lines_supported: bool,
-    /// 今のキーの文字（説明の文に使う。WP-V1 がつなぐ）。
+    /// 今のキーの文字（説明の文に使う）。
     pub keys: KeyLabels,
 }
 
@@ -60,32 +61,17 @@ pub fn show_with(
             // 狭い3Dビュー（幅960の画面で両側のパネルを開いたとき）では、組の途中で次の行へ送る。
             ui.horizontal_wrapped(|ui| {
                 let displays = [
-                    (
-                        DisplayMode::Faces,
-                        "面",
-                        ids::VIEW_DISPLAY_FACES,
-                        "面だけを描きます（Z で面と線を切り替え）",
-                    ),
+                    (DisplayMode::Faces, "面", ids::VIEW_DISPLAY_FACES),
                     (
                         DisplayMode::FacesAndLines,
                         "面と線",
                         ids::VIEW_DISPLAY_FACES_LINES,
-                        "面に三角形の辺を重ねます（Z）",
                     ),
-                    (
-                        DisplayMode::Lines,
-                        "線",
-                        ids::VIEW_DISPLAY_LINES,
-                        "三角形の辺だけを描きます",
-                    ),
-                    (
-                        DisplayMode::XRay,
-                        "透かし",
-                        ids::VIEW_DISPLAY_XRAY,
-                        "部品を半透明にして奥を見せます（Shift+Z）",
-                    ),
+                    (DisplayMode::Lines, "線", ids::VIEW_DISPLAY_LINES),
+                    (DisplayMode::XRay, "透かし", ids::VIEW_DISPLAY_XRAY),
                 ];
-                for (mode, label, id, hint) in displays {
+                for (mode, label, id) in displays {
+                    let hint = display_hint(mode, &input.keys);
                     let needs_lines =
                         matches!(mode, DisplayMode::FacesAndLines | DisplayMode::Lines);
                     let enabled = !needs_lines || input.lines_supported;
@@ -96,7 +82,7 @@ pub fn show_with(
                             selected: input.display == mode,
                             enabled,
                             reason: (!enabled).then_some(NO_LINES_REASON),
-                            hint,
+                            hint: &hint,
                             size: text_size(ui, label),
                             band: BandSide::Bottom,
                         },
@@ -113,16 +99,15 @@ pub fn show_with(
                         Projection::Perspective,
                         "透視",
                         ids::VIEW_PROJECTION_PERSPECTIVE,
-                        "遠くの物を小さく描きます（5 で切り替え）",
                     ),
                     (
                         Projection::Orthographic,
                         "平行",
                         ids::VIEW_PROJECTION_ORTHOGRAPHIC,
-                        "遠近のゆがみ無しで描きます（5 で切り替え）",
                     ),
                 ];
-                for (projection, label, id, hint) in projections {
+                for (projection, label, id) in projections {
+                    let hint = projection_hint(projection, &input.keys);
                     let response = chip(
                         ui,
                         &Chip {
@@ -130,7 +115,7 @@ pub fn show_with(
                             selected: input.projection == projection,
                             enabled: true,
                             reason: None,
-                            hint,
+                            hint: &hint,
                             size: text_size(ui, label),
                             band: BandSide::Bottom,
                         },
@@ -143,6 +128,7 @@ pub fn show_with(
                 }
                 ui.add_space(GROUP_GAP);
                 let label = "格子";
+                let hint = grid_hint(input.grid_visible, &input.keys);
                 let response = chip(
                     ui,
                     &Chip {
@@ -150,11 +136,7 @@ pub fn show_with(
                         selected: input.grid_visible,
                         enabled: true,
                         reason: None,
-                        hint: if input.grid_visible {
-                            "床の格子と軸を隠します"
-                        } else {
-                            "床の格子と軸を出します"
-                        },
+                        hint: &hint,
                         size: text_size(ui, label),
                         band: BandSide::Bottom,
                     },
@@ -167,6 +149,7 @@ pub fn show_with(
                 if let Some(on) = section {
                     ui.add_space(GROUP_GAP);
                     let label = "断面";
+                    let hint = section_hint(on, &input.keys);
                     let response = chip(
                         ui,
                         &Chip {
@@ -174,11 +157,7 @@ pub fn show_with(
                             selected: on,
                             enabled: true,
                             reason: None,
-                            hint: if on {
-                                "断面をやめて全体を表示します（C）"
-                            } else {
-                                "軸に垂直な面で切って中を見ます（C）"
-                            },
+                            hint: &hint,
                             size: text_size(ui, label),
                             band: BandSide::Bottom,
                         },
@@ -191,6 +170,65 @@ pub fn show_with(
                 }
             });
         });
+}
+
+/// `text` の後ろに、操作のキーを「（Z）」の形で足す。未割り当てなら何も足さない。
+fn with_key_suffix(text: &str, keys: &KeyLabels, action: Action) -> String {
+    match keys.get(action) {
+        Some(key) => format!("{text}（{key}）"),
+        None => text.to_owned(),
+    }
+}
+
+/// 表示のボタンの説明（「面だけを描きます（Z で面と線を切り替え）」）。
+pub fn display_hint(mode: DisplayMode, keys: &KeyLabels) -> String {
+    match mode {
+        DisplayMode::Faces => match keys.get(Action::DisplayFacesLines) {
+            Some(key) => format!("面だけを描きます（{key} で面と線を切り替え）"),
+            None => with_key_suffix("面だけを描きます", keys, Action::DisplayFaces),
+        },
+        DisplayMode::FacesAndLines => {
+            with_key_suffix("面に三角形の辺を重ねます", keys, Action::DisplayFacesLines)
+        }
+        DisplayMode::Lines => {
+            with_key_suffix("三角形の辺だけを描きます", keys, Action::DisplayLines)
+        }
+        DisplayMode::XRay => {
+            with_key_suffix("部品を半透明にして奥を見せます", keys, Action::DisplayXray)
+        }
+    }
+}
+
+/// 投影のボタンの説明（「遠くの物を小さく描きます（5 で切り替え）」）。
+pub fn projection_hint(projection: Projection, keys: &KeyLabels) -> String {
+    let text = match projection {
+        Projection::Perspective => "遠くの物を小さく描きます",
+        Projection::Orthographic => "遠近のゆがみ無しで描きます",
+    };
+    match keys.get(Action::ViewProjection) {
+        Some(key) => format!("{text}（{key} で切り替え）"),
+        None => text.to_owned(),
+    }
+}
+
+/// [格子] の説明。
+pub fn grid_hint(visible: bool, keys: &KeyLabels) -> String {
+    let text = if visible {
+        "床の格子と軸を隠します"
+    } else {
+        "床の格子と軸を出します"
+    };
+    with_key_suffix(text, keys, Action::DisplayGrid)
+}
+
+/// [断面] の説明。
+pub fn section_hint(on: bool, keys: &KeyLabels) -> String {
+    let text = if on {
+        "断面をやめて全体を表示します"
+    } else {
+        "軸に垂直な面で切って中を見ます"
+    };
+    with_key_suffix(text, keys, Action::DisplaySection)
 }
 
 fn text_size(ui: &egui::Ui, label: &str) -> egui::Vec2 {

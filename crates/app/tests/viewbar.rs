@@ -289,3 +289,127 @@ fn render_viewbar_for_visual_check() {
             .expect("PNGの保存");
     }
 }
+
+// ---- キーの文字（第4段階の WP-V1）----
+
+use model_reviewer::keymap::{Action, Keymap, Platform};
+use model_reviewer::ui::{empty, help, toolbar, toolrail};
+
+#[test]
+fn default_labels_keep_existing_text() {
+    // 直す前の説明の文（第3段階の文を、そのまま写した）。
+    let keys = Keymap::default().labels(Platform::Mac);
+    let displays = [
+        (
+            DisplayMode::Faces,
+            "面だけを描きます（Z で面と線を切り替え）",
+        ),
+        (DisplayMode::FacesAndLines, "面に三角形の辺を重ねます（Z）"),
+        (DisplayMode::Lines, "三角形の辺だけを描きます"),
+        (
+            DisplayMode::XRay,
+            "部品を半透明にして奥を見せます（Shift+Z）",
+        ),
+    ];
+    for (mode, old) in displays {
+        assert_eq!(viewbar::display_hint(mode, &keys), old, "{mode:?}");
+    }
+    assert_eq!(
+        viewbar::projection_hint(Projection::Perspective, &keys),
+        "遠くの物を小さく描きます（5 で切り替え）"
+    );
+    assert_eq!(
+        viewbar::projection_hint(Projection::Orthographic, &keys),
+        "遠近のゆがみ無しで描きます（5 で切り替え）"
+    );
+    assert_eq!(viewbar::grid_hint(true, &keys), "床の格子と軸を隠します");
+    assert_eq!(viewbar::grid_hint(false, &keys), "床の格子と軸を出します");
+    assert_eq!(
+        viewbar::section_hint(true, &keys),
+        "断面をやめて全体を表示します（C）"
+    );
+    assert_eq!(
+        viewbar::section_hint(false, &keys),
+        "軸に垂直な面で切って中を見ます（C）"
+    );
+    // 画面の説明（読み上げの説明）も同じ文。
+    let mut harness = harness(input(true));
+    harness.step();
+    assert_eq!(
+        harness
+            .get_by_label("透かし")
+            .accesskit_node()
+            .description()
+            .as_deref(),
+        Some("部品を半透明にして奥を見せます（Shift+Z）")
+    );
+}
+
+#[test]
+fn unassigned_shows_no_parentheses() {
+    let mut keymap = Keymap::default();
+    for &action in Action::ALL {
+        keymap.clear(action);
+    }
+    let keys = keymap.labels(Platform::Mac);
+    let mut texts = Vec::new();
+    for mode in [
+        DisplayMode::Faces,
+        DisplayMode::FacesAndLines,
+        DisplayMode::Lines,
+        DisplayMode::XRay,
+    ] {
+        texts.push(viewbar::display_hint(mode, &keys));
+    }
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        texts.push(viewbar::projection_hint(projection, &keys));
+    }
+    for on in [true, false] {
+        texts.push(viewbar::grid_hint(on, &keys));
+        texts.push(viewbar::section_hint(on, &keys));
+        texts.push(toolrail::snap_hint(on, &keys));
+    }
+    for tool in [
+        model_reviewer::command::Tool::Select,
+        model_reviewer::command::Tool::Move,
+        model_reviewer::command::Tool::Measure,
+    ] {
+        texts.push(toolrail::tool_hint(tool, &keys));
+        assert_eq!(toolrail::tool_badge(tool, &keys), None);
+    }
+    texts.push(empty::new_hint(&keys));
+    for text in &texts {
+        assert!(!text.contains('（'), "{text}");
+    }
+    assert_eq!(
+        viewbar::display_hint(DisplayMode::Faces, &keys),
+        "面だけを描きます"
+    );
+    assert_eq!(
+        toolrail::tool_hint(model_reviewer::command::Tool::Move, &keys),
+        "移動: 矢印をドラッグして動かします"
+    );
+    assert_eq!(toolbar::button_hint(&keys, Action::FileOpen, "開く"), None);
+    // ヘルプ: キーの列はキーの無い所を「なし」にし、全部無い行は空にする。固定のキーの文は残る。
+    let rows = help::operation_rows(&keys);
+    let key_of = |what: &str| {
+        rows.iter()
+            .find(|row| row[0] == what)
+            .map(|row| row[3].clone())
+            .unwrap()
+    };
+    assert_eq!(key_of("全体表示／選択を表示／初期視点"), "");
+    assert_eq!(key_of("道具を選ぶ"), "");
+    assert_eq!(key_of("注釈を追加"), "Esc で終了");
+    assert_eq!(key_of("複製／削除"), "なし ／ Delete（Backspace）");
+    assert_eq!(key_of("選択"), "Esc で解除");
+    assert_eq!(
+        help::key_note(&keys, Platform::Mac),
+        "中ボタンは使わない。数字は文字キーの段で、テンキーは使わない。1文字のキーは、入力欄に文字を打っている間は働かない。Windows と Linux では Cmd の代わりに Ctrl。"
+    );
+    // 一部だけ外したときは、位置が分かるよう「なし」で埋める。
+    let mut keymap = Keymap::default();
+    keymap.clear(Action::ViewFitSelection);
+    let rows = help::operation_rows(&keymap.labels(Platform::Mac));
+    assert!(rows.iter().any(|row| row[3] == "A ／ なし ／ Home"));
+}

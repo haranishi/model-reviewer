@@ -4,6 +4,7 @@
     { "op": "open_model", "path": "../../../assets/samples/review-sample.stl", "stl_up": "y" },
     { "op": "wait_idle" },
     { "op": "screenshot", "path": "stl-1-open.png" },
+    { "op": "save_review", "path": "stl-1-source-review.json" },
     { "op": "dump_state", "path": "stl-1-open.json" },
     { "op": "click_widget", "name": "tool.measure" },
     { "op": "hover_view", "at": [0.202, 0.808] },

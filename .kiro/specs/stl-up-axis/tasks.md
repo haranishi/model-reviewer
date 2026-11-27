@@ -29,28 +29,29 @@
     - `changing_unit_keeps_up_and_changing_up_keeps_unit`
     - `stl_review_saves_and_restores_with_up`（`"stl_up": "y"` を書く。別の向きで開いていれば開き直す。項目が無ければ Y）
     - `annotation_stays_on_the_same_surface_across_up`（同じ注釈の部品の中の座標が、どちらの向きでも同じ）
-    - `z_up_stl_exports_rotation`（開き直した GLB の部品に回転と倍率があり、外形が書き出す前と同じ）
+    - `z_up_stl_exports_rotation`（合成直後の土台と書き出した GLB の回転・倍率を照合し、外形も比べる）。`export_note_describes_initial_rotation_after_edit`（回転を編集しても、結果は開いたときの仮定を示す）
     - 既存の `scene_numbers_do_not_change_across_stl_export`・`exported_glb_from_stl_reopens_with_same_extent` が、既定（Z が上）のまま通る
     - `gltf/tests`: `synthesized_base_keeps_rotation_and_scale`（`load_glb(synthesize_base(m))` の `local` が相対 1e-6 以内）
     - 自動操作: `open_model_parses_stl_up`（`"z"`・`"y"`・省略・それ以外は誤り）、状態の書き出しの `stl_up`
-    - 状態欄: 幅960で STL・未保存の印2つ・簡略表示が同時に出ても重ならない（既存の配置の試験に STL の場合を足す）
+    - 幅960で STL・未保存の印2つ・簡略表示が同時に出ても、状態欄の項目が重ならない。`exported_stl_status_fits_at_960` では、100文字の名前で GLB を書き出すと、修正前は「詳細」の右端が x=1374 にはみ出した。修正後は画面内に収まった
   - 既存の試験で、既定で開いて座標や外形を比べているものは、期待する値を Z が上の値へ直す（比べる項目は減らさない）。座標の意味を保ちたい試験は `stl_up: Some(UpAxis::Y)` を指定する。どちらにしたかを報告する
   - _Requirements: 1.5, 1.6, 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.5, 3.6, 4.1, 4.4_
 - [ ] 1.4 手順と文書
   - `e2e/stl-1.json` と `heavy-inspect.json` の STL に `"stl_up": "y"`。`guide-05-stl.json` は変えない。`guide-03-measure.json` にも、いまは `"stl_up": "y"` を足して通す（仮の扱い。進行役が2点を取り直して外す）
+  - 画面を使わずに `stl-1` の STL 保存と `stl-3` の復元を別のセッションで確認した。レビューに `"stl_up": "y"` が入り、保存直後の状態と一致した。レビューの向きだけを Z に書き換えると比較は失敗した
   - `docs/stl.md`・`docs/review-json.md`・`docs/verify.md`・`docs/roadmap.md`・`docs/guide/05-stl.md`（中身は design.md の「文書の直し」）。どの文書も100行以内
   - _Requirements: 4.2, 4.3_
-- _Boundary: `core/src/{units,review_file}.rs` と `ModelRef` のあるファイル、`stl/src/lib.rs`、`stl/tests/`、`gltf/tests/`、`app/src/{loader,exporter,command,automation}.rs`、`app/src/automation/`、`app/src/session/{mod,open,persist,export}.rs`、`app/src/ui/{status,ids,help}.rs`、`app/tests/{stl,layout,ui_shots}.rs` と通らなくなった既存の試験、`app/e2e/{stl-1,heavy-inspect,guide-03-measure}.json`、`docs/`_
+- _Boundary: `core/src/{units,review_file}.rs` と `ModelRef` のあるファイル、`stl/src/lib.rs`、`stl/tests/`、`gltf/tests/`、`app/src/{loader,exporter,command,automation}.rs`、`app/src/automation/`、`app/src/session/{mod,open,persist,export}.rs`、`app/src/ui/{status,ids,help}.rs`、`app/tests/{stl,layout,ui_shots}.rs` と通らなくなった既存の試験、`app/e2e/{stl-1,stl-3,heavy-inspect,guide-03-measure}.json`、`docs/`_
 - _Depends: 第3段階の WP-J2、creation-basics の WP-N2（`SourceKind::New` の分岐がある）_
 
 - [ ] 2. 仕上げ（進行役）
-  - 実機の自動操作を全部通す。`stl-1` → `stl-2` が Y が上のまま一致すること、見本の GLB と STL のハッシュが前後で同じことを確かめる
+  - 実機の自動操作を全部通す。同じ出力先で `stl-1` の後、別々に起動して `stl-2` で GLB、`stl-3` で Y が上の STL の状態が一致すること、見本の GLB と STL のハッシュが前後で同じことを確かめる
   - `guide-03-measure.json` から `"stl_up": "y"` を外して2点を取り直し（「頂点」の印が出る位置。距離が 20.00 mm）、手順書 03 と 05 の絵を撮り直して目で確かめる（状態欄に「上 = Z（仮定）」、箱が立っている、寸法が 20・40・30）
   - 書き出した GLB を別のソフトで開き、向きと大きさを確かめる。使ったソフトと版を `verification.md` に書く
   - 仕様の記録: `verification.md` を足し、`spec.json` の `phase` を進める。第3段階の `verification.md` の「上の向きを選ぶ機能は未決」に、この仕様への案内を足す
 
 ## 壊れやすい所（先に読む）
-1. **書き出しの土台に向きを渡し忘れる。** 土台の部品に回転が無いと、文書の部品0と土台がずれ、書き出した GLB が寝る。`z_up_stl_exports_rotation` と、既存の `scene_numbers_do_not_change_across_stl_export` で固定する。
+1. **書き出しの土台に向きを渡し忘れる。** その後に文書の変形を重ねると、土台の部品0だけの誤りは最終の GLB からは見えない。合成時だけ Z と Y を入れ替えると `z_up_stl_exports_rotation` の土台の照合が失敗し、元に戻すと合格した。
 2. **単位を替えると向きが既定へ戻る**（その逆も）。開き直しの指定を1か所で作る。
 3. **レビューの照合が単位だけを見る。** 向きの違う STL に、その場でレビューを当てはめると、保存した視点がずれる。
 4. **回転を角度から作る。** 外形に小さな余りが乗り、試験の許容差や表示の桁の境目で揺れる。

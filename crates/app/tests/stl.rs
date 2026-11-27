@@ -3,6 +3,8 @@
 //! 見本は 20 × 30 × 40 mm の箱（原点の角から伸びる）。mm と仮定すると、部品の大きさが 0.001 になり、
 //! Z が上ならシーン（メートル）での外形は 0.02 × 0.04 × 0.03 になる。
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -20,6 +22,8 @@ use model_reviewer_core::units::{UnitLabel, Units, UpAxis};
 use model_reviewer_testdata::stl::{
     STL_SAMPLE_SIZE, ascii_stl, box_triangles, stl_inputs, stl_sample,
 };
+
+const Z_OPENING_NOTE: &str = "開いたときは Z を上と仮定し、回転 X の初期値を -90° にしました";
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -1001,6 +1005,11 @@ fn z_up_stl_exports_rotation() {
                 .map(|v| s.units.format(v, model_reviewer::ui::dims::PANEL_DIGITS))
         };
         let labels = shown(&session);
+        let (base_tx, base_rx) = std::sync::mpsc::channel();
+        session.set_export_hooks(model_reviewer::exporter::ExportHooks {
+            after_stl_base: Some(Arc::new(move |bytes| base_tx.send(bytes.to_vec()).unwrap())),
+            ..Default::default()
+        });
         let target = dir.join(format!("{}.glb", up.key()));
         session.apply(Command::ExportGlb(target.clone()));
         session.apply(Command::SetStlUp(up.other()));
@@ -1009,8 +1018,17 @@ fn z_up_stl_exports_rotation() {
         pump_export(&mut session);
         assert_eq!(session.export_error(), None);
         assert_eq!(
-            failure_body(&session).contains("Z を上として、部品に回転 X -90°"),
+            failure_body(&session).contains(Z_OPENING_NOTE),
             up == UpAxis::Z
+        );
+        let base =
+            model_reviewer_gltf::load_glb(&base_rx.try_recv().expect("合成直後の土台")).unwrap();
+        let scale = 0.001;
+        let expected = Affine3A::from_mat3(up.rotation() * scale);
+        let local = base.nodes[0].local;
+        assert!(
+            local.abs_diff_eq(expected, scale * 1.0e-6),
+            "{up:?} が上の土台の回転と倍率: {local:?}"
         );
         let bytes = std::fs::read(&target).unwrap();
         let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
@@ -1027,6 +1045,27 @@ fn z_up_stl_exports_rotation() {
         reopened.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
         assert_eq!(shown(&reopened), labels);
     }
+}
+
+#[test]
+fn export_note_describes_initial_rotation_after_edit() {
+    let dir = scratch("edited-rotation");
+    let stl = write_bytes(&dir, "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::Select(Some(NodeId(0))));
+    let mut trs = decompose(&session.doc.as_ref().unwrap().nodes()[0].local).unwrap();
+    trs.rotation = glam::Quat::IDENTITY;
+    session.apply(Command::CommitLocal(trs));
+
+    let target = dir.join("edited.glb");
+    session.apply(Command::ExportGlb(target.clone()));
+    pump_export(&mut session);
+    assert_eq!(session.export_error(), None);
+    let body = failure_body(&session);
+    assert!(body.contains(Z_OPENING_NOTE), "{body}");
+    let model = model_reviewer_gltf::load_glb(&std::fs::read(target).unwrap()).unwrap();
+    let expected = Affine3A::from_scale(Vec3::splat(0.001));
+    assert!(model.nodes[0].local.abs_diff_eq(expected, 0.001 * 1.0e-6));
 }
 
 #[test]
@@ -1061,6 +1100,28 @@ fn exported_glb_from_stl_reopens_with_same_extent() {
     assert!(close3(trs.scale, Vec3::splat(0.001)));
     // 合成した土台を開き直すと「法線の無い形状」の簡略表示が出る（事実なので、そのまま）。
     assert!(!reopened.model.as_ref().unwrap().warnings.is_empty());
+}
+
+#[test]
+fn exported_stl_status_fits_at_960() {
+    use model_reviewer::ui::ids;
+
+    let dir = scratch("export-status");
+    let name = "W".repeat(100);
+    let stl = write_bytes(&dir, &format!("{name}.stl"), &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::Select(Some(NodeId(0))));
+    session.apply(Command::ExportGlb(stl.with_extension("glb")));
+    pump_export(&mut session);
+    assert_eq!(session.source_kind, SourceKind::Glb);
+    session.apply(Command::DismissDialog);
+
+    let size = egui::vec2(960.0, 600.0);
+    let (mut harness, _) = support::harness(session, size);
+    harness.run_steps(4);
+    let details = support::widget_rect(&harness, ids::STATUS_DETAILS).expect("詳細ボタン");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    assert!(screen.contains_rect(details), "詳細が画面の外: {details:?}");
 }
 
 #[test]

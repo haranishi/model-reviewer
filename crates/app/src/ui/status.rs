@@ -23,7 +23,7 @@ const REVIEW_BADGE: &str = "●レビュー未保存";
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     ui.horizontal(|ui| {
         let fixed = fixed_width(ui, session);
-        let name_width = stl_name_width(ui, session, fixed);
+        let name_width = max_name_width(ui, session, fixed);
         name_label(ui, file_name(session).into(), name_width);
         if session.doc_unsaved() {
             // 失うと困る状態なので、色と太字で目立たせる。
@@ -238,10 +238,7 @@ fn fixed_width(ui: &egui::Ui, session: &Session) -> f32 {
     fixed
 }
 
-fn stl_name_width(ui: &egui::Ui, session: &Session, fixed: f32) -> Option<f32> {
-    if !matches!(session.source_kind, SourceKind::Stl { .. }) {
-        return None;
-    }
+fn max_name_width(ui: &egui::Ui, session: &Session, fixed: f32) -> f32 {
     let gap = ui.spacing().item_spacing.x;
     let mut left = ui.available_width() - fixed;
     for (visible, label) in [
@@ -258,19 +255,15 @@ fn stl_name_width(ui: &egui::Ui, session: &Session, fixed: f32) -> Option<f32> {
     } else {
         2.0
     };
-    Some((left / columns - gap).max(0.0))
+    (left / columns - gap).max(0.0)
 }
 
-fn name_label(ui: &mut egui::Ui, text: egui::RichText, max_width: Option<f32>) -> egui::Response {
-    if let Some(width) = max_width {
-        ui.scope(|ui| {
-            ui.set_max_width(width);
-            ui.add(egui::Label::new(text).truncate())
-        })
-        .inner
-    } else {
-        ui.label(text)
-    }
+fn name_label(ui: &mut egui::Ui, text: egui::RichText, max_width: f32) -> egui::Response {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        ui.add(egui::Label::new(text).truncate())
+    })
+    .inner
 }
 
 /// ファイル名と未保存の印を並べた後、残りの幅に収まる部品を選ぶ。

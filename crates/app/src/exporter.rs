@@ -69,11 +69,14 @@ pub enum ExportBase {
 pub type StageHook = Arc<dyn Fn() + Send + Sync>;
 /// 一時ファイルの場所を受け取る試験用の関数。
 pub type PathHook = Arc<dyn Fn(&Path) + Send + Sync>;
+/// STL から合成した GLB を、編集を重ねる前に受け取る試験用の関数。
+pub type StlBaseHook = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 /// 各工程の前後に呼ぶ試験用の関数。本番は空。
 #[derive(Clone, Default)]
 pub struct ExportHooks {
     pub before_read: Option<StageHook>,
+    pub after_stl_base: Option<StlBaseHook>,
     pub before_build: Option<StageHook>,
     pub before_write: Option<StageHook>,
     pub before_verify: Option<StageHook>,
@@ -304,7 +307,11 @@ fn run_export(
             // STL のバイト列は合成が終わったら手放す（土台のバイト列を常駐させない）。
             match &request.base_kind {
                 ExportBase::Stl { unit, up, name } => {
-                    synthesize_from_stl(&base_bytes, *unit, *up, name)?
+                    let base = synthesize_from_stl(&base_bytes, *unit, *up, name)?;
+                    if let Some(hook) = &hooks.after_stl_base {
+                        hook(&base);
+                    }
+                    base
                 }
                 _ => base_bytes,
             }

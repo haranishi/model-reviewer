@@ -75,7 +75,7 @@ pub fn stl_export_note(unit: UnitLabel, up: UpAxis) -> String {
         unit.meters()
     );
     if up == UpAxis::Z {
-        note.push_str("。Z を上として、部品に回転 X -90° を入れています");
+        note.push_str("。開いたときは Z を上と仮定し、回転 X の初期値を -90° にしました");
     }
     note
 }

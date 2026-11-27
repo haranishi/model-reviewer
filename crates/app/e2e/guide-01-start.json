@@ -1,0 +1,8 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "wait_idle" },
+    { "op": "screenshot", "path": "start-empty.png" },
+    { "op": "quit" }
+  ]
+}

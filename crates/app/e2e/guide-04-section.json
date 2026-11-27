@@ -1,0 +1,15 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "view.section" },
+    { "op": "click_widget", "name": "section.axis.y" },
+    { "op": "click_widget", "name": "section.offset" },
+    { "op": "type_text", "text": "0.6" },
+    { "op": "key", "key": "Enter" },
+    { "op": "click_widget", "name": "section.flip" },
+    { "op": "screenshot", "path": "section-on.png" },
+    { "op": "quit" }
+  ]
+}

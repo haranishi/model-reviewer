@@ -1,0 +1,14 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "tool.measure" },
+    { "op": "hover_view", "at": [0.202, 0.808] },
+    { "op": "screenshot", "path": "measure-snap.png" },
+    { "op": "click_view", "at": [0.202, 0.808] },
+    { "op": "click_view", "at": [0.438, 0.938] },
+    { "op": "screenshot", "path": "measure-panel.png" },
+    { "op": "quit" }
+  ]
+}

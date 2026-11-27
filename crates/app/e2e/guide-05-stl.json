@@ -1,0 +1,10 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "parts.row.0" },
+    { "op": "screenshot", "path": "stl-open.png" },
+    { "op": "quit" }
+  ]
+}

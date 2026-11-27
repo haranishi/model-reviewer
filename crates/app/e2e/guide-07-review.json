@@ -1,0 +1,17 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "toolbar.annotate" },
+    { "op": "click_view", "at": [0.5, 0.5] },
+    { "op": "click_widget", "name": "draft.text" },
+    { "op": "type_text", "text": "この面の仕上げを確認" },
+    { "op": "click_widget", "name": "draft.commit" },
+    { "op": "click_widget", "name": "views.name" },
+    { "op": "type_text", "text": "仕上げの確認" },
+    { "op": "click_widget", "name": "views.save" },
+    { "op": "screenshot", "path": "review-notes.png" },
+    { "op": "quit" }
+  ]
+}

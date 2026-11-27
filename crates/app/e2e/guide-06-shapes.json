@@ -1,0 +1,25 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "empty.new" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "status.display_unit" },
+    { "op": "click_widget", "name": "status.display_unit" },
+    { "op": "click_widget", "name": "tool.shape" },
+    { "op": "click_widget", "name": "shape.cube" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "dims.x" },
+    { "op": "type_text", "text": "60" },
+    { "op": "key", "key": "Enter" },
+    { "op": "click_widget", "name": "dims.y" },
+    { "op": "type_text", "text": "20" },
+    { "op": "key", "key": "Enter" },
+    { "op": "click_widget", "name": "dims.z" },
+    { "op": "type_text", "text": "40" },
+    { "op": "key", "key": "Enter" },
+    { "op": "click_widget", "name": "toolbar.fit_all" },
+    { "op": "screenshot", "path": "shapes-dims.png" },
+    { "op": "quit" }
+  ]
+}

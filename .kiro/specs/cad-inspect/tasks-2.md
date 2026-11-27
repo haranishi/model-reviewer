@@ -2,7 +2,7 @@
 
 [tasks.md](tasks.md) の続き。進め方の約束は同じである。接合は、並行の部品を `Session` と画面につなぐ作業で、共有の大きなファイルに触れる。1本ずつ順に行う。
 
-- [ ] 2. 接合
+- [x] 2. 接合
 - [x] 2.1 WP-J1 単位・吸着・断面をつなぐ（区切りA。K1・R1・V1 の後）
   - **単位**: `Session::units` を、計測の線の文字・状態欄・移動のハンドルの変化量・格子の文字に通す。`SetUnit`（GLB の前提）と `SetDisplayUnit` を `session::measure` に実装する。状態欄に「表示 …」を足し、幅が足りないときの省く順を入れる（design.md の「画面」）。表示が「ファイルと同じ」の間、既存の文字と数値が変わらないことを試験で固定する
   - **吸着**: `ui::viewport` が `ViewHover` を積む条件（design-snap.md の「つなぎ方」）。`session::snap::hover` と、計測のクリックでの `snap`。8ミリ秒を超えたときの休み。`SetSnap`・`ToggleSnap` とキー X。`measure_view`・`measure_panel` の入力の組み立て。性能値「吸着の探索」を `metrics` に足す
@@ -20,8 +20,8 @@
   - 合格: `app/tests/{stl,dims}.rs`（試験名の目安: `opens_binary_and_ascii_stl`、`neither_glb_nor_stl_message`、`broken_stl_keeps_the_open_model`、`stl_review_saves_and_restores_with_unit`、`changing_stl_unit_reopens_after_confirm`、`stl_exports_to_glb_and_moves_target`、`scene_numbers_do_not_change_across_stl_export`、`exported_glb_from_stl_reopens_with_same_extent`、`dims_edit_is_one_undo_step`、`dims_of_loaded_part_are_read_only`）。既存の `open`・`malformed`・`export`・`persist` の試験が通る（知らせの文が変わる試験だけを直す）
   - _Boundary: `app/src/{loader,exporter,app}.rs`、`app/src/automation/`、`app/src/session/{mod,open,persist,export,edit,dims}.rs`、`app/src/ui/{mod,status,dialogs,help,inspector}.rs`、`app/tests/{stl,dims}.rs` と既存の試験、`app/e2e/{stl-1,stl-2,heavy-inspect}.json`、`app/Cargo.toml`（`model-reviewer-stl` を足す）、`docs/`、README_ ／ _Depends: 2.1, 1.2, 1.3_ ／ _Requirements: 5.1, 5.2, 5.6, 6.3, 6.4, 7.6, 7.7, 7.8, 7.9, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 9.1, 9.3, 9.6, 10.1, 10.3, 13.4, 13.5_
 
-- [ ] 3. 最後の確認（進行役が行う。GPU・実機・画像の目視・性能）
-- [ ] 3.1 WP-F1 確認と記録
+- [x] 3. 最後の確認（進行役が行う。GPU・実機・画像の目視・性能）
+- [x] 3.1 WP-F1 確認と記録
   - `cargo test --workspace -- --include-ignored`（GPUの試験）。断面の画像を開いて見る: 消す側が消えている、切り口の色が裏の面だけに出ている、選択の輪郭と線が同じ平面で切れている、格子は切れていない、断面なしの絵が第2段階と同じ
   - 実機の自動操作: 既存の9本と、`inspect-1`・`stl-1`・`stl-2`・`heavy-inspect`。見本の GLB と STL のハッシュが、実行の前後で同じ
   - 画像の目視（`ui_shots`、幅960と広い幅）: 候補の印と言葉、断面の行と枠と矢印、右のパネルの「寸法」「計測」、状態欄の2つの単位。重なりと、日本語と「、。（）・」の字形

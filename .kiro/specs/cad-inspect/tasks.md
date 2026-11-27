@@ -40,16 +40,16 @@ A の中の順は、単位 → 吸着 → 断面。B の中の順は、STL → �
   - 合格: 既存の試験がすべて通り、件数が減っていない。`cargo deny check licenses sources bans` が通る（進行役）。`smoke`・`flow-1`・`measure-1`・`edit-1` が通り、画像が変わらない（進行役）
   - _Boundary: 上に挙げたファイル、ルートの `Cargo.toml`・`Cargo.lock`、各クレートの既存の試験（構造体の組み立ての修正だけ）_ ／ _Requirements: 13.1, 13.3_
 
-- [ ] 1. 並行して進める部品（C0 の後）
+- [x] 1. 並行して進める部品（C0 の後）
 - [x] 1.1 (P) WP-K1 コアの幾何（design-snap.md、design-section.md の「型の約束」「当たり判定」）
   - `Bvh::triangles_near`、`closest` が三角形の番号を返す、`pick_clipped`、`SectionPlane::{ray_range, frame_corners}`、`drag_offset`、`snap`（手順1〜8と辺の判定）、`Measurement` の種類と差
   - 合格: design-testing.md の「近くの三角形」「切った当たり判定」「断面の計算」「吸着」「計測」の行。試験名の目安: `near_matches_brute_force`、`clipped_ray_hits_the_far_wall`、`clip_none_equals_pick`、`snaps_to_corner_edge_and_face`、`flat_diagonal_is_not_an_edge`、`open_border_is_an_edge`、`snaps_from_just_outside_the_silhouette`、`cut_vertices_are_not_candidates`、`snap_local_equals_vertex_under_scale_and_rotation`
   - _Boundary: `core/src/{bvh,pick,section,snap,measure}.rs`、`core/tests/{pick,snap}.rs`_ ／ _Requirements: 1.1, 1.3, 1.4, 1.6, 1.7, 2.1, 2.2, 4.1, 4.2, 11.1_
-- [ ] 1.2 (P) WP-U1 寸法とレビューの項目（design-shapes.md の「型の約束」、design-stl-units.md の「レビューJSON」）
+- [x] 1.2 (P) WP-U1 寸法とレビューの項目（design-shapes.md の「型の約束」、design-stl-units.md の「レビューJSON」）
   - `dims_of`・`scale_for`、`Document` の形状の記録（複製で読める。文書を作り直すと消える）、レビューJSONの `model.stl_unit` の読み書き
   - 合格: design-testing.md の「寸法」「レビュー」の行。試験名の目安: `dims_round_trip_per_kind`、`uneven_sphere_has_no_dims`、`out_of_range_dims_are_rejected`、`shape_spec_survives_duplicate`、`stl_unit_round_trips`、`glb_review_bytes_are_unchanged`
   - _Boundary: `core/src/{shapes,doc,review_file,identity}.rs`、`core/tests/{doc,review_roundtrip}.rs`_ ／ _Requirements: 8.4, 8.5, 9.2, 9.5, 9.6, 9.7_
-- [ ] 1.3 (P) WP-L1 STL の読み込みと土台の合成（design-stl-units.md の「STL の入口」「書き出し」）
+- [x] 1.3 (P) WP-L1 STL の読み込みと土台の合成（design-stl-units.md の「STL の入口」「書き出し」）
   - `crates/stl`: `detect`、バイナリと ASCII の読み取り、数の検査、頂点をまとめる処理、`Model` の組み立て、`StlError` の日本語の文。`testdata`: `stl.rs`（箱の見本、重い STL、壊れた STL の生成器）と、`main.rs` の `stl-sample`・`stl-stress`。`assets/samples/review-sample.stl` を生成して置く
   - `gltf::export::synthesize_base`（`synth.rs`）。`gltf` は `stl` に依存させない。試験の入力は、手で組んだ「部品1つ・形状1つ」の `Model` を使う
   - 合格: design-testing.md の「STL の読み込み」「壊れた STL」「土台の合成」の行。試験名の目安: `binary_and_ascii_give_the_same_model`、`binary_starting_with_solid_is_binary`、`claimed_count_never_drives_allocation`、`non_finite_and_huge_coordinates_are_rejected`、`truncated_ascii_is_an_error`、`random_bytes_never_panic`、`unit_becomes_node_scale`、`synth_base_round_trips_through_load_glb`、`synth_base_is_deterministic`、`export_on_synth_base_verifies`

@@ -329,6 +329,48 @@ impl Document {
         Ok(id.0..end as u32)
     }
 
+    /// 部品とその子孫の、描画の基本色（部品の順、その中は描画の順）。
+    pub fn subtree_colors(&self, key: NodeKey) -> Result<Vec<[f32; 4]>, DocError> {
+        let draws = self.subtree_draw_range(key)?.1;
+        Ok(self.draws[draws.start as usize..draws.end as usize]
+            .iter()
+            .map(|draw| draw.base_color)
+            .collect())
+    }
+
+    /// `subtree_colors` と同じ並びで基本色を入れる。形状は共有したままなので、同じ形状を使う
+    /// 別の部品には及ばない。数が合わなければ `InvalidPiece`、有限でない値があれば `NonFinite`
+    /// で、どちらも何も変えない。返すのは部品の番号の範囲（部分更新に使う）。
+    pub fn set_subtree_colors(
+        &mut self,
+        key: NodeKey,
+        colors: &[[f32; 4]],
+    ) -> Result<Range<u32>, DocError> {
+        let (nodes, draws) = self.subtree_draw_range(key)?;
+        if colors.len() != (draws.end - draws.start) as usize {
+            return Err(DocError::InvalidPiece);
+        }
+        if colors.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(DocError::NonFinite);
+        }
+        for (draw, color) in self.draws[draws.start as usize..draws.end as usize]
+            .iter_mut()
+            .zip(colors)
+        {
+            draw.base_color = *color;
+        }
+        Ok(nodes)
+    }
+
+    /// 部分木の部品の番号の範囲と、描画の表の範囲。
+    fn subtree_draw_range(&self, key: NodeKey) -> Result<(Range<u32>, Range<u32>), DocError> {
+        let id = self.id_of(key).ok_or(DocError::UnknownKey(key))?;
+        let start = id.0 as usize;
+        let end = self.nodes[start].subtree_end as usize;
+        let draws = self.nodes[start].draws.start..self.draw_cursor(end);
+        Ok((id.0..end as u32, draws))
+    }
+
     /// 部分木を取り除く（データは `Removed` に移す。形状は残す）。`piece` の表示の設定と注釈は
     /// 空（`ReviewState` を持つ側が埋める）。
     pub fn remove_subtree(&mut self, key: NodeKey) -> Result<Removed, DocError> {
@@ -823,5 +865,209 @@ impl SceneRead for Document {
 
     fn shares_geometry_with(&self, model: &Model) -> bool {
         std::ptr::eq(Arc::as_ptr(&self.base), model)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::scene::{ModelStats, Node};
+    use glam::Vec3;
+
+    pub(crate) const RED: [f32; 4] = [0.7, 0.1, 0.1, 1.0];
+    pub(crate) const GREEN: [f32; 4] = [0.1, 0.6, 0.1, 0.5];
+    pub(crate) const BLUE: [f32; 4] = [0.1, 0.2, 0.8, 1.0];
+    pub(crate) const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+
+    fn prim() -> Primitive {
+        Primitive {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            local_aabb: Aabb {
+                min: Vec3::splat(-0.5),
+                max: Vec3::splat(0.5),
+            },
+            has_normals: true,
+        }
+    }
+
+    /// 0「台」（描画なし）の下に 1「脚A」（形状0 赤・形状1 緑）と 2「脚B」（形状0 青）。
+    /// 根の並びに 3「棚」（形状0 灰）。形状0 は脚A・脚B・棚が共有する。
+    pub(crate) fn sample() -> Document {
+        let parts: [(&str, Option<u32>, u32, Vec<Draw>); 4] = [
+            ("台", None, 3, vec![]),
+            (
+                "脚A",
+                Some(0),
+                2,
+                vec![
+                    Draw {
+                        prim: PrimId(0),
+                        base_color: RED,
+                    },
+                    Draw {
+                        prim: PrimId(1),
+                        base_color: GREEN,
+                    },
+                ],
+            ),
+            (
+                "脚B",
+                Some(0),
+                3,
+                vec![Draw {
+                    prim: PrimId(0),
+                    base_color: BLUE,
+                }],
+            ),
+            (
+                "棚",
+                None,
+                4,
+                vec![Draw {
+                    prim: PrimId(0),
+                    base_color: GREY,
+                }],
+            ),
+        ];
+        let mut nodes = Vec::new();
+        let mut draws = Vec::new();
+        for (index, (name, parent, subtree_end, own)) in parts.into_iter().enumerate() {
+            let start = draws.len() as u32;
+            draws.extend(own);
+            let local = Affine3A::from_translation(Vec3::new(index as f32, 0.0, 0.0));
+            nodes.push(Node {
+                name: name.to_owned(),
+                gltf_index: index as u32,
+                parent: parent.map(NodeId),
+                subtree_end,
+                depth: u32::from(parent.is_some()),
+                local,
+                world: local,
+                draws: start..draws.len() as u32,
+                world_aabb: prim().local_aabb.transformed(&local),
+            });
+        }
+        let model = Model {
+            nodes,
+            draws,
+            primitives: vec![prim(), prim()],
+            bounds: Aabb::empty(),
+            stats: ModelStats::default(),
+            warnings: Vec::new(),
+        };
+        Document::new(Arc::new(model))
+    }
+
+    fn all_colors(doc: &Document) -> Vec<[f32; 4]> {
+        (0..doc.node_count())
+            .flat_map(|index| doc.draws(NodeId(index as u32)).iter())
+            .map(|draw| draw.base_color)
+            .collect()
+    }
+
+    #[test]
+    fn subtree_colors_are_in_node_then_draw_order() {
+        let doc = sample();
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap(),
+            vec![RED, GREEN, BLUE]
+        );
+        assert_eq!(doc.subtree_colors(NodeKey(2)).unwrap(), vec![BLUE]);
+        assert_eq!(
+            doc.subtree_colors(NodeKey(9)),
+            Err(DocError::UnknownKey(NodeKey(9)))
+        );
+    }
+
+    #[test]
+    fn color_does_not_leak_to_shared_shape() {
+        let mut doc = sample();
+        let yellow = [0.9, 0.8, 0.1, 1.0];
+        let range = doc
+            .set_subtree_colors(NodeKey(1), &[yellow, yellow])
+            .unwrap();
+        assert_eq!(range, 1..2);
+        // 形状0 を共有する脚B と棚は変わらない。形状も同じものを指したまま。
+        assert_eq!(all_colors(&doc), vec![yellow, yellow, BLUE, GREY]);
+        assert_eq!(doc.draws(NodeId(2))[0].prim, PrimId(0));
+        assert_eq!(doc.draws(NodeId(1))[0].prim, PrimId(0));
+        assert!(doc.added_primitives().is_empty());
+        // 親を選ぶと子孫が対象になり、範囲は部分木。根の並びの別の部品には及ばない。
+        let range = doc
+            .set_subtree_colors(NodeKey(0), &[GREY, GREY, GREY])
+            .unwrap();
+        assert_eq!(range, 0..3);
+        assert_eq!(all_colors(&doc), vec![GREY; 4]);
+    }
+
+    #[test]
+    fn wrong_count_changes_nothing() {
+        let mut doc = sample();
+        let before = all_colors(&doc);
+        assert_eq!(
+            doc.set_subtree_colors(NodeKey(0), &[GREY, GREY]),
+            Err(DocError::InvalidPiece)
+        );
+        assert_eq!(
+            doc.set_subtree_colors(NodeKey(0), &[GREY; 4]),
+            Err(DocError::InvalidPiece)
+        );
+        assert_eq!(
+            doc.set_subtree_colors(NodeKey(0), &[GREY, [f32::NAN, 0.0, 0.0, 1.0], GREY]),
+            Err(DocError::NonFinite)
+        );
+        assert_eq!(
+            doc.set_subtree_colors(NodeKey(7), &[]),
+            Err(DocError::UnknownKey(NodeKey(7)))
+        );
+        assert_eq!(all_colors(&doc), before);
+        // 描画の無い部品は、空の並びなら受ける（何も変わらない）。
+        let mut empty = sample();
+        let piece = empty.shape_piece_without_draws();
+        assert_eq!(empty.subtree_colors(piece).unwrap(), Vec::<[f32; 4]>::new());
+        assert!(empty.set_subtree_colors(piece, &[]).is_ok());
+    }
+
+    impl Document {
+        /// 試験用: 描画の無い部品を根の末尾に足し、その鍵を返す。
+        fn shape_piece_without_draws(&mut self) -> NodeKey {
+            let (place, mut piece) = self
+                .shape_piece(
+                    "空",
+                    Affine3A::IDENTITY,
+                    Draw {
+                        prim: PrimId(0),
+                        base_color: GREY,
+                    },
+                )
+                .unwrap();
+            piece.draws.clear();
+            piece.nodes[0].draws = 0..0;
+            let key = piece.nodes[0].key;
+            self.insert_subtree(place, piece).unwrap();
+            key
+        }
+    }
+
+    #[test]
+    fn duplicate_inherits_color() {
+        let mut doc = sample();
+        let yellow = [0.9, 0.8, 0.1, 1.0];
+        doc.set_subtree_colors(NodeKey(1), &[yellow, GREEN])
+            .unwrap();
+        let (place, piece) = doc.duplicate_subtree(NodeKey(0)).unwrap();
+        let colors: Vec<[f32; 4]> = piece.draws.iter().map(|draw| draw.base_color).collect();
+        assert_eq!(colors, vec![yellow, GREEN, BLUE]);
+        let copy = piece.nodes[0].key;
+        doc.insert_subtree(place, piece).unwrap();
+        assert_eq!(doc.subtree_colors(copy).unwrap(), vec![yellow, GREEN, BLUE]);
+        // 複製の色だけを変えても、元は変わらない。
+        doc.set_subtree_colors(copy, &[RED; 3]).unwrap();
+        assert_eq!(
+            doc.subtree_colors(NodeKey(0)).unwrap(),
+            vec![yellow, GREEN, BLUE]
+        );
+        assert_eq!(doc.subtree_colors(copy).unwrap(), vec![RED; 3]);
     }
 }

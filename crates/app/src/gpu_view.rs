@@ -530,17 +530,18 @@ mod tests {
     use egui_wgpu::{RenderState, Renderer, RendererOptions};
 
     use super::{GpuState, GpuView, frame_params};
+    use crate::command::Command;
     use crate::session::Session;
 
-    /// 何も開いていない間は床の格子を描かない。モデルがあれば描く。
+    /// 何も開いていない間は床の格子を描かない。新規の文書を作ると描く。
     #[test]
     fn grid_is_hidden_until_a_model_exists() {
         let mut session = Session::default();
         session.viewport_px = [64, 48];
         assert!(session.grid_visible);
         assert!(!frame_params(&session, None).grid.visible);
-        let model = model_reviewer_gltf::load_glb(&model_reviewer_testdata::sample_glb());
-        session.model = Some(Arc::new(model.expect("見本")));
+        session.apply(Command::NewDocument);
+        assert!(session.model.is_some());
         assert!(frame_params(&session, None).grid.visible);
     }
 

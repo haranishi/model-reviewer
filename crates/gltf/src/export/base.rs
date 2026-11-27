@@ -5,8 +5,9 @@ use glam::Affine3A;
 use gltf::json::Value;
 use model_reviewer_core::scene::Model;
 
-use super::ExportError;
 use super::container::{self, Container};
+use super::{ExportError, ExportScene};
+use crate::build::DrawSource;
 use crate::{build, inspect};
 
 pub(crate) struct Base<'a> {
@@ -25,12 +26,15 @@ pub(crate) struct Base<'a> {
     pub scene_index: usize,
     /// 読み込みが使った根。シーンが無いときは、親の無いノードを番号順に。
     pub roots: Vec<u32>,
-    /// 読み込んだ `Model` に部品として出たノード。
-    pub loaded: Vec<bool>,
+    /// 土台のシーンの部品数。復元部品の描画は、この範囲の後ろで参照できる。
+    pub scene_nodes: usize,
+    source_nodes: Vec<Option<usize>>,
     pub model: Model,
+    /// `model.draws` と同じ並びの、描画の出どころ（読み込みが作った対応。数え直さない）。
+    pub sources: Vec<DrawSource>,
 }
 
-pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
+pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>, ExportError> {
     let container = container::parse(bytes).map_err(ExportError::InvalidBase)?;
     let opened =
         inspect::open(bytes).map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
@@ -69,13 +73,20 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
         .into_iter()
         .map(|index| index as u32)
         .collect();
-    let model =
-        build::assemble(opened).map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
-    let mut loaded = vec![false; node_count];
-    for node in &model.nodes {
-        if let Some(flag) = loaded.get_mut(node.gltf_index as usize) {
-            *flag = true;
-        }
+    // ノードが0個の土台（新規の文書の `empty_base`）は、空のモデルを土台のモデルにする。
+    let referenced = scene
+        .nodes
+        .iter()
+        .filter_map(|node| node.file_index.or(node.template));
+    let build::Assembled {
+        model,
+        sources,
+        scene_nodes,
+    } = build::assemble_base(opened, referenced)
+        .map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
+    let mut source_nodes = vec![None; node_count];
+    for (at, node) in model.nodes.iter().enumerate() {
+        source_nodes[node.gltf_index as usize] = Some(at);
     }
     let value: Value = gltf::json::deserialize::from_slice(container.json)
         .map_err(|error| ExportError::InvalidBase(format!("JSONを読めません: {error}")))?;
@@ -96,9 +107,20 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
         has_scenes,
         scene_index,
         roots,
-        loaded,
+        scene_nodes,
+        source_nodes,
         model,
+        sources,
     })
+}
+
+impl Base<'_> {
+    /// ファイルのノード番号から、その部品の元の描画を引く。復元部品と複製の元も含む。
+    pub fn draw_range(&self, file: u32) -> Option<std::ops::Range<usize>> {
+        let at = self.source_nodes.get(file as usize).copied().flatten()?;
+        let range = &self.model.nodes[at].draws;
+        Some(range.start as usize..range.end as usize)
+    }
 }
 
 /// 2つの行列がビット単位で同じか。

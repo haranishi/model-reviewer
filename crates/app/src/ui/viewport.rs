@@ -278,12 +278,14 @@ fn view_controls(
         projection: session.camera.projection,
         grid_visible: session.grid_visible,
         lines_supported: session.lines_supported,
+        keys: session.key_labels.clone(),
     };
     let area = rect.shrink(EDGE);
     let rail_input = ToolRailInput {
         tool: session.tool,
         has_model: session.model.is_some(),
         edit_blocked: session.edit_block_reason().map(str::to_owned),
+        keys: session.key_labels.clone(),
     };
     let rail = ui
         .scope_builder(
@@ -348,7 +350,8 @@ fn view_controls(
     );
 }
 
-pub(crate) fn pointer_on_viewport(ctx: &egui::Context) -> bool {
+/// ポインタが3Dビューの上にあるか（前のフレームの結果）。
+pub fn pointer_on_viewport(ctx: &egui::Context) -> bool {
     ctx.data(|data| {
         data.get_temp(egui::Id::unique(POINTER_ON_VIEWPORT))
             .unwrap_or(false)

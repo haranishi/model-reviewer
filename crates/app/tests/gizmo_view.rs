@@ -275,6 +275,35 @@ fn dragging_away_from_handles_turns_the_view() {
     assert!(harness.state().view_drags > 0);
 }
 
+/// キーで向きを固定している間（`active` だけがあり、ここでは掴んでいない）は、ハンドルの外の
+/// ドラッグが3Dビューへ届き（視点の操作）、別のハンドルを掴めばドラッグの変形が始まる。
+#[test]
+fn key_fixed_axis_leaves_the_view_and_other_handles_usable() {
+    let mut probe = input(Tool::Move);
+    probe.active = Some(Handle::MoveX);
+    probe.readout = Some(Readout::Distance(12.5));
+    let mut harness = harness(probe);
+    harness.step();
+    let start = view_rect().min + egui::vec2(30.0, 30.0);
+    pointer(&mut harness, start, None);
+    pointer(&mut harness, start, Some(true));
+    pointer(&mut harness, start + egui::vec2(20.0, 0.0), None);
+    pointer(&mut harness, start + egui::vec2(40.0, 0.0), Some(false));
+    assert!(harness.state().out.is_empty(), "{:?}", harness.state().out);
+    assert!(harness.state().view_drags > 0, "視点は回る");
+
+    let grab = widget(&harness, ids::GIZMO_MOVE_Y).center();
+    pointer(&mut harness, grab, None);
+    pointer(&mut harness, grab, Some(true));
+    assert_eq!(
+        harness.state().out,
+        vec![Command::BeginTransform {
+            handle: Handle::MoveY,
+            ndc: ndc(grab),
+        }]
+    );
+}
+
 #[test]
 fn readout_text_has_sign_and_unit_marks() {
     assert_eq!(readout_text(Readout::Distance(12.5)), "+12.50");

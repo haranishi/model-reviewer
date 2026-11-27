@@ -1,0 +1,45 @@
+{
+  "feature_name": "shortcuts-guide",
+  "created_at": "2026-11-27T04:00:00Z",
+  "updated_at": "2026-11-27T10:40:00Z",
+  "language": "ja",
+  "phase": "implemented",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "approval_basis": "依頼者の指示で実装まで進める",
+  "ready_for_implementation": true,
+  "depends_on": "cad-inspect",
+  "documents": {
+    "requirements": [
+      "requirements.md",
+      "requirements-2.md"
+    ],
+    "ux": "ux.md",
+    "design": [
+      "design.md",
+      "design-keymap.md",
+      "design-keymove.md",
+      "design-settings.md",
+      "design-guide.md",
+      "design-testing.md",
+      "design-decisions.md"
+    ],
+    "tasks": [
+      "tasks.md"
+    ],
+    "verification": "verification.md",
+    "review": "review-fixes.md"
+  }
+}

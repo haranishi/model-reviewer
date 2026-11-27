@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::session::Session;
+use crate::keymap::Action;
+use crate::keymap::store::StoreSource;
+use crate::session::{Session, keymove};
 
 pub(in crate::automation) fn state_value(session: &Session) -> Value {
     let hidden = session.review.as_ref().map(|review| {
@@ -65,6 +67,11 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
     });
     json!({
         "tool": tool_name(session.tool),
+        "keys": keys_json(session),
+        "transform": { "key_entry": session.key_entry().map(|entry| json!({
+            "axis": keymove::axis_letter(entry.handle).to_ascii_lowercase(),
+            "text": entry.text,
+        })) },
         "nodes": nodes.unwrap_or_default(),
         "history": {
             "undo": session.history.len(),
@@ -77,6 +84,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
         "doc_unsaved": session.doc_unsaved(),
         "review_unsaved": session.review_unsaved(),
         "selection": session.selection.map(|id| id.0),
+        "selection_color": selection_color_json(session),
         "hidden": hidden.unwrap_or_default(),
         "annotations": annotations.unwrap_or_default(),
         "views": views.unwrap_or_default(),
@@ -94,7 +102,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "source": session.units.source.suffix(),
             "display": session.units.display.map(|unit| unit.suffix()),
             "stl": match session.source_kind {
-                crate::session::SourceKind::Glb => None,
+                crate::session::SourceKind::Glb | crate::session::SourceKind::New => None,
                 crate::session::SourceKind::Stl { unit } => Some(unit.suffix()),
             },
         },
@@ -114,10 +122,11 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "offset": f64::from(plane.offset),
             "flipped": plane.flipped,
         })),
-        // 開いているモデルの元の形式（`glb` か `stl`。STL から書き出した後は `glb`）。
+        // 開いているモデルの元の形式（`glb`・`stl`・`new`。STL と新規から書き出した後は `glb`）。
         "source_kind": match session.source_kind {
             crate::session::SourceKind::Glb => "glb",
             crate::session::SourceKind::Stl { .. } => "stl",
+            crate::session::SourceKind::New => "new",
         },
         // 選んだ部品の外形と寸法（シーンの単位）。`selection` は第2段階からの番号の項目なので、
         // 意味を変えずに別の項目にした。
@@ -130,8 +139,58 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
     })
 }
 
-/// 状態の比較で見ない項目。履歴は開き直すと空になる（保存されるものではない）。
-pub(in crate::automation) const NOT_COMPARED: [&str; 1] = ["history"];
+fn selection_color_json(session: &Session) -> Option<Value> {
+    use crate::session::{ColorState, color};
+    let view = color::selection_color(session)?;
+    let (state, srgb) = match view.state {
+        ColorState::NoFaces => ("none", None),
+        ColorState::One(rgb) => ("one", Some(model_reviewer_core::color::to_hex(rgb))),
+        ColorState::Mixed { .. } => ("mixed", None),
+    };
+    let linear: Vec<_> = color::draw_colors(session.doc.as_ref()?, session.selection?)
+        .take(8)
+        .collect();
+    Some(json!({ "state": state, "srgb": srgb, "linear": linear }))
+}
+
+fn keys_json(session: &Session) -> Value {
+    let changed: serde_json::Map<String, Value> = Action::ALL
+        .iter()
+        .copied()
+        .filter(|&action| session.keymap.is_changed(action))
+        .map(|action| {
+            (
+                action.id().to_owned(),
+                json!(session.keymap.chord(action).map(|c| c.to_file())),
+            )
+        })
+        .collect();
+    json!({
+        "source": match session.store.source() {
+            StoreSource::Default => "default",
+            StoreSource::File => "file",
+        },
+        "saved": session.store.saves(),
+        "changed": changed,
+        "window": {
+            "open": session.keys.open,
+            "capture": session.keys.capture.map(Action::id),
+            "conflict": session.keys.conflict.map(|c| c.holder.id()),
+        },
+    })
+}
+
+/// 開き直すと失われる履歴と、起動方法で決まる設定の出どころ・保存可否だけを除く。
+pub(super) fn comparable(mut state: Value) -> Value {
+    if let Some(root) = state.as_object_mut() {
+        root.remove("history");
+        if let Some(keys) = root.get_mut("keys").and_then(Value::as_object_mut) {
+            keys.remove("source");
+            keys.remove("saved");
+        }
+    }
+    state
+}
 
 fn dims_json(view: &crate::session::DimsView) -> Value {
     use model_reviewer_core::shapes::Dims;

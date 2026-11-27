@@ -38,7 +38,7 @@ pub struct GizmoViewInput {
     pub frame: GizmoFrame,
     /// 3Dビューの矩形（画面の座標）。
     pub rect: egui::Rect,
-    /// 掴んでいるハンドル。
+    /// 掴んでいるハンドル（キーで向きを固定している途中は、その軸のハンドル）。
     pub active: Option<Handle>,
     /// 掴んでいる間の変化量。
     pub readout: Option<Readout>,
@@ -274,7 +274,10 @@ pub fn show_with(
     let hovered = pointer
         .filter(|p| rect.contains(*p))
         .and_then(|p| hit(&shapes, to_local(rect, p), HIT_TOLERANCE));
-    let zone = if input.active.is_some() || dragging || state.grabbing.is_some() {
+    // 操作域を3Dビュー全体へ広げるのは、ここで掴んだドラッグの間だけ。`active` だけがある間
+    // （キーで向きを固定して数値を打っている途中）は、固定した軸を掴んだ色で描くが、3Dビューの
+    // ドラッグ（視点の操作）とクリック（数値の入力をやめる）は3Dビューへ通す（要件11.6・11.8）。
+    let zone = if dragging || state.grabbing.is_some() {
         Some(rect)
     } else {
         match (hovered, pointer) {

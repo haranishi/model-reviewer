@@ -11,8 +11,9 @@
 use std::path::PathBuf;
 
 use model_reviewer_core::doc::Document;
+use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{NodeId, SceneRead};
-use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene};
+use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene, empty_base};
 
 use crate::command::{Command, DialogButton, DialogRequest};
 use crate::exporter::{self, ExportDone, ExportEvent, ExportFailure, ExportRequest, ExportStage};
@@ -51,6 +52,8 @@ pub fn export_scene(doc: &Document) -> ExportScene {
 fn export_base(session: &Session) -> exporter::ExportBase {
     match session.source_kind {
         SourceKind::Glb => exporter::ExportBase::File,
+        // 新規の文書は、元のファイルの代わりに「空の土台」を使う（要件2.1）。
+        SourceKind::New => exporter::ExportBase::Empty,
         SourceKind::Stl { unit } => exporter::ExportBase::Stl {
             unit,
             name: session
@@ -72,6 +75,28 @@ pub fn stl_export_note(unit: UnitLabel) -> String {
     )
 }
 
+/// 新規の文書から書き出したときに結果の一覧へ足す1行。
+pub const NEW_EXPORT_NOTE: &str = "新規の文書を GLB として書き出しました";
+
+/// 新規の文書に、描画を持つ部品が1つも無い（書き出すと、このアプリでも開けない GLB になる）。
+pub fn nothing_to_export(session: &Session) -> bool {
+    session.source_kind == SourceKind::New
+        && session.doc.as_ref().is_some_and(|doc| {
+            (0..doc.node_count()).all(|index| doc.draws(NodeId(index as u32)).is_empty())
+        })
+}
+
+/// 部品の無い新規の文書の書き出しを断る（要件2.2）。何も書かない。
+pub(super) fn refuse_empty(session: &mut Session) {
+    session.export_error = Some(super::NOTHING_TO_EXPORT.to_owned());
+    session.export_failed = true;
+    session.status_text = "書き出せません".to_owned();
+    session.dialog = Some(failure_dialog(
+        "書き出せません",
+        super::NOTHING_TO_EXPORT.to_owned(),
+    ));
+}
+
 pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     if session.is_exporting() {
         session.status_text = "すでに書き出し中です".to_owned();
@@ -81,7 +106,17 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         session.block_edit_if_locked();
         return;
     }
-    let (Some(doc), Some(model_ref)) = (session.doc.as_ref(), session.model_ref.as_ref()) else {
+    if nothing_to_export(session) {
+        refuse_empty(session);
+        return;
+    }
+    // 新規の文書には土台のファイルが無い。土台の場所と識別は使わない（`ExportBase::Empty`）。
+    let base = match (session.model_ref.as_ref(), session.source_kind) {
+        (Some(model_ref), _) => Some((model_ref.path.clone(), model_ref.identity.clone())),
+        (None, SourceKind::New) => Some((PathBuf::new(), ModelIdentity::from_bytes(&empty_base()))),
+        (None, _) => None,
+    };
+    let (Some(doc), Some((base_path, base_identity))) = (session.doc.as_ref(), base) else {
         let message = "モデルが開いていません。".to_owned();
         session.export_error = Some(message.clone());
         session.export_failed = true;
@@ -90,8 +125,8 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         return;
     };
     let request = ExportRequest {
-        base_path: model_ref.path.clone(),
-        base_identity: model_ref.identity.clone(),
+        base_path,
+        base_identity,
         target: path,
         scene: export_scene(doc),
         forbidden: session.opened_files.clone(),
@@ -187,9 +222,25 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     // STL から書き出すと、次からは新しい GLB が土台になる。シーンは最初からメートルなので、
     // 単位（前提と表示）は変えない（数値が動かない）。
     let mut lines: Vec<String> = done.notes.iter().map(note_ja).collect();
-    if let SourceKind::Stl { unit } = session.source_kind {
-        lines.push(stl_export_note(unit));
-        session.source_kind = SourceKind::Glb;
+    if done
+        .notes
+        .iter()
+        .any(|note| matches!(note, ExportNote::Recolored { nodes, .. } if *nodes > 0))
+        && let Some(note) = super::color::model_note(doc.base())
+    {
+        lines.push(note.to_owned());
+    }
+    match session.source_kind {
+        SourceKind::Stl { unit } => {
+            lines.push(stl_export_note(unit));
+            session.source_kind = SourceKind::Glb;
+        }
+        // 新規の文書も、書き出した GLB が以後の土台になる（要件2.3）。
+        SourceKind::New => {
+            lines.push(NEW_EXPORT_NOTE.to_owned());
+            session.source_kind = SourceKind::Glb;
+        }
+        SourceKind::Glb => {}
     }
     session.mark_doc_exported();
     session.status_text = format!("書き出しました（作業の対象を {file_name} へ切り替えました）");
@@ -213,6 +264,15 @@ fn fail_export(session: &mut Session, failure: ExportFailure) {
 /// 書き出しの結果の注意1件を利用者向けの文にする。
 pub fn note_ja(note: &ExportNote) -> String {
     match *note {
+        ExportNote::Recolored {
+            nodes,
+            materials,
+            meshes,
+        } => {
+            format!(
+                "色を変えた部品 {nodes} 個: 材質 {materials} 個とメッシュ {meshes} 個を足しました。元の材質とメッシュは、ファイルに残しています。"
+            )
+        }
         ExportNote::DetachedNodes { count } => {
             format!(
                 "削除した部品 {count} 個はシーンから外しました。形状のデータはファイルに残っています。"

@@ -1,7 +1,7 @@
 //! 書いたバイト列を読み直して照合する。`build` の判断をなぞらず、`scene` と元のファイルから
 //! 「書き換えてよい所」を別に導いて確かめる（`build` の誤りを `build` と同じ式で見逃さないため）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::Affine3A;
 use gltf::json::Value;
@@ -23,13 +23,15 @@ const OWNED: [&str; 8] = [
     "bufferViews",
     "buffers",
 ];
-const NODE_EDITABLE: [&str; 6] = [
+/// 元のノードで、`mesh` も外して比べる項目（`mesh` は色の写しのときだけ替わってよい。別に確かめる）。
+const NODE_EDITABLE: [&str; 7] = [
     "matrix",
     "translation",
     "rotation",
     "scale",
     "children",
     "name",
+    "mesh",
 ];
 const TRANSFORM: [&str; 4] = ["matrix", "translation", "rotation", "scale"];
 const NEW_NODE_KEYS: [&str; 7] = [
@@ -48,7 +50,7 @@ pub(crate) fn verify(
     scene: &ExportScene,
     built: &Built,
 ) -> Result<Model, ExportError> {
-    let base = base::read(base_bytes)?;
+    let base = base::read(base_bytes, scene)?;
     let shape = patch::shape(&base, scene)?;
     check_container(written, &base, built)?;
     let new_value: Value = gltf::json::deserialize::from_slice(&built.json)
@@ -61,12 +63,12 @@ pub(crate) fn verify(
         .ok_or_else(|| fail("元のJSONを読み直せません".to_owned()))?;
     check_assigned(&base, scene, &shape, built)?;
     check_top_level(&old_value, &new_value, built)?;
-    check_nodes(&old_value, &new_value, &base, scene, &shape, built)?;
+    let uses = check_nodes(&old_value, &new_value, &base, scene, &shape, built)?;
     check_scenes(&old_value, &new_value, &base, &shape, built)?;
-    check_appended(&old_value, &new_value, &base, built)?;
+    check_appended(&old_value, &new_value, &base, built, &uses)?;
     let model = crate::load_glb(written)
         .map_err(|error| fail(format!("開けません: {}", error.message_ja())))?;
-    check_model(&model, &base.model, scene, built)?;
+    check_model(&model, &base, scene, built)?;
     Ok(model)
 }
 
@@ -191,7 +193,8 @@ fn check_nodes(
     scene: &ExportScene,
     shape: &Shape,
     built: &Built,
-) -> Result<(), ExportError> {
+) -> Result<MeshUses, ExportError> {
+    let mut uses = MeshUses::default();
     let old_nodes = nodes_of(old);
     let new_nodes = nodes_of(new);
     let added = scene
@@ -217,6 +220,8 @@ fn check_nodes(
                 if without(old_node, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} の変えていない項目が元と違います")));
                 }
+                let recolored = colors_changed(base, file as u32, node);
+                check_mesh_change(old, new, old_node, new_node, recolored, &what, &mut uses)?;
                 let untouched = base.locals[file].is_some_and(|local| same_bits(local, node.local));
                 if untouched && !same_keys(old_node, new_node, &TRANSFORM) {
                     return Err(fail(format!(
@@ -288,6 +293,8 @@ fn check_nodes(
                 if without(source, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} が複製の元の写しになっていません")));
                 }
+                let recolored = colors_changed(base, template, node);
+                check_mesh_change(old, new, source, new_node, recolored, &what, &mut uses)?;
             }
             None => {
                 let Some(map) = new_node.as_object() else {
@@ -299,8 +306,133 @@ fn check_nodes(
                 if map.contains_key("mesh") == node.draws.is_empty() {
                     return Err(fail(format!("{what} の形状の有無が文書と違います")));
                 }
+                if let Some(mesh) = map.get("mesh") {
+                    let mesh = mesh
+                        .as_u64()
+                        .ok_or_else(|| fail(format!("{what} の mesh が番号ではありません")))?
+                        as usize;
+                    if mesh < array_of(old, "meshes").len() {
+                        return Err(fail(format!(
+                            "{what}（足した図形）が元のファイルのメッシュを指しています"
+                        )));
+                    }
+                    if mesh >= array_of(new, "meshes").len() {
+                        return Err(fail(format!("{what} の mesh が範囲の外です")));
+                    }
+                    uses.fresh.insert(mesh);
+                }
             }
         }
+    }
+    Ok(uses)
+}
+
+/// 足したメッシュの使われ方。照合は `build` の判断をなぞらず、ノードの側から集める。
+#[derive(Default)]
+struct MeshUses {
+    /// 色の写し（足したメッシュの番号 → 写す元のメッシュの番号）。
+    copies: HashMap<usize, usize>,
+    /// 足した図形のメッシュ。
+    fresh: HashSet<usize>,
+}
+
+fn array_of<'v>(value: &'v Value, key: &str) -> &'v [Value] {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+fn index_of(value: &Value, key: &str) -> Option<Option<u64>> {
+    match value.get(key) {
+        None => Some(None),
+        Some(item) => item.as_u64().map(Some),
+    }
+}
+
+/// 部品の描画の色が、土台のモデルの同じノードの色とビット単位で違うか。比べる相手が無ければ偽
+/// （そのときはメッシュを替えてはいけない）。
+fn colors_changed(base: &Base<'_>, file: u32, node: &super::ExportNode) -> bool {
+    let Some(draws) = base.draw_range(file).and_then(|r| base.model.draws.get(r)) else {
+        return false;
+    };
+    draws.len() != node.draws.len()
+        || draws
+            .iter()
+            .zip(&node.draws)
+            .any(|(a, b)| a.base_color.map(f32::to_bits) != b.base_color.map(f32::to_bits))
+}
+
+/// ノードの `mesh` は、色を変えた部品で、新しい番号が足したメッシュで、そのメッシュが元の
+/// メッシュと `primitives[*].material` を除いて等しいときだけ違ってよい。替わった `material` は
+/// 足した材質を指すこと（中身は `check_appended` が確かめる）。
+fn check_mesh_change(
+    old: &Value,
+    new: &Value,
+    old_node: &Value,
+    new_node: &Value,
+    recolored: bool,
+    what: &str,
+    uses: &mut MeshUses,
+) -> Result<(), ExportError> {
+    if old_node.get("mesh") == new_node.get("mesh") {
+        return Ok(());
+    }
+    if !recolored {
+        return Err(fail(format!(
+            "{what} の色を変えていないのに mesh を書き換えています"
+        )));
+    }
+    let (Some(Some(from)), Some(Some(to))) =
+        (index_of(old_node, "mesh"), index_of(new_node, "mesh"))
+    else {
+        return Err(fail(format!(
+            "{what} の mesh の書き換えが写しではありません"
+        )));
+    };
+    let (from, to) = (from as usize, to as usize);
+    let old_meshes = array_of(old, "meshes");
+    let new_meshes = array_of(new, "meshes");
+    if to < old_meshes.len() {
+        return Err(fail(format!(
+            "{what} が元のファイルの別のメッシュを指しています"
+        )));
+    }
+    let (Some(original), Some(copy)) = (old_meshes.get(from), new_meshes.get(to)) else {
+        return Err(fail(format!("{what} の mesh が範囲の外です")));
+    };
+    let old_materials = array_of(old, "materials").len() as u64;
+    let same_rest = without(original, &["primitives"]) == without(copy, &["primitives"]);
+    let old_prims = array_of(original, "primitives");
+    let new_prims = array_of(copy, "primitives");
+    let mut ok = same_rest && old_prims.len() == new_prims.len() && !old_prims.is_empty();
+    for (a, b) in old_prims.iter().zip(new_prims) {
+        if !ok {
+            break;
+        }
+        ok = without(a, &["material"]) == without(b, &["material"])
+            && match (index_of(a, "material"), index_of(b, "material")) {
+                (Some(x), Some(y)) if x == y => true,
+                (Some(_), Some(Some(y))) => {
+                    // mode の省略は三角形。点・線の材質は写しにも元のまま残す。
+                    matches!(index_of(a, "mode"), Some(None | Some(4..=6))) && y >= old_materials
+                }
+                _ => false,
+            };
+    }
+    if !ok {
+        return Err(fail(format!(
+            "{what} の足したメッシュが、元のメッシュの材質だけを替えた写しではありません"
+        )));
+    }
+    if uses
+        .copies
+        .insert(to, from)
+        .is_some_and(|other| other != from)
+    {
+        return Err(fail(format!(
+            "足したメッシュ {to} の写す元が部品ごとに違います"
+        )));
     }
     Ok(())
 }
@@ -389,6 +521,7 @@ fn check_appended(
     new: &Value,
     base: &Base<'_>,
     built: &Built,
+    uses: &MeshUses,
 ) -> Result<(), ExportError> {
     let empty = Vec::new();
     for key in ["meshes", "materials", "accessors", "bufferViews"] {
@@ -397,7 +530,9 @@ fn check_appended(
         if new_items.len() < old_items.len() || new_items[..old_items.len()] != old_items[..] {
             return Err(fail(format!("{key} の元の要素が元と違います")));
         }
-        if built.appended_bin.is_empty() && new_items.len() != old_items.len() {
+        // 色の写しは、材質とメッシュだけを BIN なしで足す。形状のデータの配列は BIN と一緒にだけ増える。
+        let geometry = matches!(key, "accessors" | "bufferViews");
+        if geometry && built.appended_bin.is_empty() && new_items.len() != old_items.len() {
             return Err(fail(format!(
                 "{key} に足した要素があるのにBINを足していません"
             )));
@@ -411,17 +546,7 @@ fn check_appended(
         .get("materials")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
-    for material in &new_materials[old_materials.len()..] {
-        let metallic = material
-            .get("pbrMetallicRoughness")
-            .and_then(|pbr| pbr.get("metallicFactor"))
-            .and_then(Value::as_f64);
-        if metallic != Some(0.0) {
-            return Err(fail(
-                "足した材質の metallicFactor が 0 ではありません".to_owned(),
-            ));
-        }
-    }
+    check_added_materials(old, new, old_materials, new_materials, uses)?;
     let start = base.container.bin.map_or(0, |bin| align4(bin.len() as u64));
     let end = start + built.appended_bin.len() as u64;
     let old_views = old
@@ -479,10 +604,161 @@ fn check_appended(
     Ok(())
 }
 
+/// 足したメッシュと材質。足したメッシュは、色の写しか足した図形のどちらか一方にだけ使われる。
+/// 足した材質は使われていて、使われ方ごとに次の形であること:
+/// - 色の写しで替わった `material`: 元の材質と `baseColorFactor` を除いて等しい（元に材質が
+///   無ければ、`baseColorFactor` だけの材質）。
+/// - 足した図形: 基本色と `metallicFactor: 0` だけの材質。
+fn check_added_materials(
+    old: &Value,
+    new: &Value,
+    old_materials: &[Value],
+    new_materials: &[Value],
+    uses: &MeshUses,
+) -> Result<(), ExportError> {
+    let old_meshes = array_of(old, "meshes");
+    let new_meshes = array_of(new, "meshes");
+    for mesh in old_meshes.len()..new_meshes.len() {
+        match (uses.copies.contains_key(&mesh), uses.fresh.contains(&mesh)) {
+            (true, false) | (false, true) => {}
+            (false, false) => {
+                return Err(fail(format!("足したメッシュ {mesh} が使われていません")));
+            }
+            (true, true) => {
+                return Err(fail(format!(
+                    "足したメッシュ {mesh} が色の写しと足した図形の両方に使われています"
+                )));
+            }
+        }
+    }
+    let first = old_materials.len() as u64;
+    let mut roles: Vec<Vec<Role>> = vec![Vec::new(); new_materials.len() - old_materials.len()];
+    let mut role = |material: Option<u64>, role: Role| -> Result<(), ExportError> {
+        match material {
+            Some(index) if index >= first && ((index - first) as usize) < roles.len() => {
+                roles[(index - first) as usize].push(role);
+                Ok(())
+            }
+            _ => Err(fail(
+                "足したメッシュが足した材質ではない材質を指しています".to_owned(),
+            )),
+        }
+    };
+    for (copy, original) in &uses.copies {
+        let pairs = array_of(&old_meshes[*original], "primitives")
+            .iter()
+            .zip(array_of(&new_meshes[*copy], "primitives"));
+        for (a, b) in pairs {
+            let before = index_of(a, "material").flatten();
+            let after = index_of(b, "material").flatten();
+            if before != after {
+                role(after, Role::Copy(before))?;
+            }
+        }
+    }
+    for mesh in &uses.fresh {
+        for primitive in array_of(&new_meshes[*mesh], "primitives") {
+            role(index_of(primitive, "material").flatten(), Role::Fresh)?;
+        }
+    }
+    for (slot, (material, roles)) in new_materials[old_materials.len()..]
+        .iter()
+        .zip(&roles)
+        .enumerate()
+    {
+        let index = old_materials.len() + slot;
+        if roles.is_empty() {
+            return Err(fail(format!("足した材質 {index} が使われていません")));
+        }
+        for role in roles {
+            let ok = match role {
+                Role::Fresh => is_shape_material(material),
+                Role::Copy(None) => is_bare_color_material(material),
+                Role::Copy(Some(original)) => old_materials
+                    .get(*original as usize)
+                    .is_some_and(|original| is_color_copy(material, original)),
+            };
+            if !ok {
+                return Err(fail(format!(
+                    "足した材質 {index} が、元の材質の写し（基本色だけが違う）でも足した図形の材質でもありません"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Role {
+    /// 色の写しで、元の材質（無ければ `None`）の代わりに使われた。
+    Copy(Option<u64>),
+    /// 足した図形に使われた。
+    Fresh,
+}
+
+/// 4つの有限の数の `baseColorFactor` か。
+fn is_color(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_array).is_some_and(|items| {
+        items.len() == 4
+            && items
+                .iter()
+                .all(|item| item.as_f64().is_some_and(f64::is_finite))
+    })
+}
+
+/// 基本色を除いた形（`pbrMetallicRoughness` が空になれば項目ごと除く）。
+fn without_color(material: &Value) -> Value {
+    let mut copy = material.clone();
+    if let Value::Object(map) = &mut copy {
+        let empty = match map.get_mut("pbrMetallicRoughness") {
+            Some(Value::Object(pbr)) => {
+                pbr.remove("baseColorFactor");
+                pbr.is_empty()
+            }
+            _ => false,
+        };
+        if empty {
+            map.remove("pbrMetallicRoughness");
+        }
+    }
+    copy
+}
+
+fn is_color_copy(material: &Value, original: &Value) -> bool {
+    is_color(
+        material
+            .get("pbrMetallicRoughness")
+            .and_then(|pbr| pbr.get("baseColorFactor")),
+    ) && without_color(material) == without_color(original)
+}
+
+/// `{"pbrMetallicRoughness":{"baseColorFactor":[…]}}` だけの材質（材質の無いプリミティブの写し）。
+fn is_bare_color_material(material: &Value) -> bool {
+    is_color(
+        material
+            .get("pbrMetallicRoughness")
+            .and_then(|pbr| pbr.get("baseColorFactor")),
+    ) && without_color(material) == super::json::obj()
+}
+
+/// 足した図形の材質（基本色と `metallicFactor: 0` だけ）。
+fn is_shape_material(material: &Value) -> bool {
+    let Some(map) = material.as_object() else {
+        return false;
+    };
+    let Some(pbr) = map.get("pbrMetallicRoughness").and_then(Value::as_object) else {
+        return false;
+    };
+    map.len() == 1
+        && pbr.len() == 2
+        && is_color(pbr.get("baseColorFactor"))
+        && pbr.get("metallicFactor").and_then(Value::as_f64) == Some(0.0)
+}
+
 /// 3. 本アプリの読み込みで開いた結果が `scene` と一致する。
 fn check_model(
     model: &Model,
-    base_model: &Model,
+    base: &Base<'_>,
     scene: &ExportScene,
     built: &Built,
 ) -> Result<(), ExportError> {
@@ -492,11 +768,6 @@ fn check_model(
             model.nodes.len(),
             scene.nodes.len()
         )));
-    }
-    // 元のファイルのノード番号から、元のファイルを読み込んだ部品へ。
-    let mut base_nodes = vec![None; base_node_count(base_model)];
-    for (index, node) in base_model.nodes.iter().enumerate() {
-        base_nodes[node.gltf_index as usize] = Some(index);
     }
     let mut worlds: Vec<Affine3A> = Vec::with_capacity(scene.nodes.len());
     let mut compared: HashSet<(u32, u64)> = HashSet::new();
@@ -535,16 +806,14 @@ fn check_model(
         if draws.len() != node.draws.len() {
             return Err(fail(format!("{what} の描画の数が違います")));
         }
-        // 形状の出どころ。ファイルにある部品と複製は元のファイルの同じノード（読み込まれていれば）、
-        // 足した部品は `scene.added`。
-        let source = node
-            .file_index
-            .or(node.template)
-            .and_then(|file| base_nodes.get(file as usize).copied().flatten())
-            .map(|at| &base_model.nodes[at]);
-        let source_draws = source.map(|source| {
-            &base_model.draws[source.draws.start as usize..source.draws.end as usize]
-        });
+        let source_draws = match node.file_index.or(node.template) {
+            Some(file) => Some(
+                base.draw_range(file)
+                    .and_then(|r| base.model.draws.get(r))
+                    .ok_or_else(|| fail(format!("{what} の元の描画がありません")))?,
+            ),
+            None => None,
+        };
         if source_draws.is_some_and(|source| source.len() != draws.len()) {
             return Err(fail(format!("{what} の描画の数が元のファイルと違います")));
         }
@@ -556,12 +825,12 @@ fn check_model(
                 .primitives
                 .get(got.prim.0 as usize)
                 .ok_or_else(|| fail(format!("{what} の形状がありません")))?;
-            let expected = match source_draws {
+            let (key, expected) = match source_draws {
                 Some(source) => {
                     let prim = source[slot].prim.0;
-                    Some((u64::from(prim), &base_model.primitives[prim as usize]))
+                    (u64::from(prim), &base.model.primitives[prim as usize])
                 }
-                None if node.file_index.is_none() && node.template.is_none() => {
+                None => {
                     let slot = want
                         .prim
                         .0
@@ -571,16 +840,10 @@ fn check_model(
                         .added
                         .get(slot as usize)
                         .ok_or_else(|| fail(format!("{what} の形状の番号が範囲の外です")))?;
-                    Some(((1u64 << 32) | u64::from(slot), prim.as_ref()))
+                    ((1u64 << 32) | u64::from(slot), prim.as_ref())
                 }
-                // 元のファイルで読み込まれていないノード：JSONの照合で `mesh` が元のままなことを
-                // 確かめてあるので、形状の中身はここでは比べない。
-                None => None,
             };
-            if let Some((key, expected)) = expected
-                && compared.insert((got.prim.0, key))
-                && !same_primitive(actual, expected)
-            {
+            if compared.insert((got.prim.0, key)) && !same_primitive(actual, expected) {
                 return Err(fail(format!("{what} の形状が違います")));
             }
             placed += (actual.indices.len() / 3) as u64;
@@ -590,15 +853,6 @@ fn check_model(
         return Err(fail("配置後の三角形数が違います".to_owned()));
     }
     Ok(())
-}
-
-fn base_node_count(model: &Model) -> usize {
-    model
-        .nodes
-        .iter()
-        .map(|node| node.gltf_index as usize + 1)
-        .max()
-        .unwrap_or(0)
 }
 
 /// 位置とインデックスはビット単位、法線は元に法線があるときだけ比べる

@@ -21,6 +21,7 @@ fn input(tool: Tool) -> ToolRailInput {
         tool,
         has_model: true,
         edit_blocked: None,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     }
 }
 
@@ -182,6 +183,7 @@ fn without_a_model_only_select_works_and_tells_why() {
         tool: Tool::Select,
         has_model: false,
         edit_blocked: None,
+        keys: model_reviewer::keymap::KeyLabels::default(),
     });
     harness.step();
     for (name, tool) in TOOLS {
@@ -207,6 +209,7 @@ fn blocked_editing_disables_edit_tools_and_shapes_with_the_reason() {
         tool: Tool::Shape,
         has_model: true,
         edit_blocked: Some(reason.to_owned()),
+        keys: model_reviewer::keymap::KeyLabels::default(),
     });
     harness.step();
     harness.step();
@@ -308,6 +311,7 @@ fn render_toolrail_for_visual_check() {
                 tool: Tool::Select,
                 has_model: false,
                 edit_blocked: None,
+                keys: model_reviewer::keymap::KeyLabels::default(),
             },
             Some(ids::TOOL_ROTATE),
         ),
@@ -354,4 +358,367 @@ fn render_toolrail_for_visual_check() {
             .save(dir.join(format!("{name}.png")))
             .expect("PNGの保存");
     }
+}
+
+// ---- キーの文字（第4段階の WP-V1）----
+
+use model_reviewer::keymap::{Action, Chord, KeyLabels, Keymap, Platform};
+use model_reviewer::ui::{empty, help, toolbar};
+
+/// 直す前の説明の文（第3段階と新規作成の時点の文を、そのまま写した）。
+const OLD_TOOL_HINTS: [(Tool, &str); 7] = [
+    (Tool::Select, "選択（V）: クリックで部品を選びます"),
+    (Tool::Move, "移動（G）: 矢印をドラッグして動かします"),
+    (Tool::Rotate, "回転（R）: 輪をドラッグして回します"),
+    (Tool::Scale, "拡大（S）: 箱をドラッグして大きさを変えます"),
+    (Tool::Shape, "図形: 立方体・球・円柱・平面を置きます"),
+    (
+        Tool::Measure,
+        "計測（M）: 角や辺に近づけて2回クリックし、距離を測ります",
+    ),
+    (
+        Tool::Annotate,
+        "注釈（N）: 表面をクリックして注釈を書きます",
+    ),
+];
+
+/// 既存の28行と、数値入力・矢印の3行。既存の行は変更前の全角の「＋」で記録している。
+const DEFAULT_HELP_ROWS: [[&str; 4]; 31] = [
+    ["したいこと", "マウス", "トラックパッド", "キー"],
+    [
+        "新規作成（空の状態から作り始める）",
+        "何も開いていない画面の［新規作成］",
+        "同じ",
+        "Cmd＋N",
+    ],
+    ["回転", "左ドラッグ", "1本指で押してドラッグ", ""],
+    [
+        "平行移動",
+        "右ドラッグ、または Shift＋左ドラッグ",
+        "Shift＋ドラッグ、または2本指で押してドラッグ",
+        "",
+    ],
+    ["ズーム", "ホイール", "2本指スクロール、ピンチ", ""],
+    ["選択", "左クリック", "クリック（タップ）", "Esc で解除"],
+    [
+        "全体表示／選択を表示／初期視点",
+        "上部のボタン",
+        "同じ",
+        "A ／ F ／ Home",
+    ],
+    [
+        "選択を非表示／すべて表示",
+        "目の印、ボタン",
+        "同じ",
+        "H ／ Shift＋H",
+    ],
+    [
+        "注釈を追加",
+        "「注釈を追加」→ 表面をクリック",
+        "同じ",
+        "N で切り替え、Esc で終了",
+    ],
+    [
+        "前・右・上から見る",
+        "右上の立方体の面を押す（後・左・下も）",
+        "同じ",
+        "1 ／ 3 ／ 7",
+    ],
+    [
+        "透視と平行を切り替える",
+        "3Dビューの上端のボタン",
+        "同じ",
+        "5",
+    ],
+    [
+        "面と線／透かし",
+        "3Dビューの上端のボタン",
+        "同じ",
+        "Z ／ Shift＋Z",
+    ],
+    ["床の格子と軸", "上端の「格子」", "同じ", ""],
+    [
+        "道具を選ぶ",
+        "左端の列を押す",
+        "同じ",
+        "V 選択／G 移動／R 回転／S 拡大／M 計測／N 注釈",
+    ],
+    [
+        "動かす・回す・拡大する",
+        "ハンドルを押してドラッグ、離すと確定",
+        "1本指で押してドラッグ",
+        "ドラッグ中の Esc で取り消し",
+    ],
+    [
+        "数値で指定する",
+        "右の「変形」の欄を押して入力、または欄を左右にドラッグ",
+        "同じ",
+        "Enter で確定、Esc で戻す",
+    ],
+    [
+        "向きを固定して数値を打つ",
+        "移動・回転・拡大の道具で部品を選ぶ",
+        "同じ",
+        "X・Y・Z で軸を選び、数値を入力",
+    ],
+    [
+        "格子1つぶん動かす",
+        "移動の道具で部品を選ぶ",
+        "同じ",
+        "矢印で移動、Shift で10分の1",
+    ],
+    [
+        "打った量を確定する／やめる",
+        "数値の入力中",
+        "同じ",
+        "Enter で確定、Esc でやめる",
+    ],
+    [
+        "取り消し／やり直し",
+        "上部の「戻す」「やり直す」",
+        "同じ",
+        "Cmd＋Z ／ Shift＋Cmd＋Z",
+    ],
+    ["図形を足す", "左端の「図形」→ 形を押す", "同じ", ""],
+    [
+        "複製／削除",
+        "部品を選んでからキー",
+        "同じ",
+        "Cmd＋D ／ Delete（Backspace）",
+    ],
+    [
+        "角や辺に合わせて測る",
+        "左端の「計測」→ 印が付いた所でクリック",
+        "同じ",
+        "M、Esc で消す・終了",
+    ],
+    ["吸着を入れる・切る", "道具の列の横の「吸着」", "同じ", "X"],
+    ["切って中を見る", "上端の「断面」", "同じ", "C"],
+    [
+        "切る軸を選ぶ・向きを反転する",
+        "断面の行の X・Y・Z、「反転」",
+        "同じ",
+        "",
+    ],
+    [
+        "切る位置を動かす",
+        "3Dビューの矢印をドラッグ、または位置の欄を左右にドラッグ・数値を入力",
+        "同じ",
+        "Enter で確定、Esc で戻す",
+    ],
+    [
+        "表示の単位を替える",
+        "状態欄の「表示 …」を押す（ファイルと同じ → mm → cm → m）",
+        "同じ",
+        "",
+    ],
+    [
+        "ファイルの単位の前提を替える",
+        "状態欄の「1単位 = …」「STL = …」を押す（STL は開き直す）",
+        "同じ",
+        "",
+    ],
+    [
+        "図形の寸法を決める",
+        "「図形」で置く → 右の「寸法」に入力",
+        "同じ",
+        "Enter で確定、Esc で戻す",
+    ],
+    [
+        "STL を開く",
+        "「開く」、またはファイルをドロップ（バイナリと ASCII）",
+        "同じ",
+        "",
+    ],
+];
+
+const OLD_KEY_NOTE: &str = "中ボタンは使わない。数字は文字キーの段で、テンキーは使わない。1文字のキーと Cmd＋Z は、入力欄に文字を打っている間は働かない。Windows と Linux では Cmd の代わりに Ctrl。";
+
+fn mac_defaults() -> KeyLabels {
+    Keymap::default().labels(Platform::Mac)
+}
+
+fn plain(key: egui::Key) -> Chord {
+    Chord {
+        key,
+        shift: false,
+        command: false,
+    }
+}
+
+/// 描いた文字と、その位置（道具の列の右下の1文字を確かめる）。
+fn painted_texts(harness: &Harness<'static, Probe>) -> Vec<(String, egui::Rect)> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                out.push((text.galley.text().to_owned(), shape.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    walk(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &harness.output().shapes {
+        walk(&clipped.shape, &mut out);
+    }
+    out
+}
+
+fn badge_of(harness: &Harness<'static, Probe>, name: &str) -> Vec<String> {
+    let button = widget(harness, name);
+    painted_texts(harness)
+        .into_iter()
+        .filter(|(text, rect)| {
+            text.chars().count() == 1
+                && button.contains_rect(*rect)
+                && rect.center().x > button.center().x
+                && rect.center().y > button.center().y
+        })
+        .map(|(text, _)| text)
+        .collect()
+}
+
+#[test]
+fn default_labels_keep_existing_text() {
+    let keys = mac_defaults();
+    for (tool, old) in OLD_TOOL_HINTS {
+        assert_eq!(toolrail::tool_hint(tool, &keys), old, "{tool:?}");
+    }
+    assert_eq!(
+        toolrail::snap_hint(true, &keys),
+        "吸着（X）: 角や辺に近づけると、そこへ点を置きます。押すと切ります"
+    );
+    assert_eq!(
+        toolrail::snap_hint(false, &keys),
+        "吸着（X）: 切っている間は、押した面の上に点を置きます。押すと入れます"
+    );
+    assert_eq!(
+        toolrail::shape_hint(ShapeKind::Cube, &keys),
+        "立方体を視点の中心に置きます"
+    );
+    // ヘルプの表: キーの列はつなぎの「＋」→「+」だけが変わり、ほかの列は変わらない。
+    let rows = help::operation_rows(&keys);
+    assert_eq!(rows.len(), DEFAULT_HELP_ROWS.len());
+    for (row, old) in rows.iter().zip(DEFAULT_HELP_ROWS) {
+        assert_eq!(row[..3], old[..3], "{old:?}");
+        assert_eq!(row[3], old[3].replace('＋', "+"), "{old:?}");
+    }
+    assert_eq!(
+        help::key_note(&keys, Platform::Mac),
+        OLD_KEY_NOTE.replace('＋', "+")
+    );
+    assert_eq!(empty::new_hint(&keys), "空の状態から作ります（Cmd+N）");
+    // 道具の列の1文字は、修飾の無い1文字のキーだけ。
+    let badges: Vec<Option<&str>> = OLD_TOOL_HINTS
+        .iter()
+        .map(|(tool, _)| toolrail::tool_badge(*tool, &keys))
+        .collect();
+    assert_eq!(
+        badges,
+        [
+            Some("V"),
+            Some("G"),
+            Some("R"),
+            Some("S"),
+            None,
+            Some("M"),
+            Some("N")
+        ]
+    );
+    // 上部のボタンの説明（今までは無かった）。キーの無いボタンは説明を出さない。
+    assert_eq!(
+        toolbar::button_hint(&keys, Action::FileOpen, "開く").as_deref(),
+        Some("開く（Cmd+O）")
+    );
+    assert_eq!(
+        toolbar::button_hint(&keys, Action::AppHelp, "ヘルプ").as_deref(),
+        Some("ヘルプ（F1）")
+    );
+    assert_eq!(
+        toolbar::button_hint(&keys, Action::FileLoadReview, "レビュー読込"),
+        None
+    );
+    // Windows と Linux の書き方。
+    let other = Keymap::default().labels(Platform::Other);
+    let rows = help::operation_rows(&other);
+    let undo = rows
+        .iter()
+        .find(|row| row[0] == "取り消し／やり直し")
+        .unwrap();
+    assert_eq!(undo[3], "Ctrl+Z ／ Shift+Ctrl+Z");
+    assert_eq!(
+        help::key_note(&other, Platform::Other),
+        "中ボタンは使わない。数字は文字キーの段で、テンキーは使わない。1文字のキーと Ctrl+Z は、入力欄に文字を打っている間は働かない。macOS では Ctrl の代わりに Cmd。"
+    );
+}
+
+#[test]
+fn rebinding_changes_hint_badge_and_help() {
+    let mut keymap = Keymap::default();
+    keymap
+        .assign(Action::ToolMove, plain(egui::Key::T), false)
+        .unwrap();
+    keymap
+        .assign(Action::ToolShape, plain(egui::Key::B), false)
+        .unwrap();
+    keymap
+        .assign(
+            Action::ToolRotate,
+            Chord {
+                key: egui::Key::R,
+                shift: true,
+                command: false,
+            },
+            false,
+        )
+        .unwrap();
+    let keys = keymap.labels(Platform::Mac);
+    assert_eq!(
+        toolrail::tool_hint(Tool::Move, &keys),
+        "移動（T）: 矢印をドラッグして動かします"
+    );
+    assert_eq!(
+        toolrail::tool_hint(Tool::Shape, &keys),
+        "図形（B）: 立方体・球・円柱・平面を置きます"
+    );
+    assert_eq!(toolrail::tool_badge(Tool::Rotate, &keys), None);
+
+    // 画面: 説明の文（読み上げの説明）と、右下の1文字が今のキーになる。
+    let mut harness = harness(ToolRailInput {
+        keys: keys.clone(),
+        ..input(Tool::Select)
+    });
+    harness.step();
+    harness.step();
+    assert_eq!(badge_of(&harness, ids::TOOL_MOVE), ["T"]);
+    assert_eq!(badge_of(&harness, ids::TOOL_SHAPE), ["B"]);
+    assert!(badge_of(&harness, ids::TOOL_ROTATE).is_empty());
+    assert_eq!(badge_of(&harness, ids::TOOL_SELECT), ["V"]);
+    assert_eq!(
+        harness
+            .get_by_label("移動")
+            .accesskit_node()
+            .description()
+            .as_deref(),
+        Some("移動（T）: 矢印をドラッグして動かします")
+    );
+    // 次のフレームから既定の文字に戻せる（割り当てが変わったときの描き直し）。
+    harness.state_mut().input.keys = mac_defaults();
+    harness.step();
+    assert_eq!(badge_of(&harness, ids::TOOL_MOVE), ["G"]);
+    assert_eq!(badge_of(&harness, ids::TOOL_SHAPE), Vec::<String>::new());
+
+    // ヘルプの表。
+    let rows = help::operation_rows(&keys);
+    let tools = rows.iter().find(|row| row[0] == "道具を選ぶ").unwrap();
+    assert_eq!(
+        tools[3],
+        "V 選択／T 移動／Shift+R 回転／S 拡大／B 図形／M 計測／N 注釈"
+    );
+    let shapes = rows.iter().find(|row| row[0] == "図形を足す").unwrap();
+    assert_eq!(shapes[3], "B");
 }

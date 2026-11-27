@@ -2,13 +2,7 @@
 
 ## テスト
 
-README の4コマンドは、GPUが無くても通る範囲です。CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。GPUがある環境では次も実行します。
-
-```
-cargo test --workspace -- --include-ignored
-```
-
-`#[ignore]` のテストは、通常の `cargo test` では ignored と数えられ、成功には数えません。内訳は次のとおりです。
+README の4コマンドはGPUが無くても実行できます。CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。次の試験は通常 ignored と数えます。GPUがある環境では `cargo test --workspace -- --include-ignored` で実行します。
 
 - GPUの描画テスト（`crates/render/tests/gpu.rs`）: 中心が背景色でない、選択で画像が変わる、大きさ0では描かない、汚れの無いフレームでは描かない、転送に失敗しても表示中のモデルが残る。基準画像との1画素比較はしません。
 - アプリの通し（`crates/app/tests/gpu_flow.rs`）と、画面の画像を書き出すテスト（`ui_shots.rs`。`UI_SHOT=<接頭辞>` で `target/ui-check/` に出力）。
@@ -17,11 +11,9 @@ cargo test --workspace -- --include-ignored
 
 ## 実機の自動操作
 
-OSの入力は使わないので、本物のマウスは動きません。ウィンドウは開きますが、前面には出ません。作業場所の直下で実行します。
+作業場所の直下で実行します。ウィンドウは背面で開き、本物のマウスは動きません。`--script` では既定のキーを使い、割り当ての変更はその起動中だけ有効です。`--keymap <ファイル>` を渡すと、そのファイルから読み込み、変更を保存します。
 
-```
-target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target/e2e
-```
+実行例は `target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target/e2e` です。
 
 | 手順 | 確かめること |
 |---|---|
@@ -33,6 +25,11 @@ target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target
 | `measure-1` | 2点の距離、部品を動かした後の距離、単位の切り替え、平行投影 |
 | `inspect-1` | 角や辺に吸着する計測、断面（軸・位置・反転、消えた側の当たり）、表示の単位 |
 | `stl-1` → `stl-2` | 見本の STL（20×30×40 mm の箱）を開く・角から角で 20 mm・注釈・円柱の寸法・GLB へ書き出し・レビュー保存。起動し直して一致 |
+| `new-1` | 何も開かずに［新規作成］・原点に大きさ 1 の立方体・レビュー保存が断られる・GLB へ書き出すと作業の対象が移る・Cmd+N で空に戻る |
+| `color-1` | 見本の車輪を赤にし、取り消しとやり直しの状態を照合。16進で青にし、複製だけ黄に変えて移動。書き出した GLB を開き直し、元と複製の色をそれぞれ照合する。状態の `selection_color` に sRGB の16進と最大8件のリニア RGBA が入る |
+| `desk-1` | 新規作成から寸法を cm で入力し、複製と軸キーで机1台（5部品）と椅子4脚（各6部品）を組む。`desk-1-assembled.json` の `nodes` は29件。`report.json` の `samples` で新規作成直後・組み立て後・書き出し後の性能値を比べる |
+| `keys-1` → `keys-2` | 移動を T に変更し、回転との重複を取り消す。再起動して割り当てを比較し、初期化後に G で移動する。両方とも同じ新規の検証用フォルダを指定する（例 `--out target/e2e-keys --keymap target/e2e-keys/keymap.json`） |
+| `keymove-1` | X へ 12.5 動かして数値欄で指定した位置と比較し、矢印3回を取り消す。Y に90度回し、Z の拡大を Esc でやめる |
 | `heavy-edit`・`heavy-inspect` | 下の重いモデルで性能を測る（先に生成する）。`heavy-inspect` は吸着の探索300回・断面の矢印のドラッグ・重い STL を開く |
 
 終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。手順の `op` は `open_model`（STL の単位の仮定 `stl_unit` を省略できる）、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
@@ -45,6 +42,10 @@ cargo run --release -p model-reviewer-testdata -- stress-nested 100000 200 targe
 cargo run --release -p model-reviewer-testdata -- stl-stress 5000000 binary target/stress.stl
 cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii target/stress-ascii.stl
 ```
+
+## 手順書の画像
+
+各手順（`guide-*.json`）を `--out target/guide` で実行します。`guide-09-shortcuts.json` だけは `--keymap target/guide/keymap.json`（まだ無いファイル）を付けます（付けないと、設定の画面に「自動操作のため、変更は保存されません」と出ます）。ほかは `--keymap` を省略します。出力した画像を1枚ずつ開き、色数を256色に落として（`ffmpeg` の `palettegen`・`paletteuse`）`docs/guide/images/` に置きます。いまの画像は、2026-11-27 に macOS 27.2.1（Apple Silicon）、ウィンドウ 1280×800（画面の倍率 1）で撮りました。
 
 ## 性能値の定義
 
@@ -64,7 +65,7 @@ cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii targe
 | フレーム間隔 | ui の開始から次の開始まで。直近120回の平均と最大。100ms 以上の空きは除く。画面に出ている間は更新周期で頭打ちになる |
 | GPUの処理時間 | 初版では計らない。常に「未計測」 |
 | メモリ | `memory_stats` の `physical_mem` が取れたときだけ。プロセスの常駐メモリ |
-| 編集の確定 | 直近の変形・数値の確定・追加・複製・削除で、文書と履歴を書き換えた時間 |
+| 編集の確定 | 直近の変形・数値の確定・色の変更・追加・複製・削除で、文書と履歴を書き換えた時間 |
 | 取り消し・やり直し | 直近の取り消し・やり直しで、文書とレビューを書き換えた時間 |
 | 履歴 | 履歴が持つ操作の大きさの見積もり（バイト）と、取り消せる回数 |
 | 書き出し | 読み取り・組み立て・書き込み・確かめの各時間と、書き出し中の常駐メモリの最大 |

@@ -9,6 +9,7 @@ use crate::session::Session;
 use crate::ui::ids;
 use serde_json::{Number, json};
 use std::fs;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -35,6 +36,124 @@ fn scratch(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[test]
+fn shortcut_and_keymove_scripts_parse() {
+    let out = scratch("keys-parse");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("e2e");
+    for name in ["keys-1.json", "keys-2.json", "keymove-1.json"] {
+        load_script(&scripts.join(name), &out).unwrap_or_else(|err| panic!("{name}: {err}"));
+    }
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn color_and_desk_scripts_parse() {
+    let out = scratch("color-parse");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("e2e");
+    load_script(&scripts.join("color-1.json"), &out).unwrap();
+    let desk = load_script(&scripts.join("desk-1.json"), &out).unwrap();
+    let parts = desk
+        .steps
+        .iter()
+        .filter(|step| match &step.op {
+            Op::ClickWidget { name } => name.starts_with("shape."),
+            Op::Key {
+                key: egui::Key::D,
+                modifiers,
+            } => modifiers.command,
+            _ => false,
+        })
+        .count();
+    assert_eq!(parts, 29);
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn selection_color_keeps_the_number_and_samples_eight_linear_colors() {
+    use super::state::state_value;
+    use crate::command::Command;
+    use model_reviewer_core::review::ReviewState;
+    use model_reviewer_core::scene::{NodeId, SceneRead};
+    let mut session = Session::default();
+    assert!(state_value(&session)["selection_color"].is_null());
+    let model = model_reviewer_gltf::load_glb(&model_reviewer_testdata::sample_glb()).unwrap();
+    session.review = Some(ReviewState::new(&model));
+    session.set_model(std::sync::Arc::new(model));
+    session.apply(Command::Select(Some(NodeId(0))));
+    let root = state_value(&session);
+    assert_eq!(root["selection"], 0);
+    let linear = session
+        .doc
+        .as_ref()
+        .unwrap()
+        .subtree_colors(model_reviewer_core::doc::NodeKey(0))
+        .unwrap();
+    assert!(linear.len() > 8);
+    assert_eq!(
+        root["selection_color"],
+        json!({ "state": "mixed", "srgb": null, "linear": &linear[..8] })
+    );
+    session.apply(Command::Select(Some(NodeId(3))));
+    session.apply(Command::SetColor([0.0, 1.0, 0.0]));
+    assert_eq!(
+        state_value(&session)["selection_color"],
+        json!({
+            "state": "one", "srgb": "00FF00", "linear": [[0.0, 1.0, 0.0, 1.0]]
+        })
+    );
+
+    let rich = model_reviewer_gltf::load_glb(&model_reviewer_testdata::rich_glb()).unwrap();
+    let empty = rich
+        .find_file_index(model_reviewer_testdata::rich::JOINT)
+        .unwrap();
+    session.set_model(std::sync::Arc::new(rich));
+    session.apply(Command::Select(Some(empty)));
+    assert_eq!(
+        state_value(&session)["selection_color"],
+        json!({ "state": "none", "srgb": null, "linear": [] })
+    );
+}
+
+#[test]
+fn state_includes_bindings_window_and_numeric_entry() {
+    use super::state::{comparable, state_value};
+    use crate::command::{Axis, Command, KeyInput, ShapeKind};
+    use crate::keymap::{Action, Chord};
+    let mut s = Session::default();
+    s.apply(Command::SetKeysOpen(true));
+    s.apply(Command::BeginKeyCapture(Action::ToolRotate));
+    assert_eq!(state_value(&s)["keys"]["window"]["capture"], "tool.rotate");
+    s.apply(Command::CaptureKey(Chord::parse("G")));
+    assert_eq!(state_value(&s)["keys"]["window"]["conflict"], "tool.move");
+    s.apply(Command::ResolveKeyConflict { replace: true });
+    assert_eq!(
+        state_value(&s)["keys"],
+        json!({
+            "source":"default", "saved":false, "changed":{"tool.move":null, "tool.rotate":"G"},
+            "window":{"open":true, "capture":null,"conflict":null}
+        })
+    );
+    s.apply(Command::SetKeysOpen(false));
+    s.apply(Command::NewDocument);
+    s.apply(Command::AddShape(ShapeKind::Cube));
+    s.apply(Command::BeginKeyTransform(Axis::Z));
+    s.apply(Command::KeyTransformInput(KeyInput::Char('-')));
+    let actual = state_value(&s);
+    assert_eq!(
+        actual["transform"]["key_entry"],
+        json!({"axis":"z","text":"-"})
+    );
+    let mut restored = actual.clone();
+    restored["keys"]["source"] = json!("file");
+    restored["keys"]["saved"] = json!(true);
+    restored["history"] = json!({});
+    assert_eq!(comparable(actual.clone()), comparable(restored.clone()));
+    restored["keys"]["changed"] = json!({});
+    assert_ne!(comparable(actual), comparable(restored));
+    s.apply(Command::CancelTransform);
+    assert!(state_value(&s)["transform"]["key_entry"].is_null());
 }
 
 #[test]
@@ -498,4 +617,28 @@ fn scroll_view_waits_until_the_smoothed_scroll_is_delivered() {
     );
     assert!(automation.finished, "quit まで進む");
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// 新規の文書の状態（第5段階の要件6.2）。画面なしの試験台は `raw_input_hook` を呼ばず、手順の
+/// クリックが届かないので、状態の値を直接作って確かめる（手順は `e2e/new-1.json`）。
+#[test]
+fn new_document_is_dumped_as_new() {
+    use crate::command::{Command, ShapeKind};
+    let mut session = Session::default();
+    session.apply(Command::NewDocument);
+    let new = super::state::state_value(&session);
+    assert_eq!(new["source_kind"], "new");
+    assert!(new["nodes"].as_array().unwrap().is_empty());
+    assert!(new["units"]["stl"].is_null());
+    assert_eq!(new["unit"], "m");
+    assert_eq!(new["grid"]["spacing"].as_f64(), Some(f64::from(0.1_f32)));
+    assert_eq!(new["unsaved"], false);
+    assert_eq!(new["triangles"], 0);
+    session.apply(Command::AddShape(ShapeKind::Cube));
+    let cube = super::state::state_value(&session);
+    assert_eq!(cube["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(cube["doc_unsaved"], true);
+    assert_eq!(cube["source_kind"], "new");
+    let dims = &cube["selection_dims"];
+    assert!(!dims.is_null(), "{cube}");
 }

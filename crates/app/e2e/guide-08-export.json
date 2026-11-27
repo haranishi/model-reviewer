@@ -1,0 +1,14 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "parts.row.3" },
+    { "op": "click_widget", "name": "color.swatch.4" },
+    { "op": "export_glb", "path": "guide-cart.glb" },
+    { "op": "wait_idle" },
+    { "op": "sample", "label": "書き出しの結果", "frames": 60 },
+    { "op": "screenshot", "path": "export-result.png" },
+    { "op": "quit" }
+  ]
+}

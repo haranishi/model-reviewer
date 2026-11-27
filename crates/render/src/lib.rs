@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use glam::{Affine3A, Mat4};
-use model_reviewer_core::scene::{Model, NodeId, Primitive, SceneRead};
+use model_reviewer_core::scene::{Model, Primitive, SceneRead};
 use model_reviewer_core::visibility::Visibility;
 
 pub mod display;
@@ -454,8 +454,9 @@ impl SceneRenderer {
         self.shown.as_ref().map_or(0, |shown| shown.added_bytes)
     }
 
-    /// 変形を確定した範囲（`NodeId` の連続範囲）の部品のインスタンスだけを `queue.write_buffer` で
-    /// 書き直す。構造と表示状態は変わっていない前提（変わったら `set_instances`）。隣り合う位置は
+    /// 変形か色を確定した範囲（`NodeId` の連続範囲）の部品のインスタンスだけを `queue.write_buffer` で
+    /// 書き直す。行列と色の両方を文書から読み直す（`instances::patch`）。構造と表示状態は
+    /// 変わっていない前提（変わったら `set_instances`）。隣り合う位置は
     /// まとめて1回で送る。送るのは範囲の部品のインスタンスの分だけ。
     pub fn update_instances(
         &mut self,
@@ -480,16 +481,16 @@ impl SceneRenderer {
             );
             return;
         }
-        let mut slots = list.node_slots(&nodes).to_vec();
+        let patched = instances::patch(list, model, &nodes);
+        if patched.mismatched > 0 {
+            log::warn!(
+                "update_instances: 描画の数とインスタンスの数が合わない部品が {} 個あり、色を前の値のままにした",
+                patched.mismatched
+            );
+        }
+        let slots = patched.slots;
         if slots.is_empty() {
             return;
-        }
-        slots.sort_unstable();
-        for &slot in &slots {
-            let old = list.raw[slot as usize];
-            let node = list.nodes[slot as usize];
-            list.raw[slot as usize] =
-                instances::instance(model.world(NodeId(node)), old.color, node, old.ids[1]);
         }
         let mut sent = 0u64;
         let mut run_start = 0usize;

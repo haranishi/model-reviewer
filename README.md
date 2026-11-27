@@ -14,6 +14,8 @@ A small desktop app, written in Rust, for checking 3D models and making simple c
 - A GPU and a display. On Windows and Linux, CI checks only the build and the automated tests; the window is untested.
 - On Linux, install a Japanese font (for example Noto Sans CJK) so the UI text can be shown.
 
+[The step-by-step guide is in Japanese](docs/guide/README.md).
+
 ## Run
 
 ```
@@ -39,20 +41,20 @@ Arguments: `[GLB, STL or review JSON]`, `--script` and `--out` for scripted runs
 | Action | Mouse / trackpad | Key |
 |---|---|---|
 | Orbit | Left drag | |
-| Pan | Right drag, or Shift + drag | |
+| Pan | Right drag, or Shift+drag | |
 | Zoom | Wheel, two-finger scroll, pinch | |
 | Select | Click | Esc to clear |
 | Frame all / frame selection / home view | Toolbar buttons | A / F / Home |
 | Front, right, top view | Click a face of the cube | 1 / 3 / 7 |
-| Projection / display mode | Buttons above the view | 5 / Z, Shift + Z |
+| Projection / display mode | Buttons above the view | 5 / Z, Shift+Z |
 | Tools | Column on the left | V select, G move, R rotate, S scale, M measure, N note |
-| Undo / redo | Toolbar buttons | Cmd + Z / Shift + Cmd + Z |
-| Duplicate / delete | | Cmd + D / Delete (Backspace) |
-| Hide / show all | Eye icon, button | H / Shift + H |
+| Undo / redo | Toolbar buttons | Cmd+Z / Shift+Cmd+Z |
+| Duplicate / delete | | Cmd+D / Delete (Backspace) |
+| Hide / show all | Eye icon, button | H / Shift+H |
 | Snapping on / off (measure tool) | Button next to the tool column | X |
 | Section view | Button above the view | C |
 
-No middle button is needed. On Windows and Linux use Ctrl instead of Cmd. Single-letter keys are ignored while you type in a text field.
+You can change shortcuts in the app. See [guide 09](docs/guide/09-shortcuts.md). No middle button is needed. On Windows and Linux use Ctrl instead of Cmd. Single-letter keys are ignored while you type in a text field.
 
 ## Supported GLB, STL and export
 
@@ -64,11 +66,11 @@ It stores hidden parts, notes, views, and the path and fingerprint of the source
 
 ## Limitations
 
-- No vertex, edge or face editing; no reparenting, multi-selection, color or material editing, angle measurement, new empty document or auto-save.
+- You can start with an empty document and change a part’s base color. Vertex, edge and face editing, reparenting, multi-selection, texture and metallic material editing, angle measurement and auto-save are unavailable.
 - Snapping only looks at the part under the pointer. The section view has a single axis-aligned plane; cut surfaces get a flat colour without caps or outlines, and open or inside-out meshes can show that colour elsewhere.
 - For animated parts, playback tools use the animation values instead of your transform. glTF ignores the node transform of skinned parts. The export result counts both.
 - One dark theme. Window layout and unit choice are not remembered.
-- The unsaved-changes prompt appears on window close, Cmd + Q and the Quit menu, but not on Dock Quit or log out.
+- The unsaved-changes prompt appears on window close, Cmd+Q and the Quit menu, but not on Dock Quit or log out.
 - Memory used during export is not returned to the OS right away. GPU time is not measured.
 
 ## Development

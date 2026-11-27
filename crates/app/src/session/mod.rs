@@ -1,5 +1,6 @@
 //! 画面が読む状態。書き換えは `apply` だけが行う。
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,14 +23,19 @@ use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
 use crate::exporter::{ExportHandle, ExportHooks, ExportStage};
+use crate::keymap::store::Store;
+use crate::keymap::{KeyLabels, Keymap};
 use crate::loader::{self, LoadEvent, LoadHandle, LoadHooks, LoadOptions, LoadPhase, LoadedModel};
 use crate::metrics::Metrics;
 use crate::ui::ids;
 
 mod camera;
+pub mod color;
 mod dims;
 mod edit;
 mod export;
+pub mod keymove;
+mod keys;
 mod measure;
 mod notes;
 mod open;
@@ -40,11 +46,14 @@ mod section;
 mod snap;
 mod view;
 
+pub use color::{ColorState, ColorView, selection_color};
 pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
-    GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
+    GIZMO_SIZE, KeyEntry, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits,
+    tool_has_gizmo,
 };
-pub use export::{export_scene, note_ja, stl_export_note};
+pub use export::{NEW_EXPORT_NOTE, export_scene, note_ja, nothing_to_export, stl_export_note};
+pub use keys::{KeyConflict, KeysState};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
 pub use pick::ray_hit;
@@ -65,13 +74,26 @@ pub enum SourceKind {
     Glb,
     /// STL。`unit` は座標の単位の仮定。
     Stl { unit: UnitLabel },
+    /// 新規作成した文書（まだ書き出していない）。書き出すと `Glb` へ移る。
+    New,
 }
+
+/// 新規の文書の初期視点の距離。格子の間隔が 0.1 になる（要件1.6）。
+pub const NEW_DISTANCE: f32 = 4.0;
+
+/// 部品の無い新規の文書を書き出そうとしたときの文（要件2.2）。
+pub const NOTHING_TO_EXPORT: &str = "書き出す部品がありません。図形を置いてから書き出してください";
+
+/// 新規の文書でレビューを保存しようとしたときの文（要件2.6）。
+pub const REVIEW_NEEDS_EXPORT: &str = "先に GLB を書き出すと、レビューを保存できます";
 
 #[derive(Clone, Debug, PartialEq)]
 enum Pending {
     OpenModel(PathBuf, LoadOptions),
     LoadReview(PathBuf),
     Quit,
+    /// 新規作成（未保存の確認の後に続ける）。
+    New,
 }
 
 pub struct Session {
@@ -90,6 +112,7 @@ pub struct Session {
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
     pub selection: Option<NodeId>,
+    color_cache: Cell<Option<ColorView>>,
     /// 2点の計測。保存せず、履歴にも未保存の印にも入れない。部品を消すと消える。
     pub measurement: Measurement,
     /// ファイルの単位（前提）と表示の単位。作業の間だけの設定で、保存しない。
@@ -119,7 +142,7 @@ pub struct Session {
     pub history: History,
     /// 変形中（ハンドルか数値の欄のドラッグ）。文書はまだ書き換えていない。
     pub transform: Option<Transform>,
-    /// 確定した変形で `world` が変わった範囲。`gpu_view` が次のフレームで取り出して部分更新する。
+    /// 行列または基本色が変わった範囲。次のフレームでインスタンスを部分更新する。
     pending_patches: Vec<Range<u32>>,
     /// 最後に書き出した時点の文書の版。いまの版と違えば「形の編集 未書き出し」。
     saved_doc_rev: u64,
@@ -181,6 +204,15 @@ pub struct Session {
     home_on_resize: bool,
     upload_cpu: Duration,
     upload_frames: u64,
+    /// 操作とキーの表。割り当ての変更は履歴にも未保存の印にも入れない。
+    pub keymap: Keymap,
+    /// 画面のキーの文字。`keymap.rev()` が変わったときだけ作り直す。
+    pub key_labels: KeyLabels,
+    /// ショートカットの設定の画面の状態。
+    pub keys: KeysState,
+    /// 設定ファイルの持ち手。既定は場所の無いもの（読まない・書かない）。
+    pub store: Store,
+    pub(crate) scripted: bool,
 }
 
 impl Default for Session {
@@ -195,6 +227,7 @@ impl Default for Session {
             grid_visible: true,
             lines_supported: false,
             selection: None,
+            color_cache: Cell::new(None),
             measurement: Measurement::default(),
             units: Units::default(),
             source_kind: SourceKind::Glb,
@@ -262,6 +295,11 @@ impl Default for Session {
             home_on_resize: false,
             upload_cpu: Duration::ZERO,
             upload_frames: 0,
+            keymap: Keymap::default(),
+            key_labels: KeyLabels::default(),
+            keys: KeysState::default(),
+            store: Store::none(),
+            scripted: false,
         }
     }
 }
@@ -284,7 +322,8 @@ struct Incoming {
     generation: u64,
     doc: Document,
     review: Option<ReviewState>,
-    model_ref: ModelRef,
+    /// 新規作成では `None`（ファイルが無い）。そのときファイルの大きさと時間の項目は 0。
+    model_ref: Option<ModelRef>,
     source_kind: SourceKind,
     source_path: Option<PathBuf>,
     forbid_on_commit: bool,
@@ -306,7 +345,12 @@ impl Session {
         let doc_rev = self.history.doc_rev();
         let camera = self.camera;
         let shown = self.shown_generation;
+        let key_rev = self.keymap.rev();
         self.apply_inner(cmd);
+        if self.keymap.rev() != key_rev {
+            keys::save_changes(self);
+        }
+        self.clear_keys_for_dialog();
         // 道具・部品の表・視点・モデルが変わったら、吸着の候補は古い（次の移動で探し直す）。
         if self.tool != tool
             || self.history.doc_rev() != doc_rev
@@ -335,6 +379,8 @@ impl Session {
                 } else if self.doc_unsaved() {
                     self.dialog = Some(export::export_first_dialog());
                     self.status_text = "先にGLBを書き出してください".to_owned();
+                } else if self.is_new_document() {
+                    persist::refuse_new_review(self);
                 }
             }
             Command::ExportGlbDialog => {
@@ -342,10 +388,15 @@ impl Session {
                     self.status_text = "すでに書き出し中です".to_owned();
                 } else if self.is_loading_replacement() {
                     self.block_edit_if_locked();
-                } else if self.doc.is_none() || self.model_ref.is_none() {
+                } else if self.doc.is_none()
+                    || (self.model_ref.is_none() && !self.is_new_document())
+                {
                     self.status_text = "モデルを開くと書き出せます".to_owned();
+                } else if export::nothing_to_export(self) {
+                    export::refuse_empty(self);
                 }
             }
+            Command::NewDocument => open::new_guarded(self),
             Command::OpenModel(path) => open::open_guarded(self, path, LoadOptions::default()),
             Command::LoadReview(path) => open::review_guarded(self, path),
             Command::DroppedFiles(paths) => open::dropped(self, paths),
@@ -356,7 +407,21 @@ impl Session {
             Command::Zoom { factor, cursor_ndc } => camera::zoom(self, factor, cursor_ndc),
             Command::FitAll => camera::fit_all(self),
             Command::FitSelection => camera::fit_selection(self),
-            Command::Home => camera::home(self),
+            Command::Home => {
+                // 範囲が空（新規の直後や全部消した後）なら、新規の文書の初期視点へ戻す。
+                // `OrbitCamera::home` は空の範囲で距離 1 にするため、ここで分ける。
+                if self.doc.as_ref().is_some_and(|doc| doc.bounds().is_empty()) {
+                    let before = self.camera;
+                    self.camera = initial_camera(
+                        &model_reviewer_core::math::Aabb::empty(),
+                        aspect_of(self.viewport_px),
+                        self.camera.projection,
+                    );
+                    camera::mark_camera(self, before);
+                } else {
+                    camera::home(self);
+                }
+            }
             Command::ViewClick { ndc } => {
                 if self.model.is_some() && self.pick_index.is_none() {
                     self.status_text = "選択の準備中です".to_owned();
@@ -468,6 +533,7 @@ impl Session {
             Command::CancelTransform => edit::cancel_transform(self),
             Command::PreviewLocal(trs) => edit::preview_local(self, trs),
             Command::CommitLocal(trs) => edit::commit_local(self, trs),
+            Command::SetColor(rgb) => color::set_color(self, rgb),
             Command::Undo => edit::undo(self),
             Command::Redo => edit::redo(self),
             Command::AddShape(kind) => edit::add_shape(self, kind),
@@ -484,6 +550,18 @@ impl Session {
             Command::ToggleSection => section::toggle_section(self),
             Command::SetDisplayUnit(unit) => measure::set_display_unit(self, unit),
             Command::SetStlUnit(unit) => set_stl_unit(self, unit),
+            Command::SetKeysOpen(open) => keys::set_open(self, open),
+            Command::BeginKeyCapture(action) => keys::begin_capture(self, action),
+            Command::CancelKeyCapture => keys::cancel_capture(self),
+            Command::CaptureKey(key) => keys::capture(self, key),
+            Command::ResolveKeyConflict { replace } => keys::resolve_conflict(self, replace),
+            Command::ClearKey(action) => keys::clear(self, action),
+            Command::ResetKey(action) => keys::reset(self, action),
+            Command::ArmResetAllKeys(armed) => keys::arm_reset_all(self, armed),
+            Command::ResetAllKeys => keys::reset_all(self),
+            Command::BeginKeyTransform(axis) => keymove::begin(self, axis),
+            Command::KeyTransformInput(key) => keymove::input(self, key),
+            Command::Nudge { axis, sign, fine } => keymove::nudge(self, axis, sign, fine),
         }
     }
 
@@ -544,6 +622,13 @@ impl Session {
         self.egui_ctx = Some(ctx.clone());
     }
 
+    /// 非同期の読み込み・書き出しでも、ダイアログを表示する前に取り込みと確認を解く。
+    pub(crate) fn clear_keys_for_dialog(&mut self) {
+        if self.dialog.is_some() {
+            self.keys.clear_pending();
+        }
+    }
+
     /// 部品を読む口。モデルが無ければ `None`。
     pub fn scene(&self) -> Option<&Document> {
         self.doc.as_ref()
@@ -552,6 +637,7 @@ impl Session {
     /// モデルを置き、その文書を作る。読み込み（`commit_pending`）と、読み込みを通さない試験が使う。
     /// レビュー・選択・視点には触れない。
     pub fn set_model(&mut self, model: Arc<Model>) {
+        self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
         self.model = Some(model);
         self.measurement.clear();
@@ -612,9 +698,8 @@ impl Session {
                 self.home_on_resize = false;
                 if let Some(doc) = &self.doc {
                     let bounds = doc.bounds();
-                    let projection = self.camera.projection;
-                    self.camera = OrbitCamera::home(&bounds, aspect_of(size_px));
-                    self.camera.projection = projection;
+                    self.camera =
+                        initial_camera(&bounds, aspect_of(size_px), self.camera.projection);
                     self.scene_dirty.camera = true;
                 }
             }
@@ -637,7 +722,7 @@ impl Session {
         std::mem::take(&mut self.scene_dirty)
     }
 
-    /// 確定した変形で動いた範囲（部分更新の対象）。取り出すと空になる。
+    /// 確定した変形や色の変更で部分更新する範囲。取り出すと空になる。
     pub fn take_instance_patches(&mut self) -> Vec<Range<u32>> {
         std::mem::take(&mut self.pending_patches)
     }
@@ -695,6 +780,7 @@ impl Session {
 
     /// モデルやレビューを開いた。履歴を空にし、いまの版を保存済みとする。
     pub(super) fn reset_history(&mut self) {
+        self.color_cache.set(None);
         self.history.clear();
         self.transform = None;
         self.pending_patches.clear();
@@ -707,17 +793,15 @@ impl Session {
     /// 書き出し中、または未保存・入力途中なら閉じるのを止め、確認を出す。止めるときは `true`。
     pub fn on_close_requested(&mut self) -> bool {
         if self.is_exporting() {
-            self.dialog = Some(exporting_close_dialog());
             self.status_text = "書き出し中は閉じられません".to_owned();
-            return true;
-        }
-        if !self.needs_confirm() || self.quit_after_confirm {
+            self.dialog = Some(exporting_close_dialog());
+        } else if !self.needs_confirm() || self.quit_after_confirm {
             return false;
-        }
-        if self.pending.is_none() {
+        } else if self.pending.is_none() {
             self.pending = Some(Pending::Quit);
             self.dialog = Some(self.discard_dialog());
         }
+        self.clear_keys_for_dialog();
         true
     }
 
@@ -756,6 +840,7 @@ impl Session {
         match self.pending.take() {
             Some(Pending::OpenModel(path, options)) => open::open_model(self, path, options),
             Some(Pending::LoadReview(path)) => open::load_review(self, path),
+            Some(Pending::New) => open::new_document(self),
             Some(Pending::Quit) => {
                 self.discard_bypass = false;
                 self.mark_saved();
@@ -785,6 +870,20 @@ impl Session {
 
     pub(super) fn advance_review_generation(&mut self) {
         self.review_generation = self.review_generation.wrapping_add(1);
+    }
+
+    /// 新規作成した文書を、まだ書き出していない（`source_kind` が `New`）。
+    pub fn is_new_document(&self) -> bool {
+        self.doc.is_some() && self.source_kind == SourceKind::New
+    }
+
+    /// 読み込み（またはGPUへの転送）の途中。表示中のモデルの有無によらない。
+    pub fn is_loading(&self) -> bool {
+        self.incoming.is_some()
+            || matches!(
+                self.load,
+                LoadPhase::Reading | LoadPhase::Parsing | LoadPhase::Uploading { .. }
+            )
     }
 
     /// 表示中のモデルを置き換える読み込みの途中。
@@ -858,6 +957,10 @@ impl Session {
         forbid_on_commit: bool,
         options: LoadOptions,
     ) {
+        if expected_identity.is_some() {
+            self.protect_document(&path);
+        }
+        self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
         if let Some(active) = self.loader.take() {
             active.cancel();
@@ -894,6 +997,50 @@ impl Session {
             hooks,
             ctx,
         ));
+    }
+
+    /// 空のモデルを、読み込んだモデルと同じ受け渡し（`Incoming` → 転送 → `commit_pending`）へ流す。
+    /// ファイルは読まず、何も書かない（要件1.10）。
+    pub(super) fn start_new_document(&mut self) {
+        self.keys.clear_pending();
+        self.generation = self.generation.wrapping_add(1);
+        if let Some(active) = self.loader.take() {
+            active.cancel();
+        }
+        edit::cancel_transform(self);
+        self.staged_pick = None;
+        self.load_meta = None;
+        self.cancel_upload = true;
+        self.upload_cpu = Duration::ZERO;
+        self.upload_frames = 0;
+        self.awaiting_present = false;
+        self.open_started = Some(Instant::now());
+        self.export_error = None;
+        self.export_failed = false;
+        self.loading_file_name = None;
+        self.dialog = None;
+        self.incoming = Some(Incoming {
+            generation: self.generation,
+            doc: Document::new(Arc::new(Model::empty())),
+            review: None,
+            model_ref: None,
+            source_kind: SourceKind::New,
+            source_path: None,
+            forbid_on_commit: false,
+            file_bytes: 0,
+            read: Duration::ZERO,
+            identity: Duration::ZERO,
+            parse: Duration::ZERO,
+        });
+        if self.gpu_upload {
+            // 送るものは0バイトで、次の転送の1回で終わる。
+            self.load = LoadPhase::Uploading {
+                uploaded_bytes: 0,
+                total_bytes: 0,
+            };
+        } else {
+            self.commit_pending(false);
+        }
     }
 
     pub(super) fn cancel_pending_load(&mut self) {
@@ -1006,7 +1153,7 @@ impl Session {
             generation: loaded.generation,
             doc,
             review,
-            model_ref: loaded.model_ref,
+            model_ref: Some(loaded.model_ref),
             source_kind: loaded.source_kind,
             source_path,
             forbid_on_commit,
@@ -1147,6 +1294,7 @@ impl Session {
         if incoming.generation != self.generation {
             return;
         }
+        let is_new = incoming.source_kind == SourceKind::New;
         let doc = incoming.doc;
         let review = incoming.review;
         notes::clear_body_edits(self);
@@ -1158,20 +1306,20 @@ impl Session {
         let aspect = aspect_of(self.viewport_px);
         let viewport_known = self.viewport_px[0] > 0 && self.viewport_px[1] > 0;
         // 投影は利用者が選んだ見方なので、モデルを開き直しても保つ。
-        let projection = self.camera.projection;
-        self.camera = OrbitCamera::home(&doc.bounds(), aspect);
-        self.camera.projection = projection;
+        self.camera = initial_camera(&doc.bounds(), aspect, self.camera.projection);
         self.home_on_resize = !viewport_known;
         if incoming.forbid_on_commit {
             if let Some(source) = incoming.source_path.as_deref() {
                 self.remember_opened_file(source);
             }
-            self.remember_opened_file(&incoming.model_ref.path);
+            if let Some(model_ref) = incoming.model_ref.as_ref() {
+                self.remember_opened_file(&model_ref.path);
+            }
         }
         self.exported_since_load = false;
         self.export_error = None;
         self.export_failed = false;
-        self.model_ref = Some(incoming.model_ref);
+        self.model_ref = incoming.model_ref;
         self.review = Some(review.unwrap_or_else(|| ReviewState::new(&doc)));
         self.selection = None;
         self.selected_annotation = None;
@@ -1190,8 +1338,9 @@ impl Session {
         // GLB を開くと、ファイルの単位は m、表示は「ファイルと同じ」（要件7.5）。STL は部品の大きさで
         // メートルに合わせてあるので、シーンの単位は m、表示は STL の単位の仮定（要件7.6）。
         self.source_kind = incoming.source_kind;
+        // 新規の文書も GLB と同じ（シーンはメートル、表示は「ファイルと同じ」。要件1.5）。
         self.units = match incoming.source_kind {
-            SourceKind::Glb => Units::default(),
+            SourceKind::Glb | SourceKind::New => Units::default(),
             SourceKind::Stl { unit } => Units {
                 source: UnitLabel::M,
                 display: Some(unit),
@@ -1202,7 +1351,9 @@ impl Session {
         self.discard_bypass = false;
         self.loading_file_name = None;
         self.load = LoadPhase::Idle;
-        self.status_text = if restored_review {
+        self.status_text = if is_new {
+            "新規の文書を作りました".to_owned()
+        } else if restored_review {
             "レビューを復元しました".to_owned()
         } else {
             "読み込み完了".to_owned()
@@ -1212,10 +1363,12 @@ impl Session {
         self.scene_dirty.instances = true;
         self.scene_dirty.selection = true;
         self.scene_dirty.camera = true;
-        self.metrics.file_bytes = Some(incoming.file_bytes);
-        self.metrics.read = Some(incoming.read);
-        self.metrics.identity = Some(incoming.identity);
-        self.metrics.parse = Some(incoming.parse);
+        // 新規の文書はファイルを読んでいないので、ファイルの大きさと読み取り・識別・解析は測らない。
+        let measured = !is_new;
+        self.metrics.file_bytes = measured.then_some(incoming.file_bytes);
+        self.metrics.read = measured.then_some(incoming.read);
+        self.metrics.identity = measured.then_some(incoming.identity);
+        self.metrics.parse = measured.then_some(incoming.parse);
         self.metrics.pick = None;
         self.metrics.first_present = None;
         self.metrics.upload_cpu = None;
@@ -1237,6 +1390,13 @@ impl Session {
         {
             self.pick_index = Some(pick.index);
             self.metrics.pick = Some(pick.elapsed);
+        }
+        // 新規の文書には読み込みのスレッドが無い。形状0個の索引はすぐ作れるので、ここで作る
+        // （無いと、クリックが「選択の準備中」になり、自動操作の `wait_idle` が終わらない）。
+        if is_new && self.pick_index.is_none() {
+            let started = Instant::now();
+            self.pick_index = self.doc.as_ref().map(PickIndex::build);
+            self.metrics.pick = Some(started.elapsed());
         }
     }
 
@@ -1336,6 +1496,7 @@ fn interrupts_transform(cmd: &Command, transform: Option<&Transform>) -> bool {
         | Command::DuplicateSelected
         | Command::DeleteSelected
         | Command::ExportGlb(_)
+        | Command::NewDocument
         | Command::SetTool(_) => true,
         _ => false,
     }
@@ -1349,6 +1510,22 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     } else {
         "不明".to_owned()
     }
+}
+
+/// 開いた直後の視点。範囲が空（新規の文書）なら、原点を `NEW_DISTANCE` から見る（格子 0.1）。
+/// 投影は利用者が選んだ見方なので、引き継ぐ。
+fn initial_camera(
+    bounds: &model_reviewer_core::math::Aabb,
+    aspect: f32,
+    projection: model_reviewer_core::camera::Projection,
+) -> OrbitCamera {
+    let mut camera = OrbitCamera::home(bounds, aspect);
+    if bounds.is_empty() {
+        camera.target = glam::Vec3::ZERO;
+        camera.distance = NEW_DISTANCE;
+    }
+    camera.projection = projection;
+    camera
 }
 
 fn aspect_of(px: [u32; 2]) -> f32 {

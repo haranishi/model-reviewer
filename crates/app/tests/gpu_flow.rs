@@ -598,3 +598,172 @@ fn section_redraws_with_constants_only() {
     assert!(diff(whole, back) < 3.0, "外すと元の絵: {whole:?} {back:?}");
     assert!(harness.state().gpu_notice().is_none());
 }
+
+/// 新規作成（第5段階）: 部品0個の空のモデルの転送が終わり、図形を足して描ける。全部消しても、
+/// もう一度置いても落ちない。開いていたモデルの形状は解放される。
+#[test]
+#[ignore = "GPUが必要"]
+fn empty_model_uploads_and_accepts_shapes() {
+    let dir = scratch("new-doc");
+    let glb = dir.join("sample.glb");
+    std::fs::write(&glb, sample_glb()).unwrap();
+    let launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .wgpu()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_max_steps(800)
+        .with_size(egui::vec2(1100.0, 720.0))
+        .with_context_setup(model_reviewer::fonts::install)
+        .build_eframe(|cc| App::new(cc, launch));
+    // 先にモデルを開いておき、新規作成で入れ替わることも確かめる。
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::DroppedFiles(vec![glb]));
+    wait_ready(&mut harness);
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::NewDocument);
+    wait_ready(&mut harness);
+    {
+        let session = harness.state().session();
+        assert!(session.is_new_document(), "status={}", session.status_text);
+        assert!(session.doc.as_ref().unwrap().nodes().is_empty());
+        assert_eq!(session.status_text, "新規の文書を作りました");
+    }
+    assert!(harness.state().gpu_notice().is_none());
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::SetGrid(false));
+    harness.step();
+    harness.step();
+    let empty = center_color(&mut harness);
+    let sent = harness.state().gpu_stats().unwrap().uploaded_bytes;
+    // 視点は原点を見ている。1つ目の図形は原点に大きさ 1 で置かれ、画面の中央に映る。
+    harness.state_mut().session_mut().apply(Command::AddShape(
+        model_reviewer_core::shapes::ShapeKind::Cube,
+    ));
+    harness.step();
+    harness.step();
+    let with_cube = center_color(&mut harness);
+    let diff = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
+    assert!(
+        diff(empty, with_cube) > 30.0,
+        "図形が描かれていない: 空 {empty:?} 図形 {with_cube:?}"
+    );
+    assert!(harness.state().gpu_stats().unwrap().uploaded_bytes > sent);
+    // 全部消すと空の画面に戻り、もう一度置ける。
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::DeleteSelected);
+    harness.step();
+    harness.step();
+    let cleared = center_color(&mut harness);
+    assert!(diff(empty, cleared) < 3.0, "消すと空 {empty:?} {cleared:?}");
+    harness.state_mut().session_mut().apply(Command::AddShape(
+        model_reviewer_core::shapes::ShapeKind::Sphere,
+    ));
+    harness.step();
+    harness.step();
+    let with_sphere = center_color(&mut harness);
+    assert!(diff(empty, with_sphere) > 30.0, "2つ目も描かれる");
+    assert!(harness.state().gpu_notice().is_none());
+}
+
+/// 同じ立方体を左右に置き、右の色を変えた前後で3Dビューの画素を比べる。
+#[test]
+#[ignore = "GPUが必要"]
+fn recolor_changes_only_that_part() {
+    use glam::Vec3;
+    use model_reviewer::command::{Projection, ShapeKind, Tool, Trs, ViewDir};
+
+    let launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    let mut h = egui_kittest::Harness::builder()
+        .wgpu()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_context_setup(model_reviewer::fonts::install)
+        .build_eframe(|cc| App::new(cc, launch));
+    h.state_mut().session_mut().apply(Command::NewDocument);
+    wait_ready(&mut h);
+    let session = h.state_mut().session_mut();
+    session.apply(Command::SetGrid(false));
+    session.apply(Command::SetProjection(Projection::Orthographic));
+    session.apply(Command::SnapView(ViewDir::Front));
+    session.apply(Command::AddShape(ShapeKind::Cube));
+    session.apply(Command::CommitLocal(Trs {
+        translation: Vec3::X * -0.8,
+        ..Trs::default()
+    }));
+    session.apply(Command::DuplicateSelected);
+    session.apply(Command::CommitLocal(Trs {
+        translation: Vec3::X * 0.8,
+        ..Trs::default()
+    }));
+    session.apply(Command::SetTool(Tool::Select));
+    h.run_steps(4);
+    let before = h.render().unwrap();
+    let stats = h.state().gpu_stats().unwrap();
+
+    let widgets = h
+        .ctx
+        .data(|data| data.get_temp::<WidgetFrame>(egui::Id::NULL))
+        .unwrap();
+    let viewport = widgets
+        .entries()
+        .iter()
+        .find(|e| e.name == ids::VIEWPORT)
+        .unwrap();
+    let view = egui::Rect::from_min_max(viewport.min.into(), viewport.max.into())
+        * h.ctx.pixels_per_point();
+    let project = |point| {
+        let p = h
+            .state()
+            .session()
+            .camera
+            .project(point, view.aspect_ratio())
+            .unwrap();
+        view.center() + egui::vec2(p.x * view.width(), -p.y * view.height()) * 0.5
+    };
+    let right = egui::Rect::from_two_pos(
+        project(Vec3::new(0.3, -0.5, 0.0)),
+        project(Vec3::new(1.3, 0.5, 0.0)),
+    )
+    .expand(3.0);
+    let left = project(Vec3::X * -0.8);
+    let center_pixel = |p: egui::Pos2| before.get_pixel(p.x as u32, p.y as u32);
+    assert_ne!(
+        center_pixel(left),
+        center_pixel(view.center()),
+        "比較する左の立方体が見える"
+    );
+
+    h.state_mut()
+        .session_mut()
+        .apply(Command::SetColor([1.0, 0.0, 0.0]));
+    h.run_steps(3);
+    let after = h.render().unwrap();
+    let mut changed = 0;
+    for y in view.top().ceil() as u32..view.bottom() as u32 {
+        for x in view.left().ceil() as u32..view.right() as u32 {
+            let old = before.get_pixel(x, y);
+            let new = after.get_pixel(x, y);
+            if (0..3).any(|c| old[c].abs_diff(new[c]) > 2) {
+                assert!(
+                    right.contains(egui::pos2(x as f32, y as f32)),
+                    "対象の外の画素 ({x}, {y})"
+                );
+                changed += 1;
+            }
+        }
+    }
+    assert!(changed > 100, "右の立方体の色が変わる");
+    let painted = h.state().gpu_stats().unwrap();
+    assert_eq!(painted.instance_patches, stats.instance_patches + 1);
+    assert_eq!(painted.instance_rebuilds, stats.instance_rebuilds);
+}

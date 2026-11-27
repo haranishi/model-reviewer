@@ -6,11 +6,12 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::automation::Automation;
-use crate::command::{Command, DisplayMode, LaunchArgs, Tool, ViewDir};
+use crate::command::{Axis, Command, DisplayMode, KeyInput, LaunchArgs, ShapeKind, Tool, ViewDir};
 use crate::fonts;
 use crate::gpu_view::GpuView;
+use crate::keymap::{Action, Chord, Refusal};
 use crate::metrics::{self, Counts, FrameClock};
-use crate::session::Session;
+use crate::session::{Session, tool_has_gizmo};
 use crate::theme;
 use crate::ui;
 
@@ -29,7 +30,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: LaunchArgs) -> Self {
         fonts::install(&cc.egui_ctx);
         theme::install(&cc.egui_ctx);
-        let mut session = Session::default();
+        let mut session = Session::from_launch(&launch);
         session.set_egui_ctx(&cc.egui_ctx);
         let gpu = GpuView::new(cc);
         if gpu.has_device() {
@@ -57,6 +58,12 @@ impl App {
 
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
+    }
+
+    fn apply_ui_command(&mut self, command: Command) {
+        if let Some(command) = resolve_dialog(&self.session, command) {
+            self.session.apply(command);
+        }
     }
 
     /// 描いた回数と送ったバイト数（試験用）。GPUが無ければ `None`。
@@ -105,20 +112,21 @@ impl eframe::App for App {
         self.session
             .observe_export_memory(self.session.metrics.physical_mem);
         self.session.set_egui_ctx(ui.ctx());
+        self.session.clear_keys_for_dialog();
         self.session.pixels_per_point = ui.pixels_per_point();
         let mut commands = Vec::new();
         let pixels = ui::show(ui, &self.session, &mut commands);
-        commands.extend(shortcut_commands(ui.ctx(), &self.session));
+        let mut shortcuts = FrameShortcuts::read(ui.ctx(), &self.session);
+        for command in commands {
+            self.apply_ui_command(command);
+        }
+        // 速く打った G・X・数字が同じフレームでも、直前のキーで変わった道具と変形を見る。
+        while let Some(command) = shortcuts.next_command(ui.ctx(), &self.session) {
+            self.apply_ui_command(command);
+        }
         let dropped = dropped_paths(ui);
         if !dropped.is_empty() {
-            commands.push(Command::DroppedFiles(dropped));
-        }
-        let resolved: Vec<Command> = commands
-            .into_iter()
-            .filter_map(|command| resolve_dialog(&self.session, command))
-            .collect();
-        for command in resolved {
-            self.session.apply(command);
+            self.session.apply(Command::DroppedFiles(dropped));
         }
         self.session.set_viewport(pixels);
         self.gpu.frame(ui.ctx(), &mut self.session);
@@ -150,18 +158,31 @@ fn model_counts(session: &Session) -> Option<Counts> {
         .map(|model| Counts::from_stats(model.stats))
 }
 
+/// 新規の文書を書き出すときの、保存先の既定の名前。
+pub const NEW_FILE_NAME: &str = "無題.glb";
+
 const TEXT_ESCAPE_FRAME_ID: &str = "app.text_escape_frame";
+const TEXT_INPUT_FRAME_ID: &str = "app.text_input_frame";
 
 pub(crate) fn mark_text_escape(ctx: &egui::Context) {
-    let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::unique(TEXT_ESCAPE_FRAME_ID), frame);
-    });
+    mark_frame(ctx, TEXT_ESCAPE_FRAME_ID);
 }
 
-fn text_escape_consumed(ctx: &egui::Context) -> bool {
+/// Enter で入力欄がフォーカスを手放しても、そのフレームのキーは入力欄のもの。
+pub(crate) fn remember_text_focus(ctx: &egui::Context) {
+    if ctx.text_edit_focused() {
+        mark_frame(ctx, TEXT_INPUT_FRAME_ID);
+    }
+}
+
+fn mark_frame(ctx: &egui::Context, id: &str) {
     let frame = ctx.cumulative_frame_nr();
-    ctx.data(|data| data.get_temp::<u64>(egui::Id::unique(TEXT_ESCAPE_FRAME_ID))) == Some(frame)
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(id), frame));
+}
+
+fn marked_this_frame(ctx: &egui::Context, id: &str) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data(|data| data.get_temp::<u64>(egui::Id::unique(id))) == Some(frame)
 }
 
 pub(crate) fn help_open(ctx: &egui::Context) -> bool {
@@ -171,158 +192,270 @@ pub(crate) fn help_open(ctx: &egui::Context) -> bool {
     })
 }
 
-/// Esc はここでだけ振り分ける。ダイアログ中は閉じる・やめるだけ。
-/// 入力欄に文字を打っている間は、下書きの取り消しか入力欄を離れるだけ。
-/// それ以外は、変形の取り消し、下書き、選択以外の道具から選択への復帰、選択の解除の順で
-/// 1回に1つ（要件5.5）。
-pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session) -> Vec<Command> {
-    if let Some(dialog) = &session.dialog {
-        if key_press(ctx, egui::Key::Escape).is_some() {
-            return dialog_escape_command(dialog).into_iter().collect();
-        }
-        return Vec::new();
-    }
-    if help_open(ctx) {
-        if key_press(ctx, egui::Key::Escape).is_some() {
-            ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), false));
-        }
-        return Vec::new();
-    }
-    let typing = ctx.text_edit_focused();
-    if key_press(ctx, egui::Key::Escape).is_some() {
-        if text_escape_consumed(ctx) {
-            return Vec::new();
-        }
-        if typing {
-            if let Some(focused) = ctx.memory(|memory| memory.focused()) {
-                ctx.memory_mut(|memory| memory.surrender_focus(focused));
-            }
-            return if session.draft.is_some() {
-                vec![Command::CancelDraft]
+/// 現在の状態で、このフレームのキーに対応する操作を返す。
+pub fn shortcut_commands(ctx: &egui::Context, session: &Session) -> Vec<Command> {
+    let mut frame = FrameShortcuts::read(ctx, session);
+    std::iter::from_fn(|| frame.next_command(ctx, session)).collect()
+}
+
+/// 小窓・Esc・入力欄はフレームを占有する。それ以外のキーは届いた順に振り分ける。
+enum FrameShortcuts {
+    Exclusive(Option<Command>),
+    Keys {
+        presses: std::vec::IntoIter<(egui::Key, egui::Modifiers)>,
+        deleted: bool,
+    },
+}
+
+impl FrameShortcuts {
+    fn read(ctx: &egui::Context, session: &Session) -> Self {
+        let presses = ctx.input(|i| i.events.iter().filter_map(pressed_key).collect::<Vec<_>>());
+        let escape = presses.iter().any(|&(key, _)| key == egui::Key::Escape);
+        if let Some(dialog) = &session.dialog {
+            return Self::Exclusive(if escape {
+                dialog_escape_command(dialog)
             } else {
-                Vec::new()
-            };
+                None
+            });
         }
-        return escape_command(session).into_iter().collect();
+        if help_open(ctx) {
+            if escape {
+                ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), false));
+            }
+            return Self::Exclusive(None);
+        }
+        if session.keys.open {
+            return Self::Exclusive(settings_key(ctx, session, escape));
+        }
+        if escape {
+            if marked_this_frame(ctx, TEXT_ESCAPE_FRAME_ID) {
+                return Self::Exclusive(None);
+            }
+            if ctx.text_edit_focused() {
+                ui::surrender_focus(ctx);
+                return Self::Exclusive(session.draft.is_some().then_some(Command::CancelDraft));
+            }
+            return Self::Exclusive(escape_command(session));
+        }
+        if ctx.text_edit_focused() || marked_this_frame(ctx, TEXT_INPUT_FRAME_ID) {
+            return Self::Exclusive(None);
+        }
+        Self::Keys {
+            presses: presses.into_iter(),
+            deleted: false,
+        }
     }
-    let over_panel = ctx.is_pointer_over_egui() && !ui::viewport::pointer_on_viewport(ctx);
-    if typing || over_panel {
-        return Vec::new();
+
+    fn next_command(&mut self, ctx: &egui::Context, session: &Session) -> Option<Command> {
+        let (presses, deleted) = match self {
+            Self::Exclusive(command) => return command.take(),
+            Self::Keys { presses, deleted } => (presses, deleted),
+        };
+        for (key, modifiers) in presses {
+            if session.dialog.is_some() || session.keys.open || help_open(ctx) {
+                break;
+            }
+            if let Some(command) = pressed_command(ctx, session, key, modifiers) {
+                if command == Command::DeleteSelected && std::mem::replace(deleted, true) {
+                    continue;
+                }
+                return Some(command);
+            }
+        }
+        None
     }
-    let mut out = Vec::new();
-    // 取り消しとやり直し（Windows と Linux では Ctrl）。入力欄の中の Cmd+Z は文字の取り消しなので、
-    // 上の「入力中」で先に返している。
-    if let Some(modifiers) = key_press(ctx, egui::Key::Z)
-        && modifiers.command
-        && !modifiers.alt
-    {
-        out.push(if modifiers.shift {
-            Command::Redo
-        } else {
-            Command::Undo
+}
+
+fn settings_key(ctx: &egui::Context, session: &Session, escape: bool) -> Option<Command> {
+    if session.keys.capture.is_some() {
+        return ctx.input(|input| {
+            input.raw.events.iter().find_map(|event| match event {
+                egui::Event::Copy
+                | egui::Event::Cut
+                | egui::Event::Paste(_)
+                | egui::Event::PasteImage(_) => {
+                    Some(Command::CaptureKey(Err(Refusal::TextEditing)))
+                }
+                _ => pressed_key(event).map(|(key, mods)| {
+                    if key == egui::Key::Escape {
+                        Command::CancelKeyCapture
+                    } else {
+                        Command::CaptureKey(Chord::from_event(key, mods))
+                    }
+                }),
+            })
         });
     }
-    // 複製（Cmd+D）と削除（Delete・Backspace）。部品を選んでいるときだけ。
-    if session.selection.is_some() {
-        if let Some(modifiers) = key_press(ctx, egui::Key::D)
-            && modifiers.command
-            && !modifiers.alt
-            && !modifiers.shift
-        {
-            out.push(Command::DuplicateSelected);
-        }
-        if [egui::Key::Delete, egui::Key::Backspace]
-            .into_iter()
-            .filter_map(|key| key_press(ctx, key))
-            .any(|modifiers| plain(modifiers) && !modifiers.shift)
-        {
-            out.push(Command::DeleteSelected);
-        }
+    if !escape {
+        return None;
     }
-    for (key, tool) in [
-        (egui::Key::V, Tool::Select),
-        (egui::Key::G, Tool::Move),
-        (egui::Key::R, Tool::Rotate),
-        (egui::Key::S, Tool::Scale),
-        (egui::Key::M, Tool::Measure),
-    ] {
-        if let Some(modifiers) = key_press(ctx, key)
-            && plain(modifiers)
-            && !modifiers.shift
-            && session.tool != tool
-        {
-            out.push(Command::SetTool(tool));
-        }
+    if session.keys.conflict.is_some() {
+        return Some(Command::ResolveKeyConflict { replace: false });
     }
-    if let Some(modifiers) = key_press(ctx, egui::Key::A)
-        && plain(modifiers)
-        && !modifiers.shift
+    let filter = egui::Id::unique(ui::ids::KEYS_FILTER);
+    // egui は Esc のフレームの先頭で入力位置を外す。検索中の1回目は欄を離れるだけ。
+    if ctx.memory(|m| m.has_focus(filter) || m.had_focus_last_frame(filter)) {
+        ctx.memory_mut(|m| m.surrender_focus(filter));
+        return None;
+    }
+    Some(Command::SetKeysOpen(false))
+}
+
+fn pressed_command(
+    ctx: &egui::Context,
+    session: &Session,
+    key: egui::Key,
+    mods: egui::Modifiers,
+) -> Option<Command> {
+    use egui::Key;
+    let arrow = match key {
+        Key::ArrowLeft => Some((Axis::X, -1)),
+        Key::ArrowRight => Some((Axis::X, 1)),
+        Key::ArrowDown => Some((Axis::Y, -1)),
+        Key::ArrowUp => Some((Axis::Y, 1)),
+        _ => None,
+    };
+    if (arrow.is_some() || matches!(key, Key::Enter | Key::Backspace | Key::Delete))
+        && ctx.memory(|m| m.focused().is_some())
     {
-        out.push(Command::FitAll);
+        return None;
     }
-    if let Some(modifiers) = key_press(ctx, egui::Key::F)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::FitSelection);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::Home)
-        && plain(modifiers)
-    {
-        out.push(Command::Home);
-    }
-    if let Some(modifiers) = key_press(ctx, egui::Key::H)
-        && plain(modifiers)
-    {
-        if modifiers.shift {
-            out.push(Command::ShowAll);
-        } else {
-            out.push(Command::HideSelected);
+
+    let entering = session.key_entry().is_some();
+    let editing = tool_has_gizmo(session.tool) && session.selection.is_some();
+    if editing && mods.is_none() {
+        let axis = match key {
+            Key::X => Some(Axis::X),
+            Key::Y => Some(Axis::Y),
+            Key::Z => Some(Axis::Z),
+            _ => None,
+        };
+        if let Some(axis) = axis {
+            if session.edits_locked() || (session.transform.is_some() && !entering) {
+                return None;
+            }
+            ui::surrender_focus(ctx);
+            return Some(Command::BeginKeyTransform(axis));
         }
     }
-    if let Some(modifiers) = key_press(ctx, egui::Key::N)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::SetAnnotateMode(!session.annotate_mode));
-    }
-    // 数字は文字キーの段（テンキーは使わない）。
-    for (key, command) in [
-        (egui::Key::Num1, Command::SnapView(ViewDir::Front)),
-        (egui::Key::Num3, Command::SnapView(ViewDir::Right)),
-        (egui::Key::Num7, Command::SnapView(ViewDir::Top)),
-        (egui::Key::Num5, Command::ToggleProjection),
-    ] {
-        if let Some(modifiers) = key_press(ctx, key)
-            && plain(modifiers)
-            && !modifiers.shift
-        {
-            out.push(command);
+    if let Some((axis, sign)) = arrow {
+        if !(mods.is_none() || mods.shift_only()) || session.edits_locked() {
+            return None;
         }
+        let fine = mods.shift;
+        if entering {
+            return Some(Command::KeyTransformInput(KeyInput::Step {
+                up: sign > 0,
+                fine,
+            }));
+        }
+        return (editing && session.tool == Tool::Move && session.transform.is_none())
+            .then_some(Command::Nudge { axis, sign, fine });
     }
-    // 吸着（X）と断面（C）。修飾つき（Cmd+X・Cmd+C）は切り取りとコピーなので受けない。
-    if let Some(modifiers) = key_press(ctx, egui::Key::X)
-        && plain(modifiers)
-        && !modifiers.shift
-    {
-        out.push(Command::ToggleSnap);
+    if entering {
+        if mods.any() {
+            return None;
+        }
+        let input = match key {
+            Key::Enter => return Some(Command::CommitTransform),
+            Key::Backspace => KeyInput::Backspace,
+            Key::Minus => KeyInput::Char('-'),
+            Key::Period => KeyInput::Char('.'),
+            _ => match key.name().as_bytes() {
+                [digit @ b'0'..=b'9'] => KeyInput::Char(char::from(*digit)),
+                _ => return None,
+            },
+        };
+        return Some(Command::KeyTransformInput(input));
     }
-    if let Some(modifiers) = key_press(ctx, egui::Key::C)
-        && plain(modifiers)
-        && !modifiers.shift
-        && session.model.is_some()
-    {
-        out.push(Command::ToggleSection);
+    if matches!(key, Key::Delete | Key::Backspace) {
+        return (mods.is_none() && session.selection.is_some()).then_some(Command::DeleteSelected);
     }
-    if let Some(modifiers) = key_press(ctx, egui::Key::Z)
-        && plain(modifiers)
-    {
-        out.push(Command::SetDisplay(toggled_display(
-            session.display,
-            modifiers.shift,
-        )));
+    let chord = Chord::from_event(key, mods).ok()?;
+    action_command(ctx, session, session.keymap.action_for(chord)?)
+}
+
+/// 操作を、同じ操作のボタンと同じ `Command` にする。押せない状態なら `None`。
+/// 第3段階からあるキーの条件は、そのときの分岐の条件を写している（既定のままなら働きが同じ）。
+/// 足した操作の条件は、ボタンの側の条件と同じ。
+fn action_command(
+    ctx: &egui::Context,
+    session: &crate::session::Session,
+    action: Action,
+) -> Option<Command> {
+    let has_model = session.model.is_some();
+    let exporting = session.is_exporting();
+    let can_edit = has_model && session.edit_block_reason().is_none();
+    // 道具の切り替え。変形の途中（数値の欄をドラッグしているときも含む）は断る。
+    let tool = |tool: Tool| {
+        (session.tool != tool && session.transform.is_none()).then_some(Command::SetTool(tool))
+    };
+    let shape = |kind: ShapeKind| can_edit.then_some(Command::AddShape(kind));
+    match action {
+        Action::FileNew => Some(Command::NewDocument),
+        Action::FileOpen => (!exporting).then_some(Command::OpenModelDialog),
+        Action::FileSaveReview => (has_model && !exporting).then_some(Command::SaveReviewDialog),
+        Action::FileLoadReview => (!exporting).then_some(Command::LoadReviewDialog),
+        Action::FileExport => {
+            (has_model && !session.edits_locked()).then_some(Command::ExportGlbDialog)
+        }
+        Action::EditUndo => Some(Command::Undo),
+        Action::EditRedo => Some(Command::Redo),
+        Action::EditDuplicate => session
+            .selection
+            .is_some()
+            .then_some(Command::DuplicateSelected),
+        Action::ToolSelect => tool(Tool::Select),
+        Action::ToolMove => tool(Tool::Move),
+        Action::ToolRotate => tool(Tool::Rotate),
+        Action::ToolScale => tool(Tool::Scale),
+        Action::ToolMeasure => tool(Tool::Measure),
+        Action::ToolShape => tool(Tool::Shape).filter(|_| can_edit),
+        Action::ToolAnnotate => session
+            .transform
+            .is_none()
+            .then_some(Command::SetAnnotateMode(!session.annotate_mode)),
+        Action::ShapeCube => shape(ShapeKind::Cube),
+        Action::ShapeSphere => shape(ShapeKind::Sphere),
+        Action::ShapeCylinder => shape(ShapeKind::Cylinder),
+        Action::ShapePlane => shape(ShapeKind::Plane),
+        Action::MeasureSnap => Some(Command::ToggleSnap),
+        Action::MeasureClear => session
+            .measurement
+            .first
+            .is_some()
+            .then_some(Command::ClearMeasure),
+        Action::ViewFitAll => Some(Command::FitAll),
+        Action::ViewFitSelection => Some(Command::FitSelection),
+        Action::ViewHome => Some(Command::Home),
+        Action::ViewFront => Some(Command::SnapView(ViewDir::Front)),
+        Action::ViewRight => Some(Command::SnapView(ViewDir::Right)),
+        Action::ViewTop => Some(Command::SnapView(ViewDir::Top)),
+        Action::ViewBack => Some(Command::SnapView(ViewDir::Back)),
+        Action::ViewLeft => Some(Command::SnapView(ViewDir::Left)),
+        Action::ViewBottom => Some(Command::SnapView(ViewDir::Bottom)),
+        Action::ViewProjection => Some(Command::ToggleProjection),
+        Action::DisplayFacesLines => {
+            Some(Command::SetDisplay(toggled_display(session.display, false)))
+        }
+        Action::DisplayXray => Some(Command::SetDisplay(toggled_display(session.display, true))),
+        Action::DisplayFaces => (session.display != DisplayMode::Faces)
+            .then_some(Command::SetDisplay(DisplayMode::Faces)),
+        Action::DisplayLines => (session.lines_supported && session.display != DisplayMode::Lines)
+            .then_some(Command::SetDisplay(DisplayMode::Lines)),
+        Action::DisplayGrid => Some(Command::SetGrid(!session.grid_visible)),
+        // 断面はモデルがあるときだけ（第3段階の分岐と同じ）。
+        Action::DisplaySection => has_model.then_some(Command::ToggleSection),
+        Action::PartsHideSelected => Some(Command::HideSelected),
+        Action::PartsShowAll => Some(Command::ShowAll),
+        Action::UnitsDisplayNext => Some(Command::SetDisplayUnit(session.units.next_display())),
+        Action::AppHelp => {
+            // ヘルプは egui の一時の記憶で開く（ここへ来るのは閉じているときだけ）。
+            ctx.data_mut(|data| data.insert_temp(egui::Id::unique(ui::ids::HELP_OPEN), true));
+            None
+        }
+        Action::AppKeys => Some(Command::SetKeysOpen(true)),
     }
-    out
 }
 
 /// Z は面と「面と線」、Shift+Z は透かしの切り替え。どちらも、外すときは面へ戻す。
@@ -367,23 +500,18 @@ fn escape_command(session: &crate::session::Session) -> Option<Command> {
     }
 }
 
-fn key_press(ctx: &egui::Context, wanted: egui::Key) -> Option<egui::Modifiers> {
-    ctx.input(|input| {
-        input.events.iter().find_map(|event| match event {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                repeat: false,
-                modifiers,
-                ..
-            } if *key == wanted => Some(*modifiers),
-            _ => None,
-        })
-    })
-}
-
-fn plain(modifiers: egui::Modifiers) -> bool {
-    !modifiers.command && !modifiers.ctrl && !modifiers.alt
+/// 割り当ての取り込みも変形も、1回の押下につき1つだけ受け取る。
+fn pressed_key(event: &egui::Event) -> Option<(egui::Key, egui::Modifiers)> {
+    match event {
+        egui::Event::Key {
+            key,
+            modifiers,
+            pressed: true,
+            repeat: false,
+            ..
+        } => Some((*key, *modifiers)),
+        _ => None,
+    }
 }
 
 fn dropped_paths(ui: &egui::Ui) -> Vec<PathBuf> {
@@ -406,7 +534,10 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .add_filter("STL", &["stl", "STL"])
             .pick_file()
             .map(Command::OpenModel),
-        Command::SaveReviewDialog if session.doc_unsaved() || session.is_exporting() => {
+        // 新規の文書は書き出すまで保存できない。保存先を聞かずに `Session` が断る（要件2.6）。
+        Command::SaveReviewDialog
+            if session.doc_unsaved() || session.is_exporting() || session.is_new_document() =>
+        {
             Some(Command::SaveReviewDialog)
         }
         Command::SaveReviewDialog => rfd::FileDialog::new()
@@ -423,7 +554,12 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .add_filter("GLB・STL", &["glb", "stl", "STL"])
             .pick_file()
             .map(Command::RelinkModel),
-        Command::ExportGlbDialog if session.model.is_none() || session.edits_locked() => {
+        // 部品の無い新規の文書も、保存先を聞かずに `Session` が断る（要件2.2）。
+        Command::ExportGlbDialog
+            if session.model.is_none()
+                || session.edits_locked()
+                || crate::session::nothing_to_export(session) =>
+        {
             Some(Command::ExportGlbDialog)
         }
         Command::ExportGlbDialog => {
@@ -437,9 +573,13 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
     }
 }
 
-/// 書き出しの保存先の既定の名前。STL を開いているときは「<元の名前>.glb」。GLB は既定の名前を
-/// 付けない（開いたファイルと同じ名前になり、そこへは書き出せないため）。
+/// 書き出しの保存先の既定の名前。STL を開いているときは「<元の名前>.glb」、新規の文書は
+/// 「無題.glb」（要件2.4）。GLB は既定の名前を付けない（開いたファイルと同じ名前になり、そこへは
+/// 書き出せないため）。
 pub fn export_file_name(session: &Session) -> Option<String> {
+    if session.is_new_document() {
+        return Some(NEW_FILE_NAME.to_owned());
+    }
     if !matches!(session.source_kind, crate::session::SourceKind::Stl { .. }) {
         return None;
     }

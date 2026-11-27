@@ -738,16 +738,8 @@ impl Automation {
                     .map_err(|_| format!("比較する状態を読めませんでした: {}", path.path))?;
                 let expected: Value = serde_json::from_str(&text)
                     .map_err(|err| format!("比較する状態のJSONを解釈できません: {err}"))?;
-                let mut actual = state_value(session);
-                let mut expected = expected;
-                for key in state::NOT_COMPARED {
-                    if let Some(map) = actual.as_object_mut() {
-                        map.remove(key);
-                    }
-                    if let Some(map) = expected.as_object_mut() {
-                        map.remove(key);
-                    }
-                }
+                let actual = state::comparable(state_value(session));
+                let expected = state::comparable(expected);
                 values_match(&actual, &expected, tolerance, "$")?;
                 self.mark_ok();
             }

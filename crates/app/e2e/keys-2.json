@@ -1,0 +1,18 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "assert_state_equals", "path": "keys-1-state.json", "relative_to": "out" },
+    { "op": "click_widget", "name": "toolbar.help" },
+    { "op": "click_widget", "name": "help.keys" },
+    { "op": "click_widget", "name": "keys.reset_all" },
+    { "op": "click_widget", "name": "keys.reset_all" },
+    { "op": "click_widget", "name": "keys.close" },
+    { "op": "assert_state_equals", "path": "keys-default-select.json", "relative_to": "out" },
+    { "op": "key", "key": "G" },
+    { "op": "assert_state_equals", "path": "keys-default-move.json", "relative_to": "out" },
+    { "op": "dump_state", "path": "keys-2-state.json" },
+    { "op": "quit" }
+  ]
+}

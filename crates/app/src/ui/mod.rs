@@ -6,9 +6,11 @@
 
 use crate::automation::{WidgetEntry, WidgetFrame};
 use crate::command::{Command, PanelKind};
+use crate::keymap::Platform;
 use crate::session::Session;
 
 pub mod annotations;
+pub mod color;
 pub mod details;
 pub mod dialogs;
 pub mod dims;
@@ -17,6 +19,7 @@ pub mod gizmo_view;
 pub mod help;
 pub mod ids;
 pub mod inspector;
+pub mod keys;
 pub mod measure_panel;
 pub mod measure_view;
 pub mod overlay;
@@ -31,7 +34,16 @@ pub mod viewcube;
 pub mod viewport;
 pub mod views;
 
+pub(crate) fn surrender_focus(ctx: &egui::Context) {
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+}
+
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u32; 2] {
+    crate::app::remember_text_focus(ui.ctx());
     begin_widgets(ui.ctx());
     let mut parts_open = session.panel_parts;
     let mut notes_open = session.panel_notes;
@@ -81,8 +93,23 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u3
     sync_panel(parts_open, session.panel_parts, PanelKind::Parts, out);
     sync_panel(notes_open, session.panel_notes, PanelKind::Notes, out);
     sync_panel(details_open, session.panel_details, PanelKind::Details, out);
-    dialogs::show(ui, session, out);
-    help::show(ui, out);
+    let platform = Platform::current();
+    if session.dialog.is_some() {
+        dialogs::show(ui, session, out);
+    } else if session.keys.open {
+        let input = keys::KeysInput {
+            rows: keys::build_rows(&session.keymap, platform),
+            capture: session.keys.capture,
+            conflict: session.keys.conflict,
+            refusal: session.keys.refusal,
+            reset_all_armed: session.keys.reset_all_armed,
+            store_note: session.store.note(session.scripted).map(str::to_owned),
+            platform,
+        };
+        keys::show(ui, &input, out);
+    } else {
+        help::show_with(ui, &session.key_labels, platform, out);
+    }
     pixels
 }
 
@@ -95,11 +122,16 @@ pub(crate) fn show_scroll_handle(ui: &mut egui::Ui) {
     scroll.bar_outer_margin = -6.0;
 }
 
-/// 右のパネル。上から 部品の一覧 → 変形 → 寸法（部品を選んでいるとき）→ 計測（計測の道具のとき）。
+/// 右のパネル。上から部品の一覧、変形、寸法、色、計測。
 /// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     let dims = crate::session::selection_dims(session);
-    let below = transform_height(session) + dims_height(dims.as_ref()) + measure_height(session);
+    let color = crate::session::selection_color(session);
+    let color_height = color.map_or(0.0, |v| if v.note.is_some() { 220.0 } else { 140.0 });
+    let below = transform_height(session)
+        + dims_height(dims.as_ref())
+        + color_height
+        + measure_height(session);
     let list_h = (ui.available_height() - below).max(80.0);
     let width = ui.available_width();
     ui.allocate_ui(egui::vec2(width, list_h), |ui| {
@@ -120,6 +152,10 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 if let Some(view) = dims.as_ref() {
                     ui.separator();
                     dims::show(ui, view, out);
+                }
+                if let Some(view) = &color {
+                    ui.separator();
+                    ui.push_id(session.review_generation(), |ui| color::show(ui, view, out));
                 }
                 if measuring(session) {
                     ui.separator();

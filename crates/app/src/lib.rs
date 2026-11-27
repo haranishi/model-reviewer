@@ -3,6 +3,7 @@ pub mod command;
 pub mod exporter;
 pub mod fonts;
 pub mod gpu_view;
+pub mod keymap;
 pub mod loader;
 pub mod metrics;
 pub mod session;

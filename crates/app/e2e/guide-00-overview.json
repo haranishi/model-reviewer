@@ -1,0 +1,11 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "parts.row.3" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "overview.png" },
+    { "op": "quit" }
+  ]
+}

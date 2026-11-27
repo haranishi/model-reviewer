@@ -9,6 +9,7 @@ use model_reviewer_core::gizmo::Tool;
 use model_reviewer_core::units::{UnitLabel, Units};
 
 use crate::command::{Command, PanelKind};
+use crate::keymap::Action;
 use crate::loader::LoadPhase;
 use crate::session::{Session, SourceKind};
 use crate::theme;
@@ -62,9 +63,10 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 if shown.display {
                     let display = ui
                         .button(display_unit_text(session.units))
-                        .on_hover_text(
+                        .on_hover_text(session.key_labels.with_key(
+                            Action::UnitsDisplayNext,
                             "長さの数値を出す単位。押すと ファイルと同じ → mm → cm → m と替わります",
-                        );
+                        ));
                     reg(ids::STATUS_DISPLAY_UNIT, &display);
                     if display.clicked() {
                         out.push(Command::SetDisplayUnit(session.units.next_display()));
@@ -72,7 +74,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 }
                 // 前提の単位（ファイルの数値1が表す長さ）。数値は換算しない。
                 let (text, hint, command) = match session.source_kind {
-                    SourceKind::Glb => (
+                    SourceKind::Glb | SourceKind::New => (
                         unit_text(session.units.source),
                         "ファイルの数値1が表す長さの前提です。押すと m → cm → mm と替わります（ファイルの数値は変えません）",
                         Command::SetUnit(session.units.source.next()),
@@ -153,7 +155,11 @@ fn show_middle(ui: &mut egui::Ui, session: &Session) {
         } else {
             tool_hint(session.tool)
         };
-        (hint.to_owned(), Some(theme::TEXT_WEAK))
+        let hint = match (session.tool, session.key_labels.get(Action::MeasureSnap)) {
+            (Tool::Measure, Some(key)) => format!("{hint}（{key} で吸着を切り替え）"),
+            _ => hint.to_owned(),
+        };
+        (hint, Some(theme::TEXT_WEAK))
     } else {
         (String::new(), None)
     };
@@ -289,7 +295,7 @@ pub fn stl_unit_text(unit: UnitLabel) -> String {
 
 fn unit_button_text(session: &Session) -> String {
     match session.source_kind {
-        SourceKind::Glb => unit_text(session.units.source),
+        SourceKind::Glb | SourceKind::New => unit_text(session.units.source),
         SourceKind::Stl { unit } => stl_unit_text(unit),
     }
 }
@@ -298,11 +304,13 @@ fn unit_button_text(session: &Session) -> String {
 pub fn tool_hint(tool: Tool) -> &'static str {
     match tool {
         Tool::Select => "選択: クリックで部品を選ぶ",
-        Tool::Move => "移動: 矢印をドラッグ",
-        Tool::Rotate => "回転: 輪をドラッグ",
-        Tool::Scale => "拡大: 箱をドラッグ",
+        Tool::Move => {
+            "移動: 矢印をドラッグ。X・Y・Z で向きを決めて数値を入力。矢印キーで少しずつ移動"
+        }
+        Tool::Rotate => "回転: 輪をドラッグ。X・Y・Z で向きを決めて角度を入力",
+        Tool::Scale => "拡大: 箱をドラッグ。X・Y・Z で向きを決めて倍率を入力",
         Tool::Shape => "図形: 置く形を押す",
-        Tool::Measure => "計測: 角や辺に近づけてクリック（X で吸着を切り替え）",
+        Tool::Measure => "計測: 角や辺に近づけてクリック",
         Tool::Annotate => "注釈: 表面をクリック",
     }
 }
@@ -338,12 +346,16 @@ fn selected_name(session: &Session) -> Option<String> {
     })
 }
 
+/// 新規の文書（まだ書き出していない）の名前（要件1.9）。
+pub const NEW_DOCUMENT_NAME: &str = "新規（未書き出し）";
+
 fn file_name(session: &Session) -> &str {
     session
         .model_ref
         .as_ref()
         .map(|model| model.file_name.as_str())
         .or(session.loading_file_name.as_deref())
+        .or(session.is_new_document().then_some(NEW_DOCUMENT_NAME))
         .unwrap_or("ファイルなし")
 }
 

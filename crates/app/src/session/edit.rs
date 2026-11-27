@@ -21,6 +21,7 @@ use model_reviewer_core::shapes::{self, SHAPE_COLOR, ShapeKind};
 use model_reviewer_core::units::{UnitLabel, Units};
 
 use super::Session;
+use crate::keymap::Action;
 use crate::ui::gizmo_view;
 use crate::ui::status::grouped;
 
@@ -31,7 +32,6 @@ pub const GIZMO_SIZE: f32 = 90.0;
 const CLEARED_TOO_LARGE: &str = "操作が大きいため、これより前へは戻せません";
 const NOT_FINITE: &str = "変形の結果が有限でないため、確定しませんでした";
 const ZERO_SIZE: &str = "大きさが0になるため、確定しませんでした";
-const NO_MODEL: &str = "モデルを開くと図形を置けます";
 
 /// 変形の出どころ。
 #[derive(Clone, Debug, PartialEq)]
@@ -40,6 +40,24 @@ pub enum TransformSource {
     Gizmo(Drag),
     /// 数値の欄のドラッグ。
     Field,
+    /// キーで向きを固定し、数値を打っている途中（要件11）。
+    Keys(KeyEntry),
+}
+
+/// キーで打っている途中の量。`text` は「-12.5」など。空もある。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyEntry {
+    pub handle: Handle,
+    pub text: String,
+}
+
+impl Session {
+    pub(crate) fn key_entry(&self) -> Option<&KeyEntry> {
+        match &self.transform.as_ref()?.source {
+            TransformSource::Keys(entry) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
 /// 変形中の状態。文書はまだ書き換えていない。
@@ -56,11 +74,12 @@ pub struct Transform {
 }
 
 impl Transform {
-    /// 掴んでいるハンドル。数値の欄なら `None`。
+    /// 掴んでいるハンドル（キーで向きを固定しているときは、その向きのハンドル）。数値の欄なら `None`。
     pub fn handle(&self) -> Option<Handle> {
         match &self.source {
             TransformSource::Gizmo(drag) => Some(drag.handle()),
             TransformSource::Field => None,
+            TransformSource::Keys(entry) => Some(entry.handle),
         }
     }
 }
@@ -177,12 +196,8 @@ pub(super) fn set_tool(session: &mut Session, tool: Tool) {
         return;
     }
     cancel_transform(session);
-    let was_annotate = session.tool == Tool::Annotate;
     session.tool = tool;
-    session.annotate_mode = tool == Tool::Annotate;
-    if was_annotate && tool != Tool::Annotate {
-        super::notes::cancel(session);
-    }
+    super::notes::set_mode(session, tool == Tool::Annotate);
     // ハンドルの出し入れは egui の描画だけ。3Dは描き直さない。
 }
 
@@ -251,11 +266,20 @@ fn readout_status(readout: Readout, units: Units) -> String {
 }
 
 pub(super) fn commit_transform(session: &mut Session) {
+    // キーで打った量が確定できない（拡大の倍率が 0 以下など）なら、理由を出して入力を続ける
+    // （要件11.10）。差分の行列は前に読めた量のままなので、そのまま入れてはいけない。
+    let keyed = session.key_entry().is_some();
+    if keyed && !super::keymove::rebuild(session) {
+        return;
+    }
     let Some(transform) = session.transform.take() else {
         return;
     };
     session.scene_dirty.drag = true;
     if transform.delta == Affine3A::IDENTITY {
+        if keyed {
+            session.status_text.clear();
+        }
         return;
     }
     let started = Instant::now();
@@ -273,12 +297,21 @@ pub(super) fn commit_transform(session: &mut Session) {
         .and_then(|parent| doc.node(parent))
         .map_or(Affine3A::IDENTITY, |parent| parent.world);
     let before = node.local;
-    let Some(after) = apply_world_delta(&parent_world, &node.world, &transform.delta) else {
-        session.status_text = NOT_FINITE.to_owned();
-        return;
+    let accepted = match apply_world_delta(&parent_world, &node.world, &transform.delta) {
+        Some(after) => {
+            let changed =
+                commit_local_matrix(session, transform.key, before, after, label_of(&transform));
+            session.metrics.edit_commit = Some(started.elapsed());
+            changed || after == before
+        }
+        None => {
+            session.status_text = NOT_FINITE.to_owned();
+            false
+        }
     };
-    commit_local_matrix(session, transform.key, before, after, label_of(&transform));
-    session.metrics.edit_commit = Some(started.elapsed());
+    if keyed && !accepted {
+        session.transform = Some(transform);
+    }
 }
 
 fn label_of(transform: &Transform) -> &'static str {
@@ -290,25 +323,25 @@ fn label_of(transform: &Transform) -> &'static str {
     }
 }
 
-/// 確定の共通部。有限で大きさのある行列だけを、履歴を通して文書へ入れる。
-fn commit_local_matrix(
+/// 確定の共通部。有限で大きさのある行列だけを、履歴を通して文書へ入れる。積んだら真。
+pub(super) fn commit_local_matrix(
     session: &mut Session,
     key: NodeKey,
     before: Affine3A,
     after: Affine3A,
     label: &'static str,
-) {
+) -> bool {
     if !after.is_finite() {
         session.status_text = NOT_FINITE.to_owned();
-        return;
+        return false;
     }
     let det = after.matrix3.determinant();
     if !det.is_finite() || det.abs() < 1.0e-30 {
         session.status_text = ZERO_SIZE.to_owned();
-        return;
+        return false;
     }
     if after == before {
-        return;
+        return false;
     }
     let step = Step::new(
         label,
@@ -317,11 +350,17 @@ fn commit_local_matrix(
     );
     if execute(session, step).is_some() {
         session.status_text = format!("{label}を確定しました");
+        true
+    } else {
+        false
     }
 }
 
 pub(super) fn cancel_transform(session: &mut Session) {
-    if session.transform.take().is_some() {
+    if let Some(transform) = session.transform.take() {
+        if matches!(transform.source, TransformSource::Keys(_)) {
+            session.status_text.clear();
+        }
         session.scene_dirty.drag = true;
     }
 }
@@ -402,7 +441,7 @@ pub(super) fn commit_local(session: &mut Session, trs: Trs) {
     if gizmo::decompose(&before).is_some_and(|now| same_trs(&now, &trs)) {
         return;
     }
-    commit_local_matrix(session, key, before, compose(&trs), "数値の変更");
+    let _ = commit_local_matrix(session, key, before, compose(&trs), "数値の変更");
     session.metrics.edit_commit = Some(started.elapsed());
 }
 
@@ -568,10 +607,10 @@ fn after_applied(session: &mut Session, applied: &Applied, from_history: bool) {
     if applied.structure || applied.visibility {
         session.scene_dirty.instances = true;
         session.pending_patches.clear();
-    } else if !applied.touched.is_empty() {
+    } else if !applied.touched.is_empty() || !applied.recolored.is_empty() {
         session
             .pending_patches
-            .extend(applied.touched.iter().cloned());
+            .extend(applied.touched.iter().chain(&applied.recolored).cloned());
         // 描き直しの合図。インスタンスは gpu_view が範囲だけ書き直す。
         session.scene_dirty.drag = true;
     }
@@ -595,14 +634,11 @@ pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
         return;
     }
     let target = session.camera.target;
-    let Some(doc) = session.doc.as_mut() else {
-        session.status_text = NO_MODEL.to_owned();
+    let (Some(doc), Some(_)) = (session.doc.as_mut(), session.review.as_ref()) else {
+        let new = session.key_labels.with_key(Action::FileNew, "［新規作成］");
+        session.status_text = format!("{new}か、モデルを開くと図形を置けます");
         return;
     };
-    if session.review.is_none() {
-        session.status_text = NO_MODEL.to_owned();
-        return;
-    }
     let started = Instant::now();
     let size = shapes::size_for(doc.bounds().radius());
     // 作り方（種類と大きさ）を覚えておくと、右のパネルの「寸法」で直せる（要件9.1）。

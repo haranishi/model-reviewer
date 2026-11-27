@@ -3,6 +3,7 @@
 //!
 //! 道具の絵は図形として描く（絵文字や記号の書体に頼らない）。選ばれている道具は、地の色に加えて
 //! 左の琥珀の帯と太字で示す。押せない道具は薄く描き、触れると理由が出る。
+//! 説明の文と、ボタンの右下の小さい1文字は、入力の `keys`（今の割り当て）から作る。
 //! 図形の4つは「図形」の道具を選んでいる間だけ、その道具の横に並べる。
 //! [吸着] も同じく「計測」の道具を選んでいる間だけ、その道具の横に出し、押すと `SetSnap` を積む
 //! （名前は `ids::MEASURE_SNAP`）。吸着の状態は `show_with` で渡す（`show` は出さない）。
@@ -13,6 +14,7 @@ use model_reviewer_core::gizmo::Tool;
 use model_reviewer_core::shapes::{ShapeKind, name_ja};
 
 use crate::command::Command;
+use crate::keymap::{Action, KeyLabels};
 use crate::theme;
 
 use super::ids;
@@ -24,6 +26,8 @@ pub const NO_MODEL_REASON: &str = "モデルを開くと使えます";
 
 /// 道具のボタンの大きさ（トラックパッドで押しやすい大きさ）。
 const BUTTON: egui::Vec2 = egui::vec2(52.0, 48.0);
+/// 道具のボタンの右下に出すキーの文字の大きさ。
+const BADGE_SIZE: f32 = 10.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolRailInput {
@@ -31,12 +35,16 @@ pub struct ToolRailInput {
     pub has_model: bool,
     /// 編集できない理由（読み込み中・書き出し中など）。`Some` の間、編集の道具と図形を無効にする。
     pub edit_blocked: Option<String>,
+    /// 今のキーの文字（説明の文と道具の列の1文字に使う）。
+    pub keys: KeyLabels,
 }
 
 struct ToolDef {
     tool: Tool,
+    action: Action,
     label: &'static str,
     id: &'static str,
+    /// 説明の文の「:」の後ろ。前には「移動（G）」のように今のキーを付ける。
     hint: &'static str,
     /// 形を編集する道具か（`edit_blocked` で止める）。
     edits: bool,
@@ -45,61 +53,115 @@ struct ToolDef {
 const TOOLS: [ToolDef; 7] = [
     ToolDef {
         tool: Tool::Select,
+        action: Action::ToolSelect,
         label: "選択",
         id: ids::TOOL_SELECT,
-        hint: "選択（V）: クリックで部品を選びます",
+        hint: "クリックで部品を選びます",
         edits: false,
     },
     ToolDef {
         tool: Tool::Move,
+        action: Action::ToolMove,
         label: "移動",
         id: ids::TOOL_MOVE,
-        hint: "移動（G）: 矢印をドラッグして動かします",
+        hint: "矢印をドラッグして動かします",
         edits: true,
     },
     ToolDef {
         tool: Tool::Rotate,
+        action: Action::ToolRotate,
         label: "回転",
         id: ids::TOOL_ROTATE,
-        hint: "回転（R）: 輪をドラッグして回します",
+        hint: "輪をドラッグして回します",
         edits: true,
     },
     ToolDef {
         tool: Tool::Scale,
+        action: Action::ToolScale,
         label: "拡大",
         id: ids::TOOL_SCALE,
-        hint: "拡大（S）: 箱をドラッグして大きさを変えます",
+        hint: "箱をドラッグして大きさを変えます",
         edits: true,
     },
     ToolDef {
         tool: Tool::Shape,
+        action: Action::ToolShape,
         label: "図形",
         id: ids::TOOL_SHAPE,
-        hint: "図形: 立方体・球・円柱・平面を置きます",
+        hint: "立方体・球・円柱・平面を置きます",
         edits: true,
     },
     ToolDef {
         tool: Tool::Measure,
+        action: Action::ToolMeasure,
         label: "計測",
         id: ids::TOOL_MEASURE,
-        hint: "計測（M）: 角や辺に近づけて2回クリックし、距離を測ります",
+        hint: "角や辺に近づけて2回クリックし、距離を測ります",
         edits: false,
     },
     ToolDef {
         tool: Tool::Annotate,
+        action: Action::ToolAnnotate,
         label: "注釈",
         id: ids::TOOL_ANNOTATE,
-        hint: "注釈（N）: 表面をクリックして注釈を書きます",
+        hint: "表面をクリックして注釈を書きます",
         edits: true,
     },
 ];
 
-const SHAPES: [(ShapeKind, &str); 4] = [
-    (ShapeKind::Cube, ids::SHAPE_CUBE),
-    (ShapeKind::Sphere, ids::SHAPE_SPHERE),
-    (ShapeKind::Cylinder, ids::SHAPE_CYLINDER),
-    (ShapeKind::Plane, ids::SHAPE_PLANE),
+const SHAPES: [(ShapeKind, &str, Action); 4] = [
+    (ShapeKind::Cube, ids::SHAPE_CUBE, Action::ShapeCube),
+    (ShapeKind::Sphere, ids::SHAPE_SPHERE, Action::ShapeSphere),
+    (
+        ShapeKind::Cylinder,
+        ids::SHAPE_CYLINDER,
+        Action::ShapeCylinder,
+    ),
+    (ShapeKind::Plane, ids::SHAPE_PLANE, Action::ShapePlane),
 ];
+
+fn tool_def(tool: Tool) -> &'static ToolDef {
+    TOOLS
+        .iter()
+        .find(|def| def.tool == tool)
+        .expect("道具の列はすべての道具を持つ")
+}
+
+/// 道具のボタンの説明（「移動（G）: 矢印をドラッグして動かします」）。未割り当てなら括弧を出さない。
+pub fn tool_hint(tool: Tool, keys: &KeyLabels) -> String {
+    let def = tool_def(tool);
+    format!("{}: {}", keys.with_key(def.action, def.label), def.hint)
+}
+
+/// 道具のボタンの右下に出す1文字。修飾の無い1文字のキーのときだけ（「Shift+G」や「F2」は出さない）。
+pub fn tool_badge(tool: Tool, keys: &KeyLabels) -> Option<&str> {
+    keys.get(tool_def(tool).action)
+        .filter(|key| key.chars().count() == 1)
+}
+
+/// [吸着] の説明。
+pub fn snap_hint(enabled: bool, keys: &KeyLabels) -> String {
+    let name = keys.with_key(Action::MeasureSnap, "吸着");
+    if enabled {
+        format!("{name}: 角や辺に近づけると、そこへ点を置きます。押すと切ります")
+    } else {
+        format!("{name}: 切っている間は、押した面の上に点を置きます。押すと入れます")
+    }
+}
+
+/// 図形のボタンの説明（「立方体を視点の中心に置きます」。キーがあれば括弧で足す）。
+pub fn shape_hint(kind: ShapeKind, keys: &KeyLabels) -> String {
+    let action = SHAPES
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, _, action)| *action)
+        .expect("図形のボタンはすべての形を持つ");
+    let text = format!("{}を視点の中心に置きます", name_ja(kind));
+    match keys.get(action) {
+        Some(key) => format!("{text}（{key}）"),
+        None => text,
+    }
+}
 
 /// 道具を押せない理由。押せれば `None`。
 pub fn tool_disabled_reason(input: &ToolRailInput, tool: Tool) -> Option<String> {
@@ -211,6 +273,7 @@ fn tool_button(
     let draw = |painter: &egui::Painter, rect: egui::Rect, color: egui::Color32| {
         paint_tool_icon(painter, def.tool, rect, color);
     };
+    let hint = tool_hint(def.tool, &input.keys);
     let response = chip(
         ui,
         &Chip {
@@ -218,12 +281,29 @@ fn tool_button(
             selected: input.tool == def.tool,
             enabled: reason.is_none(),
             reason: reason.as_deref(),
-            hint: def.hint,
+            hint: &hint,
             size: BUTTON,
             band: BandSide::Left,
         },
         Some(&draw),
     );
+    if let Some(key) = tool_badge(def.tool, &input.keys)
+        && ui.is_rect_visible(response.rect)
+    {
+        // 右下の隅に、本文より薄い小さい文字で。絵（上の中央）と名前（下の中央）には重ならない。
+        let color = if reason.is_none() {
+            theme::TEXT_WEAK
+        } else {
+            theme::TEXT_WEAK.gamma_multiply(0.45)
+        };
+        ui.painter().text(
+            response.rect.right_bottom() + egui::vec2(-4.0, -3.0),
+            egui::Align2::RIGHT_BOTTOM,
+            key,
+            egui::FontId::proportional(BADGE_SIZE),
+            color,
+        );
+    }
     reg(def.id, &response);
     if response.clicked() && input.tool != def.tool {
         out.push(Command::SetTool(def.tool));
@@ -237,11 +317,7 @@ fn show_snap(ui: &mut egui::Ui, input: &ToolRailInput, enabled: bool, out: &mut 
         let draw = |painter: &egui::Painter, rect: egui::Rect, color: egui::Color32| {
             paint_snap_icon(painter, rect, color);
         };
-        let hint = if enabled {
-            "吸着（X）: 角や辺に近づけると、そこへ点を置きます。押すと切ります"
-        } else {
-            "吸着（X）: 切っている間は、押した面の上に点を置きます。押すと入れます"
-        };
+        let hint = snap_hint(enabled, &input.keys);
         let response = chip(
             ui,
             &Chip {
@@ -249,7 +325,7 @@ fn show_snap(ui: &mut egui::Ui, input: &ToolRailInput, enabled: bool, out: &mut 
                 selected: enabled,
                 enabled: reason.is_none(),
                 reason: reason.as_deref(),
-                hint,
+                hint: &hint,
                 size: egui::vec2(64.0, BUTTON.y),
                 band: BandSide::Bottom,
             },
@@ -288,12 +364,12 @@ fn show_shapes(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>)
     rail_frame().show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.horizontal(|ui| {
-            for (kind, id) in SHAPES {
+            for (kind, id, _) in SHAPES {
                 let draw = |painter: &egui::Painter, rect: egui::Rect, color: egui::Color32| {
                     paint_shape_icon(painter, kind, rect, color);
                 };
                 let label = name_ja(kind);
-                let hint = format!("{label}を視点の中心に置きます");
+                let hint = shape_hint(kind, &input.keys);
                 let response = chip(
                     ui,
                     &Chip {

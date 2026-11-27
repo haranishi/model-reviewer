@@ -1,0 +1,26 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "empty.new" },
+    { "op": "wait_idle" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "create-new.png" },
+    { "op": "click_widget", "name": "status.display_unit" },
+    { "op": "click_widget", "name": "status.display_unit" },
+    { "op": "click_widget", "name": "tool.shape" },
+    { "op": "click_widget", "name": "shape.cube" },
+    { "op": "wait_idle" },
+    { "op": "key", "key": "G" },
+    { "op": "key", "key": "X" },
+    { "op": "key", "key": "2" },
+    { "op": "key", "key": "5" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "create-keymove.png" },
+    { "op": "key", "key": "Enter" },
+    { "op": "click_widget", "name": "color.swatch.9" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "create-color.png" },
+    { "op": "quit" }
+  ]
+}

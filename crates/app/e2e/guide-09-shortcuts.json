@@ -1,0 +1,18 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "toolbar.help" },
+    { "op": "click_widget", "name": "help.keys" },
+    { "op": "sample", "label": "設定の初期表示", "frames": 4 },
+    { "op": "screenshot", "path": "keys-window.png" },
+    { "op": "click_widget", "name": "keys.filter" },
+    { "op": "type_text", "text": "移動" },
+    { "op": "click_widget", "name": "keys.row.tool.move" },
+    { "op": "key", "key": "R" },
+    { "op": "sample", "label": "重なりの確認", "frames": 4 },
+    { "op": "screenshot", "path": "keys-conflict.png" },
+    { "op": "quit" }
+  ]
+}

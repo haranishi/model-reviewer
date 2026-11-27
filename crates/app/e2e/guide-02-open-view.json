@@ -1,0 +1,13 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "view-sample.png" },
+    { "op": "click_widget", "name": "view.display.xray" },
+    { "op": "sample", "label": "settle", "frames": 10 },
+    { "op": "screenshot", "path": "view-xray.png" },
+    { "op": "quit" }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "wait_idle" },
+    { "op": "screenshot", "path": "new-1-start.png" },
+    { "op": "click_widget", "name": "empty.new" },
+    { "op": "wait_idle" },
+    { "op": "screenshot", "path": "new-1-empty.png" },
+    { "op": "dump_state", "path": "new-1-empty.json" },
+    { "op": "click_widget", "name": "tool.shape" },
+    { "op": "click_widget", "name": "shape.cube" },
+    { "op": "wait_idle" },
+    { "op": "screenshot", "path": "new-1-cube.png" },
+    { "op": "dump_state", "path": "new-1-cube.json" },
+    { "op": "save_review", "path": "new-1-review.json" },
+    { "op": "screenshot", "path": "new-1-review-refused.png" },
+    { "op": "click_widget", "name": "dialog.cancel" },
+    { "op": "export_glb", "path": "new-1.glb" },
+    { "op": "wait_idle" },
+    { "op": "screenshot", "path": "new-1-exported.png" },
+    { "op": "click_widget", "name": "dialog.cancel" },
+    { "op": "dump_state", "path": "new-1-exported.json" },
+    { "op": "key", "key": "N", "modifiers": ["command"] },
+    { "op": "wait_idle" },
+    { "op": "dump_state", "path": "new-1-again.json" },
+    { "op": "screenshot", "path": "new-1.png" },
+    { "op": "quit" }
+  ]
+}

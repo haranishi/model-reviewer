@@ -329,7 +329,8 @@ fn load_thread(
     drop(bytes);
     let model = Arc::new(model);
     let stl_unit = match source_kind {
-        SourceKind::Glb => None,
+        // 読み込みが返すのは GLB と STL だけ（新規は読み込みを通らない）。
+        SourceKind::Glb | SourceKind::New => None,
         SourceKind::Stl { unit } => Some(unit),
     };
     let model_ref = model_ref_for(resolved_path, identity, stl_unit);

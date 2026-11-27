@@ -4,6 +4,8 @@
 //! 作る GLB: BIN は位置（`f32` × 3）と番号（`u32`）だけ。JSON は `asset`、シーン1つ、ノード1つ
 //! （名前、`mesh`、変形は既定値でない項目だけ）、メッシュ1つ（`POSITION` と `indices`、三角形リスト）、
 //! 材質1つ、アクセサ2つ（位置には `min`・`max`）。`NORMAL` は書かない（STL の形状は法線を持たない）。
+//!
+//! 新規の文書の土台（`empty_base`）もここで作る。ノードもメッシュも BIN も無い GLB である。
 
 use gltf::json::Value;
 use model_reviewer_core::scene::{Model, Node, Primitive};
@@ -93,6 +95,40 @@ pub fn synthesize_base(model: &Model) -> Result<Vec<u8>, ExportError> {
     }
     debug_assert_eq!(out.len() as u64, total);
     Ok(out)
+}
+
+/// ノードもメッシュも無い最小の GLB。新規の文書を書き出すときの土台にする。JSON チャンクだけで、
+/// BIN もバッファも無い。いつも同じバイト列を返す。
+///
+/// JSON は `asset`（`generator` と `version`）、`scene: 0`、根の無いシーン1つ。`load_glb` は
+/// これを開かない（`NoMesh`）。土台として読むのは書き出しの `base::read` だけである。
+pub fn empty_base() -> Vec<u8> {
+    let mut asset = obj();
+    set(
+        &mut asset,
+        "generator",
+        Value::String("model-reviewer".to_owned()),
+    );
+    set(&mut asset, "version", Value::String("2.0".to_owned()));
+    let mut scene = obj();
+    set(&mut scene, "nodes", Value::Array(Vec::new()));
+    let mut root = obj();
+    set(&mut root, "asset", asset);
+    set(&mut root, "scene", uint(0));
+    set(&mut root, "scenes", Value::Array(vec![scene]));
+    // 文字列と数と空の配列だけの値なので、直列化は失敗しない。
+    let json = gltf::json::serialize::to_vec(&root).unwrap_or_default();
+    let json_padded = align4(json.len() as u64) as usize;
+    let total = 12 + 8 + json_padded;
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json_padded as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    out.resize(total, b' ');
+    out
 }
 
 struct JsonSizes {
@@ -233,4 +269,54 @@ fn check_primitive(prim: &Primitive) -> Result<(), ExportError> {
 
 fn scene_error(what: &str) -> ExportError {
     ExportError::InvalidScene(what.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::empty_base;
+    use crate::export::{base, container};
+    use crate::{LoadError, inspect, load_glb};
+
+    // 要確認の結果を固定する: BIN もバッファも無い GLB を、容器の読み取りと JSON の読み取りが受け、
+    // 土台の読み取りは空のモデルを土台にする。`load_glb` は今までどおり断る。
+    #[test]
+    fn empty_base_is_read_by_the_container_json_and_base_readers() {
+        let bytes = empty_base();
+        let parsed = container::parse(&bytes).expect("容器");
+        assert!(parsed.bin.is_none());
+        let opened = inspect::open(&bytes).expect("JSON");
+        assert!(opened.bin.is_empty());
+        let root = opened.document.as_json();
+        assert!(root.nodes.is_empty());
+        assert!(root.buffers.is_empty());
+        assert_eq!(root.scenes.len(), 1);
+
+        let base = base::read(&bytes, &Default::default()).expect("土台");
+        assert_eq!(base.node_count, 0);
+        assert!(base.has_scenes);
+        assert_eq!(base.scene_index, 0);
+        assert!(base.roots.is_empty());
+        assert!(base.container.bin.is_none());
+        assert_eq!(base.model, model_reviewer_core::scene::Model::empty());
+
+        assert_eq!(load_glb(&bytes), Err(LoadError::NoMesh));
+    }
+
+    #[test]
+    fn a_file_with_nodes_but_no_mesh_is_still_refused_as_a_base() {
+        // ノードがあるのに描画が無いファイルは、空の土台として扱わない。
+        let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"a"}]}"#;
+        let padded = json.len().next_multiple_of(4);
+        let total = 20 + padded;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(total as u32).to_le_bytes());
+        bytes.extend_from_slice(&(padded as u32).to_le_bytes());
+        bytes.extend_from_slice(b"JSON");
+        bytes.extend_from_slice(json);
+        bytes.resize(total, b' ');
+        assert!(base::read(&bytes, &Default::default()).is_err());
+        assert_eq!(load_glb(&bytes), Err(LoadError::NoMesh));
+    }
 }

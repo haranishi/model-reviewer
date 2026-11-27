@@ -1,5 +1,6 @@
 pub mod bvh;
 pub mod camera;
+pub mod color;
 pub mod doc;
 pub mod error;
 pub mod gizmo;

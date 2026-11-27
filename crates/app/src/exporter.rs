@@ -287,7 +287,7 @@ fn run_export(
     emit(tx, wake, ExportEvent::Stage(ExportStage::Writing));
     call_hook(&hooks.before_write);
     let started = Instant::now();
-    let (file, mut temp) = create_temp(&destination).map_err(ExportFailure::Io)?;
+    let (file, temp) = create_temp(&destination).map_err(ExportFailure::Io)?;
     {
         let mut writer = BufWriter::new(file);
         write_container(&mut writer, &base_bytes, &built).map_err(ExportFailure::Export)?;
@@ -323,13 +323,12 @@ fn run_export(
     if is_forbidden(&destination, &request.forbidden) {
         return Err(ExportFailure::SameAsOpened);
     }
-    fs::rename(&temp.path, &destination).map_err(|err| {
+    temp.replace(&destination).map_err(|err| {
         ExportFailure::Io(format!(
             "保存先へ置き換えられませんでした（{}）",
             loader::io_error_ja(&err)
         ))
     })?;
-    temp.disarm();
     let verify_time = started.elapsed();
     sample_peak(&mut peak_mem);
 
@@ -372,14 +371,16 @@ fn resolve_destination(target: &Path) -> Result<PathBuf, ExportFailure> {
     Ok(canonical_parent.join(file_name))
 }
 
-struct TempFile {
+pub(crate) struct TempFile {
     path: PathBuf,
     armed: bool,
 }
 
 impl TempFile {
-    fn disarm(&mut self) {
+    pub(crate) fn replace(mut self, destination: &Path) -> io::Result<()> {
+        fs::rename(&self.path, destination)?;
         self.armed = false;
+        Ok(())
     }
 }
 
@@ -391,7 +392,7 @@ impl Drop for TempFile {
     }
 }
 
-fn create_temp(destination: &Path) -> Result<(File, TempFile), String> {
+pub(crate) fn create_temp(destination: &Path) -> Result<(File, TempFile), String> {
     let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

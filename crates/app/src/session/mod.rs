@@ -19,7 +19,7 @@ use model_reviewer_core::units::UnitLabel;
 use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
-use crate::exporter::{self, ExportHandle, ExportHooks, ExportStage};
+use crate::exporter::{ExportHandle, ExportHooks, ExportStage};
 use crate::loader::{self, LoadEvent, LoadHandle, LoadHooks, LoadPhase, LoadedModel};
 use crate::metrics::Metrics;
 use crate::ui::ids;
@@ -234,8 +234,10 @@ pub(super) struct ExportJob {
 
 struct Incoming {
     generation: u64,
-    model: Arc<Model>,
+    doc: Document,
+    review: Option<ReviewState>,
     model_ref: ModelRef,
+    resolved_path: PathBuf,
     source_path: Option<PathBuf>,
     forbid_on_commit: bool,
     file_bytes: u64,
@@ -871,6 +873,17 @@ impl Session {
             self.load = LoadPhase::Idle;
             return;
         }
+        // 転送が終わると描画器の表示が替わる。復元に失敗しうる処理は転送前に済ませる。
+        let doc = Document::new(loaded.model);
+        let review = match persist::take_restored(self, &doc, &loaded.model_ref.identity) {
+            persist::Restored::Absent => None,
+            persist::Restored::State(state) => Some(state),
+            persist::Restored::Blocked => {
+                self.cancel_pending_load();
+                self.end_discard_bypass();
+                return;
+            }
+        };
         let (source_path, forbid_on_commit) = match self
             .load_meta
             .as_ref()
@@ -881,8 +894,10 @@ impl Session {
         };
         self.incoming = Some(Incoming {
             generation: loaded.generation,
-            model: loaded.model,
+            doc,
+            review,
             model_ref: loaded.model_ref,
+            resolved_path: loaded.resolved_path,
             source_path,
             forbid_on_commit,
             file_bytes: loaded.file_bytes,
@@ -965,7 +980,7 @@ impl Session {
     pub(crate) fn incoming_model(&self) -> Option<Arc<Model>> {
         self.incoming
             .as_ref()
-            .map(|incoming| Arc::clone(&incoming.model))
+            .map(|incoming| Arc::clone(incoming.doc.base()))
     }
 
     pub(crate) fn take_cancel_upload(&mut self) -> bool {
@@ -1022,30 +1037,14 @@ impl Session {
         if incoming.generation != self.generation {
             return;
         }
-        // 文書はここで1回だけ作る。復元・表示状態・視点は、はじめから文書を読む。
-        let doc = Document::new(Arc::clone(&incoming.model));
-        let restored = persist::take_restored(self, &doc, &incoming.model_ref.identity);
-        let review = match restored {
-            persist::Restored::Absent => None,
-            persist::Restored::State(state) => Some(state),
-            persist::Restored::Blocked => {
-                self.loading_file_name = None;
-                self.open_started = None;
-                self.awaiting_present = false;
-                self.upload_cpu = Duration::ZERO;
-                self.upload_frames = 0;
-                self.staged_pick = None;
-                self.discard_bypass = false;
-                self.load = LoadPhase::Idle;
-                return;
-            }
-        };
+        let doc = incoming.doc;
+        let review = incoming.review;
         notes::clear_body_edits(self);
         notes::cancel(self);
         self.body_pending = false;
         self.advance_review_generation();
         let restored_review = review.is_some();
-        let model = incoming.model;
+        let model = Arc::clone(doc.base());
         let aspect = aspect_of(self.viewport_px);
         let viewport_known = self.viewport_px[0] > 0 && self.viewport_px[1] > 0;
         // 投影は利用者が選んだ見方なので、モデルを開き直しても保つ。
@@ -1057,7 +1056,7 @@ impl Session {
             if let Some(source) = incoming.source_path.as_deref() {
                 self.remember_opened_file(source);
             }
-            self.remember_opened_file(Path::new(&incoming.model_ref.path));
+            self.remember_opened_file(&incoming.resolved_path);
         }
         self.exported_since_load = false;
         self.export_error = None;
@@ -1135,7 +1134,7 @@ impl Session {
         if !self
             .opened_files
             .iter()
-            .any(|existing| existing == path || exporter::same_file(existing, path))
+            .any(|existing| existing.as_os_str() == path.as_os_str())
         {
             self.opened_files.push(path.to_path_buf());
         }
@@ -1289,10 +1288,94 @@ fn discard_dialog(doc: bool, review: bool, draft: bool) -> DialogRequest {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::command::{Command, PanelKind};
+    use crate::loader::{LoadPhase, LoadedModel};
+    use model_reviewer_core::identity::{ModelIdentity, ModelRef};
+    use model_reviewer_core::review::ReviewState;
+    use model_reviewer_core::review_file::{self, ReviewNodeRecord};
+    use model_reviewer_core::scene::NodeId;
+    use model_reviewer_testdata::{inputs, sample_glb};
 
-    use super::Session;
+    use super::{PendingRestore, Session};
+
+    fn loaded_model(name: &str, bytes: &[u8], generation: u64) -> LoadedModel {
+        LoadedModel {
+            generation,
+            model: Arc::new(model_reviewer_gltf::load_glb(bytes).unwrap()),
+            resolved_path: PathBuf::from(name),
+            model_ref: ModelRef {
+                file_name: name.to_owned(),
+                path: name.to_owned(),
+                relative_path: None,
+                identity: ModelIdentity::from_bytes(bytes),
+            },
+            file_bytes: bytes.len() as u64,
+            read: Duration::ZERO,
+            identity: Duration::ZERO,
+            parse: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn invalid_review_never_queues_a_model_for_upload() {
+        let mut session = Session::default();
+        session.accept_loaded(loaded_model(
+            "original.glb",
+            &sample_glb(),
+            session.generation,
+        ));
+        session.apply(Command::Select(Some(NodeId(1))));
+        session.apply(Command::DuplicateSelected);
+        assert!(session.doc_unsaved());
+        let selected = session.selection.unwrap();
+        let previous = Arc::clone(session.model.as_ref().unwrap());
+        let nodes = session.doc.as_ref().unwrap().nodes().to_vec();
+        let review = session.review.clone();
+
+        session.enable_gpu_upload();
+        session.generation += 1;
+        session.load = LoadPhase::Parsing;
+        let incoming = loaded_model("other.glb", &inputs::triangle(), session.generation);
+        let state = ReviewState::new(&incoming.model);
+        let json = review_file::to_json(&state, &incoming.model, &incoming.model_ref).unwrap();
+        let mut file = review_file::parse(&json).unwrap();
+        file.hidden_nodes.push(ReviewNodeRecord {
+            gltf_index: 999,
+            name: "存在しない部品".to_owned(),
+        });
+        session.restore = Some(PendingRestore {
+            file,
+            remaining: Vec::new(),
+            first_mismatch: None,
+        });
+        session.accept_loaded(incoming);
+
+        assert!(
+            session.incoming_model().is_none(),
+            "復元できないモデルが転送待ちになった"
+        );
+        assert_eq!(session.load, LoadPhase::Idle);
+        assert!(Arc::ptr_eq(session.model.as_ref().unwrap(), &previous));
+        assert_eq!(session.doc.as_ref().unwrap().nodes(), nodes);
+        assert_eq!(session.selection, Some(selected));
+        assert_eq!(session.review, review);
+        assert!(session.doc_unsaved());
+        assert_eq!(
+            session.status_text,
+            "モデルに無い部品です（gltf_index 999）"
+        );
+        assert!(
+            session
+                .dialog
+                .as_ref()
+                .unwrap()
+                .body
+                .contains(&session.status_text)
+        );
+    }
 
     #[test]
     fn unsaved_open_waits_for_confirm() {

@@ -60,6 +60,7 @@ pub(crate) struct LoadedModel {
     pub generation: u64,
     pub model: Arc<Model>,
     pub model_ref: ModelRef,
+    pub resolved_path: PathBuf,
     pub file_bytes: u64,
     pub read: Duration,
     pub identity: Duration,
@@ -188,7 +189,8 @@ fn load_thread(
         return;
     }
     let started = Instant::now();
-    let bytes = match std::fs::read(&path) {
+    let resolved_path = std::fs::canonicalize(&path).unwrap_or(path);
+    let bytes = match std::fs::read(&resolved_path) {
         Ok(bytes) => bytes,
         Err(err) => {
             log::error!("failed to read model: {err}");
@@ -252,11 +254,12 @@ fn load_thread(
     let parse = started.elapsed();
     // `load_glb` の途中では止められない。届いた結果は世代番号で捨てる。
     let model = Arc::new(model);
-    let model_ref = model_ref_for(&path, identity);
+    let model_ref = model_ref_for(&resolved_path, identity);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
         model_ref,
+        resolved_path,
         file_bytes: bytes.len() as u64,
         read,
         identity: identity_elapsed,
@@ -315,14 +318,13 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
 }
 
 fn model_ref_for(path: &Path, identity: ModelIdentity) -> ModelRef {
-    let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let file_name = absolute
+    let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "モデル".to_owned());
     ModelRef {
         file_name,
-        path: absolute.display().to_string(),
+        path: path.display().to_string(),
         relative_path: None,
         identity,
     }

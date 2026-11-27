@@ -19,6 +19,7 @@ mod base;
 mod container;
 mod json;
 mod patch;
+mod recolor;
 mod synth;
 mod verify;
 
@@ -67,6 +68,13 @@ pub struct Built {
 /// 書き出しの結果の一覧に出すこと。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExportNote {
+    /// 色を変えた部品。元の材質とメッシュを写して基本色と材質の番号だけを替え、末尾に足した
+    /// （元の材質とメッシュはファイルに残る）。
+    Recolored {
+        nodes: u32,
+        materials: u32,
+        meshes: u32,
+    },
     /// シーンから外した部品（データはファイルに残る）。
     DetachedNodes {
         count: u32,
@@ -193,6 +201,10 @@ fn write_fill(out: &mut dyn io::Write, byte: u8, count: u64) -> io::Result<()> {
 ///    `bufferViews`・`buffers`）以外が値として元と等しい。8つも、元からあった要素は、`scene` から
 ///    決まる書き換えてよい所（変形・名前・子を変えたノード、外したノードの親、使うシーンの根、
 ///    `buffers[0].byteLength`）を除いて等しい。足した要素は末尾にあり、足したBINの範囲を指す。
+///    色を変えた部品のノードの `mesh` は、足したメッシュが元のメッシュの `material` だけを替えた
+///    写しのときだけ違ってよく、足した材質は「元の材質の基本色だけを替えた写し」「材質の無い
+///    プリミティブの、基本色だけの材質」「足した図形の材質（基本色と `metallicFactor: 0`）」の
+///    どれかとして使われていること。材質とメッシュは BIN なしで増えてよい。
 /// 3. `load_glb` で開け、部品の数・ファイル内の番号・親・名前・ワールド行列（許容差つき）・
 ///    描画ごとの形状と色・配置後の三角形数が `scene` と一致する。
 pub fn verify(

@@ -7,6 +7,7 @@ use model_reviewer_core::scene::Model;
 
 use super::ExportError;
 use super::container::{self, Container};
+use crate::build::DrawSource;
 use crate::{build, inspect};
 
 pub(crate) struct Base<'a> {
@@ -28,6 +29,8 @@ pub(crate) struct Base<'a> {
     /// 読み込んだ `Model` に部品として出たノード。
     pub loaded: Vec<bool>,
     pub model: Model,
+    /// `model.draws` と同じ並びの、描画の出どころ（読み込みが作った対応。数え直さない）。
+    pub sources: Vec<DrawSource>,
 }
 
 pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
@@ -70,7 +73,7 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
         .map(|index| index as u32)
         .collect();
     // ノードが0個の土台（新規の文書の `empty_base`）は、空のモデルを土台のモデルにする。
-    let model = build::assemble_base(opened)
+    let build::Assembled { model, sources } = build::assemble_base(opened)
         .map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
     let mut loaded = vec![false; node_count];
     for node in &model.nodes {
@@ -99,7 +102,21 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Base<'_>, ExportError> {
         roots,
         loaded,
         model,
+        sources,
     })
+}
+
+impl Base<'_> {
+    /// ファイルのノード番号から、土台のモデルの部品の位置。読み込まれていないノードは `None`。
+    pub fn loaded_nodes(&self) -> Vec<Option<usize>> {
+        let mut at = vec![None; self.node_count];
+        for (index, node) in self.model.nodes.iter().enumerate() {
+            if let Some(slot) = at.get_mut(node.gltf_index as usize) {
+                *slot = Some(index);
+            }
+        }
+        at
+    }
 }
 
 /// 2つの行列がビット単位で同じか。

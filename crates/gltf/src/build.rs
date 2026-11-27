@@ -17,6 +17,25 @@ use crate::error::LoadError;
 use crate::inspect::{self, Opened};
 
 pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
+    assemble_with_sources(opened).map(|assembled| assembled.model)
+}
+
+/// 組み立ての内部の結果。`sources[i]` は `model.draws[i]` が、どのメッシュの何番目の
+/// プリミティブから来たか（ファイルの番号）。点・線・読めないプリミティブは描画にならないので、
+/// 描画の番号とプリミティブの番号は一致しない。書き出しはこの対応をそのまま使い、数え直さない。
+pub(crate) struct Assembled {
+    pub model: Model,
+    pub sources: Vec<DrawSource>,
+}
+
+/// 描画の出どころ（メッシュの番号、その中のプリミティブの番号）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DrawSource {
+    pub mesh: u32,
+    pub primitive: u32,
+}
+
+fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
     let root = opened.document.as_json();
     let mut assembly = Assembly::new(root, opened.bin);
     let mut warnings = assembly.file_warnings()?;
@@ -103,7 +122,7 @@ pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
     for name in &opened.unknown_optional {
         warnings.push(LoadWarning::UnsupportedOptionalExtension { name: name.clone() });
     }
-    Ok(Model {
+    let model = Model {
         stats: ModelStats {
             nodes: inspect::fit_u32(nodes.len() as u64, "インスタンス数")?,
             meshes: inspect::fit_u32(assembly.meshes.len() as u64, "インスタンス数")?,
@@ -116,16 +135,23 @@ pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
         primitives: assembly.primitives,
         bounds,
         warnings,
+    };
+    Ok(Assembled {
+        model,
+        sources: assembly.sources,
     })
 }
 
 /// 書き出しの土台を組み立てる入口。ノードが0個のファイルで `NoMesh` になったときだけ、
 /// 空のモデルを返す（新規の文書の土台 `export::empty_base`）。ほかは `assemble` と同じ。
 /// `load_glb` はこれを使わない（メッシュの無いファイルを開く操作は、今までどおり断る）。
-pub(crate) fn assemble_base(opened: Opened<'_>) -> Result<Model, LoadError> {
+pub(crate) fn assemble_base(opened: Opened<'_>) -> Result<Assembled, LoadError> {
     let no_nodes = opened.document.as_json().nodes.is_empty();
-    match assemble(opened) {
-        Err(LoadError::NoMesh) if no_nodes => Ok(Model::empty()),
+    match assemble_with_sources(opened) {
+        Err(LoadError::NoMesh) if no_nodes => Ok(Assembled {
+            model: Model::empty(),
+            sources: Vec::new(),
+        }),
         other => other,
     }
 }
@@ -153,6 +179,8 @@ struct Assembly<'a> {
     bin: &'a [u8],
     primitives: Vec<Primitive>,
     draws: Vec<Draw>,
+    /// `draws` と同じ並びの、描画の出どころ。
+    sources: Vec<DrawSource>,
     cache: HashMap<ShareKey, PrimId>,
     meshes: HashSet<usize>,
     unique_triangles: u64,
@@ -186,6 +214,7 @@ impl<'a> Assembly<'a> {
             bin,
             primitives: Vec::new(),
             draws: Vec::new(),
+            sources: Vec::new(),
             cache: HashMap::new(),
             meshes: HashSet::new(),
             unique_triangles: 0,
@@ -275,8 +304,12 @@ impl<'a> Assembly<'a> {
             .map(prim_info)
             .collect::<Result<Vec<_>, _>>()?;
         let mut aabb = Aabb::empty();
-        for info in infos {
-            if let Some(local) = self.add_primitive(mesh_index, info)? {
+        for (primitive, info) in infos.into_iter().enumerate() {
+            let source = DrawSource {
+                mesh: u32_index(mesh_index)?,
+                primitive: u32_index(primitive)?,
+            };
+            if let Some(local) = self.add_primitive(mesh_index, source, info)? {
                 aabb = aabb.union(local.transformed(world));
             }
         }
@@ -286,6 +319,7 @@ impl<'a> Assembly<'a> {
     fn add_primitive(
         &mut self,
         mesh_index: usize,
+        source: DrawSource,
         info: PrimInfo,
     ) -> Result<Option<Aabb>, LoadError> {
         match info.mode {
@@ -311,7 +345,7 @@ impl<'a> Assembly<'a> {
             let triangles = triangle_len(stored.indices.len())?;
             let local = stored.local_aabb;
             let has_normals = stored.has_normals;
-            self.place(mesh_index, prim, color, has_normals, triangles)?;
+            self.place(mesh_index, source, prim, color, has_normals, triangles)?;
             return Ok(Some(local));
         }
         let Some(built) = decode(self.root, self.bin, info)? else {
@@ -331,13 +365,21 @@ impl<'a> Assembly<'a> {
             })?;
         self.primitives.push(built.primitive);
         self.cache.insert(key, prim);
-        self.place(mesh_index, prim, color, has_normals, built.triangles)?;
+        self.place(
+            mesh_index,
+            source,
+            prim,
+            color,
+            has_normals,
+            built.triangles,
+        )?;
         Ok(Some(local))
     }
 
     fn place(
         &mut self,
         mesh_index: usize,
+        source: DrawSource,
         prim: PrimId,
         color: [f32; 4],
         has_normals: bool,
@@ -353,6 +395,7 @@ impl<'a> Assembly<'a> {
             prim,
             base_color: color,
         });
+        self.sources.push(source);
         self.meshes.insert(mesh_index);
         self.placed_triangles = self
             .placed_triangles

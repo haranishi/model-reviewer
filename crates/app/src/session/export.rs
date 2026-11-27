@@ -264,6 +264,15 @@ fn fail_export(session: &mut Session, failure: ExportFailure) {
 /// 書き出しの結果の注意1件を利用者向けの文にする。
 pub fn note_ja(note: &ExportNote) -> String {
     match *note {
+        ExportNote::Recolored {
+            nodes,
+            materials,
+            meshes,
+        } => {
+            format!(
+                "色を変えた部品 {nodes} 個: 材質 {materials} 個とメッシュ {meshes} 個を足しました。元の材質とメッシュは、ファイルに残しています。"
+            )
+        }
         ExportNote::DetachedNodes { count } => {
             format!(
                 "削除した部品 {count} 個はシーンから外しました。形状のデータはファイルに残っています。"

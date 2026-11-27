@@ -21,8 +21,8 @@ WP-M1 表と振り分け（単独・最初）
 ```
 `(P)` の3本は担当ファイルが重ならず、M1 の後なら同時に進められる。J1 は S1・V1・K1 の後。**G1 は、creation-basics の色（WP-C3）が取り込まれた後に行う**（手順書が、新規作成・キーで動かす・色をまとめて書くため。2026-11-27 に順を変えた）。
 
-- [ ] 1. 土台
-- [ ] 1.1 WP-M1 表と振り分け（[design-keymap.md](design-keymap.md)。単独で最初に行う）
+- [x] 1. 土台
+- [x] 1.1 WP-M1 表と振り分け（[design-keymap.md](design-keymap.md)。単独で最初に行う）
   - `keymap.rs`・`keymap/{actions,chord}.rs` を、**中身まで**書く（`Action` の42個。`file.new` は既にある Cmd+N の分岐を表へ移す。`Chord`、`Refusal`、`Platform`、`Keymap`、`KeyLabels`。型は design-keymap.md。`Scope` は作らない）
   - `app::shortcut_commands` を、表を引く形に直す。形 `(ctx, session)` は変えない。固定のキーと Esc の順は今のまま。足す既定の4つと、修飾の完全一致（Shift+Home）は、ここで入る。**`over_panel` の判定を消し**、入力の位置を持つ部品があるときの Delete・Backspace・矢印・Enter だけを捨てる（要件2.5）。「パネルの上では働かない」を確かめている既存の試験は、期待を直して試験名を報告する（消さない）。操作ごとの「ボタンが押せないときは何もしない」は、既存の分岐の条件を写す
   - **置くだけにするもの**（パニックさせず、既定・空・何もしないを返す）: `keymap/store.rs`（`Os`、`default_path` は `None`、`Store::none`・`open`・`save`・状態の型）、`Session` の `keymap`・`key_labels`・`keys`・`store`、`Command` の9つ（design-settings.md。`apply` は空の関数を呼ぶだけ。`session/keys.rs` を新規に置く）、`ui/keys.rs`（`KeysInput`・`KeyRow` と、何も描かない `show`、`matches`）、`ui/ids.rs` の名前、`ToolRailInput`・`ViewBarInput` の `keys: KeyLabels`（まだ使わない）、`LaunchArgs.keymap` と引数 `--keymap`（`usage` の文も直す）、キーで動かす分（[design-keymove.md](design-keymove.md) の `Command` 3つと `KeyInput`、`TransformSource::Keys`・`KeyEntry`、`session/keymove.rs` の3つの関数の形、`core::gizmo::key_delta` は `None` を返す形）

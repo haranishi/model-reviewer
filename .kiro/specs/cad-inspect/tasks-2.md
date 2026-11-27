@@ -3,7 +3,7 @@
 [tasks.md](tasks.md) の続き。進め方の約束は同じである。接合は、並行の部品を `Session` と画面につなぐ作業で、共有の大きなファイルに触れる。1本ずつ順に行う。
 
 - [ ] 2. 接合
-- [ ] 2.1 WP-J1 単位・吸着・断面をつなぐ（区切りA。K1・R1・V1 の後）
+- [x] 2.1 WP-J1 単位・吸着・断面をつなぐ（区切りA。K1・R1・V1 の後）
   - **単位**: `Session::units` を、計測の線の文字・状態欄・移動のハンドルの変化量・格子の文字に通す。`SetUnit`（GLB の前提）と `SetDisplayUnit` を `session::measure` に実装する。状態欄に「表示 …」を足し、幅が足りないときの省く順を入れる（design.md の「画面」）。表示が「ファイルと同じ」の間、既存の文字と数値が変わらないことを試験で固定する
   - **吸着**: `ui::viewport` が `ViewHover` を積む条件（design-snap.md の「つなぎ方」）。`session::snap::hover` と、計測のクリックでの `snap`。8ミリ秒を超えたときの休み。`SetSnap`・`ToggleSnap` とキー X。`measure_view`・`measure_panel` の入力の組み立て。性能値「吸着の探索」を `metrics` に足す
   - **断面**: `ToggleSection`・`SetSection` とキー C。`gpu_view` が `FrameParams.section` を渡し、`scene_dirty.section` で描き直す。選択・注釈の下書き・計測のクリックを `pick_clipped` に替える。`section_bar`・`section_view` を3Dビューに置き、入力の振り分けに足す。`ui::overlay` と `measure_view` で、消えた側の印を薄くして押せなくする。モデルを開く・閉じるで断面と候補を消す

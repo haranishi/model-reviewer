@@ -29,8 +29,8 @@ WP-C0（単独・最初）
 | B STL と寸法 | J2、F1 | STL を開く・測る・注釈する・GLB として書き出す。寸法を指定した図形と、外形の表示 |
 A の中の順は、単位 → 吸着 → 断面。B の中の順は、STL → 寸法（依頼の順のとおり）。
 
-- [ ] 0. 土台
-- [ ] 0.1 WP-C0 契約の先置き（単独で最初に行う。**振る舞いを変えない**）
+- [x] 0. 土台
+- [x] 0.1 WP-C0 契約の先置き（単独で最初に行う。**振る舞いを変えない**）
   - 型と関数の宣言を置く。**置くだけの関数は、パニックさせず、`None`・空・既定値を返す**（並行のWPの試験が落ちないようにする）
   - `core`: `snap.rs`・`section.rs` を新規に作り `lib.rs` に足す（型は design-snap.md・design-section.md）。`TriHit.triangle`、`Hit.prim`・`Hit.triangle`、`pick_clipped`（中身は `clip` を無視して既存の `pick` と同じ）、`PickIndex::bvh`、`Bvh::triangles_near`（空で `true`）、`Measurement.kinds`・`push_with`・`delta`、`ShapeSpec`・`Dims`・`dims_of`・`scale_for`、`Document::add_shape_primitive`・`shape_spec`、`ModelRef.stl_unit`（既定 `None`。読み書きは U1）、`LoadWarning::{StlSolidsMerged, StlTrailingBytes}` と日本語の文
   - **C0 が中身まで書くもの**（複数のWPが使う小さな関数）: `UnitLabel::meters`、`Units` の全部と `format_length`（design-stl-units.md）、`SectionPlane::{centered, normal, cuts, clamped, code}`
@@ -41,7 +41,7 @@ A の中の順は、単位 → 吸着 → 断面。B の中の順は、STL → �
   - _Boundary: 上に挙げたファイル、ルートの `Cargo.toml`・`Cargo.lock`、各クレートの既存の試験（構造体の組み立ての修正だけ）_ ／ _Requirements: 13.1, 13.3_
 
 - [ ] 1. 並行して進める部品（C0 の後）
-- [ ] 1.1 (P) WP-K1 コアの幾何（design-snap.md、design-section.md の「型の約束」「当たり判定」）
+- [x] 1.1 (P) WP-K1 コアの幾何（design-snap.md、design-section.md の「型の約束」「当たり判定」）
   - `Bvh::triangles_near`、`closest` が三角形の番号を返す、`pick_clipped`、`SectionPlane::{ray_range, frame_corners}`、`drag_offset`、`snap`（手順1〜8と辺の判定）、`Measurement` の種類と差
   - 合格: design-testing.md の「近くの三角形」「切った当たり判定」「断面の計算」「吸着」「計測」の行。試験名の目安: `near_matches_brute_force`、`clipped_ray_hits_the_far_wall`、`clip_none_equals_pick`、`snaps_to_corner_edge_and_face`、`flat_diagonal_is_not_an_edge`、`open_border_is_an_edge`、`snaps_from_just_outside_the_silhouette`、`cut_vertices_are_not_candidates`、`snap_local_equals_vertex_under_scale_and_rotation`
   - _Boundary: `core/src/{bvh,pick,section,snap,measure}.rs`、`core/tests/{pick,snap}.rs`_ ／ _Requirements: 1.1, 1.3, 1.4, 1.6, 1.7, 2.1, 2.2, 4.1, 4.2, 11.1_
@@ -54,11 +54,11 @@ A の中の順は、単位 → 吸着 → 断面。B の中の順は、STL → �
   - `gltf::export::synthesize_base`（`synth.rs`）。`gltf` は `stl` に依存させない。試験の入力は、手で組んだ「部品1つ・形状1つ」の `Model` を使う
   - 合格: design-testing.md の「STL の読み込み」「壊れた STL」「土台の合成」の行。試験名の目安: `binary_and_ascii_give_the_same_model`、`binary_starting_with_solid_is_binary`、`claimed_count_never_drives_allocation`、`non_finite_and_huge_coordinates_are_rejected`、`truncated_ascii_is_an_error`、`random_bytes_never_panic`、`unit_becomes_node_scale`、`synth_base_round_trips_through_load_glb`、`synth_base_is_deterministic`、`export_on_synth_base_verifies`
   - _Boundary: `crates/stl/`、`testdata/src/{stl,main,lib}.rs`、`assets/samples/review-sample.stl`、`gltf/src/export/{synth,mod}.rs`、`gltf/tests/export.rs`_ ／ _Requirements: 5.1, 5.3, 5.4, 5.5, 6.1, 6.2, 6.3, 6.5, 8.1, 8.2_
-- [ ] 1.4 (P) WP-R1 描画：断面（design-section.md の「描画」）
+- [x] 1.4 (P) WP-R1 描画：断面（design-section.md の「描画」）
   - 定数の `params.z`・`params.w`、`section_cut`、`scene.wgsl`・`mask.wgsl` の `discard`、切り口の色、`FLAG_MIRRORED`（`instances::build` と部分更新の両方）、`SceneRenderer` が `section` の変化で描き直すこと
   - 合格: design-testing.md の「描画」の行（GPUの試験を書く。実行は進行役）。GPUなしで通る試験として、`params` の詰め方と、行列式が負のときの印を確かめる。`FrameUniform` の大きさの検査（304バイト）を変えない
   - _Boundary: `render/src/{plan,lib,instances,pipelines}.rs`、`render/src/shaders/{frame,scene,mask}.wgsl`、`render/tests/`_ ／ _Requirements: 3.1, 3.4, 3.7, 3.9, 11.3_
-- [ ] 1.5 (P) WP-V1 画面の部品（design-shapes.md の「画面の部品」、design-section.md の「画面の部品」、ux.md）
+- [x] 1.5 (P) WP-V1 画面の部品（design-shapes.md の「画面の部品」、design-section.md の「画面の部品」、ux.md）
   - `section_bar`（軸・位置・反転）、`section_view`（枠と矢印。当たりは第2段階の `gizmo_view` と同じやり方）、`dims`（外形と寸法の欄）、`measure_panel`（距離・差・種類）、`measure_view` に候補の印と薄い描き方、`toolrail` に [吸着]、`viewbar` に [断面]
   - 入力用の構造体だけを受け取る形で書く。`Session` を読まない。コアの関数がまだ置いただけでも通る試験にする（押すと積まれる `Command`、無効のときの理由、文言）
   - 合格: design-testing.md の「画面の部品」の行（`layout.rs` の幅960は J1）。試験名の目安: `section_bar_emits_set_section`、`axis_change_recenters`、`dims_commit_emits_commit_local`、`invalid_dim_restores_and_explains`、`loaded_part_shows_extent_only`、`snap_marker_names_the_kind`、`snap_button_only_in_measure_tool`

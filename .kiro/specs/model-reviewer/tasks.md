@@ -1,0 +1,71 @@
+# Implementation Plan
+
+作業は「作業パッケージ（WP）」に分ける。各WPは担当ファイルが重ならず、`(P)` は同じ番号帯の他のWPと並行できる。最初のWP-00が全クレートの型と空の実装・全体の配線を置くので、以後のWPは自分のファイルの中身だけを書く。他のWPのファイルや境界の型を変える必要が出たら、作業を止めて進行役に伝える。
+- 全WP共通の合格条件: `cargo fmt --check`・`cargo test --workspace`・`cargo clippy --all-targets --workspace`・`cargo build --release` が通る（手順は design-testing.md）。commit・push はしない。
+- 着手前に読むもの: design.md、design-decisions.md の「落とし穴」、自分のWPに書かれた文書。
+- マイルストーン4〜6は [tasks-2.md](tasks-2.md) に続く。番号は通しである。
+- GPUと画面が要る確認は進行役が行う。実装者は、確認していない項目を「未確認」と報告する。
+
+- [x] 1. マイルストーン1：ウィンドウとGPU描画
+- [x] 1.1 WP-00 骨組み（単独で最初に行う）
+  - ワークスペースと5クレート、`rust-toolchain.toml`、ライセンス文書、`Cargo.lock` を置く。design-contracts.md・design-contracts-io.md・design-app.md の型と関数をすべて宣言し、本文は空（既定値か未実装のエラーを返す。`todo!()` は置かない）にする。`App`・`Session::apply` の振り分け・`ui/mod.rs` の配置・`ui/ids.rs` の名前・`ui/dialogs.rs`（汎用のダイアログ表示）は、ここで完成させる
+  - 合格: 4コマンドが通る。`cargo run` で空の5領域の画面が出る（進行役）。`cargo tree -d` に wgpu が重複していない
+  - _Boundary: 全 Cargo.toml、各クレートの lib.rs と全モジュールの宣言、crates/app/src/{lib,app,command}.rs、session/mod.rs、ui/{mod,ids,dialogs}.rs、LICENSE-*、rust-toolchain.toml_
+  - _Requirements: 11.1, 13.2, 13.4, 13.5_
+- [x] 1.2 (P) WP-C1 起動・フォント・配色・オフスクリーン描画の土台
+  - `NativeOptions`（上限の引き上げ、フォントの自動登録を切る）、`fonts::install`、配色、描画先の画像の作成・作り直し・eguiへの登録、試験用の三角形を深度つきで描く
+  - 合格: 実機の画像で、日本語（句読点とかっこを含む）が日本語の字形で出る。リサイズと画面間の移動で画像が追従する。GPUなしでも起動する（進行役）
+  - 結果: 字形は確認。画面間の移動とGPUなしの起動は未確認（verification.md）
+  - _Boundary: crates/app/src/{main,fonts,theme,gpu_view}.rs、crates/render/src/{targets,pipelines}.rs、shaders/_
+  - _Requirements: 3.8, 3.9, 11.3, 11.6_
+- [x] 1.3 (P) WP-A1 数学・シーン・カメラ（design-contracts.md、design-render.md）
+  - 合格: `fit` 後に境界の8隅が画面内、`project` と `screen_ray` が互いに逆、背面は `None`、`subtree` の範囲が正しい
+  - _Boundary: crates/core/src/{math,scene,camera}.rs、crates/core/tests/camera.rs_
+  - _Requirements: 3.7, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
+- [x] 1.4 (P) WP-B1 テストデータの生成器とサンプルGLB（design-testing.md）
+  - GLBの書き出し、基本形状、サンプル、壊れた入力の作り方、生成用の実行ファイル。`assets/samples/` にサンプルと出典の記録を置く
+  - 合格: 生成が決定的で、置いたファイルと一致する。期待値（数とワールド位置）を定数で公開する
+  - _Boundary: crates/testdata/src/{glb_writer,shapes,sample,broken,main}.rs、assets/samples/_
+  - _Requirements: 12.1_
+
+- [x] 2. マイルストーン2：GLBを読み込んで表示
+- [x] 2.1 (P) WP-B2 GLBの読み込みと未対応の検出（design-loading.md）
+  - 合格: 階層の変換の合成、共有形状が1個になること、検出の表の各行、壊れた入力でパニックしないこと
+  - _Boundary: crates/gltf/src/、crates/gltf/tests/_
+  - _Depends: 1.3, 1.4_
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 3.2, 3.6, 9.3, 12.2_
+- [x] 2.2 (P) WP-C2 形状の転送とインスタンス描画（design-render.md）
+  - `plan_buffers`、分割転送、インスタンスの作成と更新、ライティング、法線なしの面法線、前のモデルの解放
+  - 合格: `plan_buffers` の上限と共有のテスト。実機でサンプルが正しい形・色・前後関係で出る（進行役）
+  - _Boundary: crates/render/src/{plan,upload,instances,lib}.rs、shaders/scene.wgsl、crates/render/tests/_
+  - _Depends: 1.2, 1.3_
+  - _Requirements: 3.1, 3.3, 3.4, 3.5, 3.6, 3.9, 9.1, 9.2, 9.3, 9.4_
+- [x] 2.3 (P) WP-D0 自動操作の実行器（design-app.md）
+  - 入力の注入、`WidgetRegistry`、画像の保存、`dump_state`・`assert_state_equals`、終了コード、`report.json`
+  - 合格: 手順の読み取りと状態比較の単体テスト。実機で `open_model`→`screenshot`→`quit` が通り、本物のカーソルが動かない（進行役）
+  - _Boundary: crates/app/src/automation.rs、crates/app/e2e/smoke.json_
+  - _Requirements: 12.4_
+- [x] 2.4 WP-D1 読み込みスレッドと「開く」の配線（design-loading.md、design-app.md）
+  - 世代番号、中止の合図、`catch_unwind`、開く・ドロップ・起動引数、状態欄、何も開いていない画面、転送の進行、初期視点
+  - 合格: 画面なしのテストで、ドロップで開ける・失敗しても前のモデルが残る・読み込み中に別のファイルを開くと後だけが残る
+  - _Boundary: crates/app/src/loader.rs、session/open.rs、ui/{status,empty}.rs、crates/app/tests/open.rs_
+  - _Depends: 2.1, 2.2_
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 12.6_
+
+- [x] 3. マイルストーン3：カメラ操作と表示切り替え
+- [x] 3.1 (P) WP-A2 表示状態・BVH・当たり判定（design-review.md）
+  - 合格: 親子の表示の伝播、BVHが総当たりと一致、変換された部品への判定、非表示の除外、拡大率の違う部品の前後
+  - _Boundary: crates/core/src/{visibility,bvh,pick}.rs、crates/core/tests/{visibility,pick}.rs_
+  - _Depends: 1.3_
+  - _Requirements: 5.3, 5.5, 5.9, 5.10, 12.2_
+- [x] 3.2 (P) WP-D2a 3Dビューの入力・カメラのコマンド・上部の操作・ヘルプ（ux.md の操作表）
+  - 合格: 画面なしのテストで、ドラッグ・Shift＋ドラッグ・スクロールがカメラを動かす。入力欄にフォーカスがある間とパネルの上では動かない。何もしないフレームで `take_scene_dirty` が空（GPUなし）
+  - _Boundary: crates/app/src/session/camera.rs、ui/{viewport,toolbar,help}.rs、crates/app/tests/camera.rs_
+  - _Depends: 2.4_
+  - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 9.5, 9.6_
+- [x] 3.3 (P) WP-D2b 部品ツリーと表示切り替え（ux.md の骨格）
+  - 見える行だけを描く。目の印、親に連れて隠れた行の見分け、「すべて表示」、表示の変更でインスタンスを更新
+  - 合格: 画面なしのテストで、親を隠すと子孫が消え、戻すと子の設定が残る。10万ノードで1フレームに描く行が画面分だけ
+  - _Boundary: crates/app/src/session/parts.rs、ui/tree.rs、crates/app/tests/tree.rs_
+  - _Depends: 2.4, 3.1_
+  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.8, 11.2_

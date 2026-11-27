@@ -1,0 +1,163 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    {
+      "op": "open_model",
+      "path": "../../../assets/samples/review-sample.glb"
+    },
+    {
+      "op": "wait_idle"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-home.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "viewcube.front"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-front.png"
+    },
+    {
+      "op": "drag_view",
+      "from": [
+        0.5,
+        0.5
+      ],
+      "to": [
+        0.55,
+        0.45
+      ],
+      "button": "primary",
+      "frames": 6
+    },
+    {
+      "op": "click_widget",
+      "name": "viewcube.top"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-top.png"
+    },
+    {
+      "op": "drag_view",
+      "from": [
+        0.5,
+        0.5
+      ],
+      "to": [
+        0.6,
+        0.7
+      ],
+      "button": "primary",
+      "frames": 6
+    },
+    {
+      "op": "click_widget",
+      "name": "viewcube.right"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-right.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "view.projection.orthographic"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-right-ortho.png"
+    },
+    {
+      "op": "drag_view",
+      "from": [
+        0.5,
+        0.5
+      ],
+      "to": [
+        0.42,
+        0.42
+      ],
+      "button": "primary",
+      "frames": 6
+    },
+    {
+      "op": "click_widget",
+      "name": "view.display.faces_lines"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-display-faces_lines.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "view.display.lines"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-display-lines.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "view.display.xray"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-display-xray.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "view.display.faces"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-display-faces.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "viewcube.top"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-top-ortho.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "view.grid"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-no-grid.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "views.name"
+    },
+    {
+      "op": "type_text",
+      "text": "上から（平行）"
+    },
+    {
+      "op": "click_widget",
+      "name": "views.save"
+    },
+    {
+      "op": "save_review",
+      "path": "view-review.json",
+      "relative_to": "out"
+    },
+    {
+      "op": "dump_state",
+      "path": "view-state.json"
+    },
+    {
+      "op": "screenshot",
+      "path": "view-1.png"
+    },
+    {
+      "op": "quit"
+    }
+  ]
+}

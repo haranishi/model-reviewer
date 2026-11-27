@@ -1,0 +1,19 @@
+[package]
+name = "model-reviewer-gltf"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+model-reviewer-core = { path = "../core" }
+gltf = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+model-reviewer-testdata = { path = "../testdata" }
+model-reviewer-core = { path = "../core" }
+gltf = { workspace = true }
+glam = { workspace = true }

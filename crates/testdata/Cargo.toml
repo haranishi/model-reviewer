@@ -1,0 +1,10 @@
+[package]
+name = "model-reviewer-testdata"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+model-reviewer-core = { path = "../core" }

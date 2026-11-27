@@ -1,0 +1,30 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    {
+      "op": "load_review",
+      "path": "review.json",
+      "relative_to": "out"
+    },
+    {
+      "op": "wait_idle"
+    },
+    {
+      "op": "click_widget",
+      "name": "views.apply.2"
+    },
+    {
+      "op": "assert_state_equals",
+      "path": "state.json",
+      "relative_to": "out"
+    },
+    {
+      "op": "screenshot",
+      "path": "flow-2.png"
+    },
+    {
+      "op": "quit"
+    }
+  ]
+}
+

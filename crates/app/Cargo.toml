@@ -1,0 +1,42 @@
+[package]
+name = "model-reviewer"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+eframe = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+model-reviewer-core = { path = "../core" }
+model-reviewer-gltf = { path = "../gltf" }
+model-reviewer-render = { path = "../render" }
+rfd = { workspace = true }
+memory-stats = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+glam = { workspace = true }
+serde_json = { workspace = true }
+egui_system_font_provider = { workspace = true }
+
+# Cargo.lock にある objc2 0.6.5 と objc2-app-kit 0.3.2。eframe と同じ版で、新しいクレートは足さない。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSApplication",
+    "NSMenu",
+    "NSMenuItem",
+] }
+
+# Cargo.lock にある same-file（Windows でハードリンクを同じファイルと見分ける）。
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
+
+[dev-dependencies]
+egui = { workspace = true }
+egui_kittest = { workspace = true }
+glam = { workspace = true }
+model-reviewer-core = { path = "../core" }
+model-reviewer-testdata = { path = "../testdata" }

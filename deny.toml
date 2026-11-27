@@ -1,0 +1,30 @@
+# 依存ライブラリのライセンスと入手元を検査する（cargo deny check）。
+# 許可するのは寛容なライセンスと、内蔵フォントのライセンスだけ。足すときは、配布への影響を確かめる。
+[graph]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.9
+include-dev = true
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Zlib",
+    "ISC",
+    "Unicode-3.0",
+    # epaint_default_fonts が実行ファイルに埋め込むフォント
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+exceptions = [
+    # テストの画像比較（egui_kittest → dify）だけが使う。配布する実行ファイルには入らない。
+    { crate = "colored", allow = ["MPL-2.0"] },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

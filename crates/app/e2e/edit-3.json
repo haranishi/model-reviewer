@@ -1,0 +1,33 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "tool.shape" },
+    { "op": "click_widget", "name": "shape.cube" },
+    { "op": "drag_widget", "name": "gizmo.move.x", "delta": [60, 0], "frames": 8 },
+    { "op": "screenshot", "path": "edit-3-added.png" },
+    { "op": "scroll_view", "at": [0.5, 0.5], "delta": [0, 0] },
+    { "op": "key", "key": "D", "modifiers": ["command"] },
+    { "op": "drag_widget", "name": "gizmo.move.y", "delta": [0, -50], "frames": 8 },
+    { "op": "dump_state", "path": "edit-3-copied.json" },
+    { "op": "click_widget", "name": "parts.row.12" },
+    { "op": "scroll_view", "at": [0.5, 0.5], "delta": [0, 0] },
+    { "op": "key", "key": "Delete" },
+    { "op": "screenshot", "path": "edit-3-deleted.png" },
+    { "op": "dump_state", "path": "edit-3-deleted.json" },
+    { "op": "click_widget", "name": "toolbar.undo" },
+    { "op": "export_glb", "path": "edit-3.glb" },
+    { "op": "wait_idle" },
+    { "op": "key", "key": "Escape" },
+    { "op": "key", "key": "Escape" },
+    { "op": "click_widget", "name": "toolbar.home" },
+    { "op": "screenshot", "path": "edit-3.png" },
+    { "op": "dump_state", "path": "edit-3-state.json" },
+    { "op": "open_model", "path": "edit-3.glb", "relative_to": "out" },
+    { "op": "wait_idle" },
+    { "op": "assert_state_equals", "path": "edit-3-state.json", "relative_to": "out" },
+    { "op": "screenshot", "path": "edit-3-reopened.png" },
+    { "op": "quit" }
+  ]
+}

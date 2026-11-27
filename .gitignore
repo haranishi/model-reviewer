@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+.DS_Store
+# ローカルの作業記録と開発ツールの雛形は公開しない
+/.agent-harness/
+/.kiro/settings/
+# 依頼の原文は公開しない
+/.kiro/specs/*/brief.md

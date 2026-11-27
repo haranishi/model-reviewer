@@ -1,0 +1,4 @@
+# どのOSで取り出しても同じ内容にする（Windows での改行の書き換えを防ぐ）。
+* text=auto eol=lf
+*.glb binary
+*.png binary

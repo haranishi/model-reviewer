@@ -1,0 +1,55 @@
+# release の panic は既定の unwind のままにする。abort にすると読み込みの catch_unwind が効かない。
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/gltf",
+    "crates/render",
+    "crates/app",
+    "crates/testdata",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+repository = "https://github.com/haranishi/model-reviewer"
+
+[workspace.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = [
+    "wgpu",
+    "accesskit",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+egui-wgpu = { version = "0.37.0", default-features = false }
+wgpu = { version = "30.0.2" }
+egui_system_font_provider = "0.37.0"
+gltf = { version = "1.4.1", default-features = false, features = [
+    "utils",
+    "names",
+    "KHR_materials_unlit",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_ior",
+    "KHR_materials_transmission",
+    "KHR_texture_transform",
+    "KHR_lights_punctual",
+] }
+glam = "0.34.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1.8.7"
+rfd = "0.18.0"
+memory-stats = "1.2.0"
+bytemuck = { version = "1.25", features = ["derive"] }
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+log = "0.4"
+egui_kittest = { version = "0.37.0", default-features = false, features = [
+    "eframe",
+    "wgpu",
+    "snapshot",
+] }

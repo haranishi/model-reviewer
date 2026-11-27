@@ -1,0 +1,145 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    {
+      "op": "open_model",
+      "path": "../../../assets/samples/review-sample.glb"
+    },
+    {
+      "op": "wait_idle"
+    },
+    {
+      "op": "click_widget",
+      "name": "parts.row.9"
+    },
+    {
+      "op": "click_widget",
+      "name": "tool.move"
+    },
+    {
+      "op": "drag_widget",
+      "name": "gizmo.move.x",
+      "delta": [
+        50,
+        0
+      ],
+      "frames": 8
+    },
+    {
+      "op": "click_widget",
+      "name": "inspector.pos.y"
+    },
+    {
+      "op": "type_text",
+      "text": "0.65"
+    },
+    {
+      "op": "key",
+      "key": "Enter"
+    },
+    {
+      "op": "click_widget",
+      "name": "tool.rotate"
+    },
+    {
+      "op": "drag_widget",
+      "name": "gizmo.rotate.y",
+      "delta": [
+        40,
+        0
+      ],
+      "frames": 8
+    },
+    {
+      "op": "click_widget",
+      "name": "toolbar.undo"
+    },
+    {
+      "op": "click_widget",
+      "name": "toolbar.undo"
+    },
+    {
+      "op": "click_widget",
+      "name": "toolbar.redo"
+    },
+    {
+      "op": "click_widget",
+      "name": "toolbar.annotate"
+    },
+    {
+      "op": "click_view",
+      "at": [
+        0.54,
+        0.42
+      ]
+    },
+    {
+      "op": "click_widget",
+      "name": "draft.text"
+    },
+    {
+      "op": "type_text",
+      "text": "移動後"
+    },
+    {
+      "op": "click_widget",
+      "name": "draft.commit"
+    },
+    {
+      "op": "screenshot",
+      "path": "edit-1-before-export.png"
+    },
+    {
+      "op": "export_glb",
+      "path": "edit-exported.glb",
+      "relative_to": "out"
+    },
+    {
+      "op": "wait_idle"
+    },
+    {
+      "op": "screenshot",
+      "path": "edit-1-after-export.png"
+    },
+    {
+      "op": "click_widget",
+      "name": "toolbar.home"
+    },
+    {
+      "op": "click_widget",
+      "name": "views.name"
+    },
+    {
+      "op": "type_text",
+      "text": "書き出し後"
+    },
+    {
+      "op": "click_widget",
+      "name": "views.save"
+    },
+    {
+      "op": "save_review",
+      "path": "edit-review.json",
+      "relative_to": "out"
+    },
+    {
+      "op": "click_widget",
+      "name": "tool.select"
+    },
+    {
+      "op": "key",
+      "key": "Escape"
+    },
+    {
+      "op": "screenshot",
+      "path": "edit-1.png"
+    },
+    {
+      "op": "dump_state",
+      "path": "edit-state.json"
+    },
+    {
+      "op": "quit"
+    }
+  ]
+}

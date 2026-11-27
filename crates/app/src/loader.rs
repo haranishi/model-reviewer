@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use model_reviewer_core::identity::{ModelIdentity, ModelRef};
 use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::scene::Model;
-use model_reviewer_core::units::UnitLabel;
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 use model_reviewer_gltf::{LoadError, load_glb};
 use model_reviewer_stl::{StlOptions, detect as detect_stl, load_stl};
 
@@ -51,10 +51,11 @@ impl LoadPhase {
     }
 }
 
-/// 読み込みの指定。`stl_unit` は STL の単位の仮定（`None` は mm）。GLB では使わない。
+/// STL の読み込みで仮定する単位と上の向き。省略時は mm・Z が上。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoadOptions {
     pub stl_unit: Option<UnitLabel>,
+    pub stl_up: Option<UpAxis>,
 }
 
 impl LoadOptions {
@@ -80,7 +81,7 @@ pub(crate) struct LoadedModel {
     pub generation: u64,
     pub model: Arc<Model>,
     pub model_ref: ModelRef,
-    /// 元の形式（STL なら単位の仮定つき）。
+    /// 元の形式（STL なら単位と向きの仮定つき）。
     pub source_kind: SourceKind,
     pub file_bytes: u64,
     pub read: Duration,
@@ -296,16 +297,18 @@ fn load_thread(
             }),
         Format::Stl { allow_trailing } => {
             let unit = options.stl_unit_or_default();
+            let up = options.stl_up.unwrap_or_default();
             let name = stl_part_name(&path);
             load_stl(
                 &bytes,
                 &StlOptions {
                     name: &name,
                     unit,
+                    up,
                     allow_trailing,
                 },
             )
-            .map(|model| (model, SourceKind::Stl { unit }))
+            .map(|model| (model, SourceKind::Stl { unit, up }))
             .map_err(|err| {
                 log::error!("failed to parse stl: {err}");
                 err.message_ja()
@@ -328,12 +331,7 @@ fn load_thread(
     let file_bytes = bytes.len() as u64;
     drop(bytes);
     let model = Arc::new(model);
-    let stl_unit = match source_kind {
-        // 読み込みが返すのは GLB と STL だけ（新規は読み込みを通らない）。
-        SourceKind::Glb | SourceKind::New => None,
-        SourceKind::Stl { unit } => Some(unit),
-    };
-    let model_ref = model_ref_for(resolved_path, identity, stl_unit);
+    let model_ref = model_ref_for(resolved_path, identity, source_kind);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
@@ -420,8 +418,12 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
 pub(crate) fn model_ref_for(
     path: PathBuf,
     identity: ModelIdentity,
-    stl_unit: Option<UnitLabel>,
+    source_kind: SourceKind,
 ) -> ModelRef {
+    let (stl_unit, stl_up) = match source_kind {
+        SourceKind::Stl { unit, up } => (Some(unit), Some(up)),
+        SourceKind::Glb | SourceKind::New => (None, None),
+    };
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -432,6 +434,7 @@ pub(crate) fn model_ref_for(
         relative_path: None,
         identity,
         stl_unit,
+        stl_up,
     }
 }
 
@@ -456,13 +459,22 @@ mod tests {
     fn model_reference_keeps_the_native_reopen_path() {
         let model = load_glb(&model_reviewer_testdata::inputs::triangle()).unwrap();
         let review = ReviewState::new(&model);
-        for (bytes, unit) in [
-            (b"part-\xff.stl".as_slice(), Some(UnitLabel::Mm)),
-            (b"part-\xfe.glb".as_slice(), None),
+        for (bytes, source_kind) in [
+            (
+                b"part-\xff.stl".as_slice(),
+                SourceKind::Stl {
+                    unit: UnitLabel::Mm,
+                    up: UpAxis::Z,
+                },
+            ),
+            (b"part-\xfe.glb".as_slice(), SourceKind::Glb),
         ] {
             let path = Path::new(OsStr::from_bytes(bytes));
-            let reference =
-                model_ref_for(path.to_owned(), ModelIdentity::from_bytes(b"model"), unit);
+            let reference = model_ref_for(
+                path.to_owned(),
+                ModelIdentity::from_bytes(b"model"),
+                source_kind,
+            );
             assert_eq!(reference.path, path);
             assert_eq!(reference.file_name, path.to_string_lossy());
             let json = review_file::to_json(&review, &model, &reference).unwrap();

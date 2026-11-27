@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::units::UnitLabel;
+use crate::units::{UnitLabel, UpAxis};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelIdentity {
@@ -38,4 +38,6 @@ pub struct ModelRef {
     pub identity: ModelIdentity,
     /// STL を開いたときの単位の仮定。GLB では `None`（レビューJSONに書かない）。
     pub stl_unit: Option<UnitLabel>,
+    /// STL を開いたときに上と仮定した軸。
+    pub stl_up: Option<UpAxis>,
 }

@@ -157,6 +157,67 @@ fn state_includes_bindings_window_and_numeric_entry() {
 }
 
 #[test]
+fn open_model_parses_stl_up() {
+    use model_reviewer_core::units::UpAxis;
+    let dir = scratch("parse-stl-up");
+    let script = dir.join("steps.json");
+    let out = dir.join("out");
+    for (key, up) in [
+        (Some("z"), Some(UpAxis::Z)),
+        (Some("y"), Some(UpAxis::Y)),
+        (None, None),
+    ] {
+        let mut step = json!({"op": "open_model", "path": "box.stl"});
+        if let Some(key) = key {
+            step["stl_up"] = json!(key);
+        }
+        fs::write(&script, json!({"steps": [step]}).to_string()).unwrap();
+        let run = load_script(&script, &out).unwrap();
+        assert!(matches!(run.steps[0].op, Op::OpenModel { stl_up, .. } if stl_up == up));
+    }
+    for bad in [json!("x"), json!("Y"), json!(null), json!(1)] {
+        let step = json!({"op": "open_model", "path": "box.stl", "stl_up": bad});
+        fs::write(&script, json!({"steps": [step]}).to_string()).unwrap();
+        assert!(
+            load_script(&script, &out)
+                .err()
+                .unwrap()
+                .contains("stl_up は z、y のいずれかです")
+        );
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn dump_state_reports_stl_up_only_for_stl() {
+    use crate::session::SourceKind;
+    use model_reviewer_core::units::{UnitLabel, UpAxis};
+    let mut session = Session::default();
+    for (kind, expected) in [
+        (SourceKind::Glb, json!(null)),
+        (SourceKind::New, json!(null)),
+        (
+            SourceKind::Stl {
+                unit: UnitLabel::Mm,
+                up: UpAxis::Z,
+            },
+            json!("z"),
+        ),
+        (
+            SourceKind::Stl {
+                unit: UnitLabel::Cm,
+                up: UpAxis::Y,
+            },
+            json!("y"),
+        ),
+    ] {
+        session.source_kind = kind;
+        let state = super::state::state_value(&session);
+        assert_eq!(state.get("stl_up"), Some(&expected));
+    }
+}
+
+#[test]
 fn parses_steps_and_rejects_absolute_paths() {
     let dir = scratch("parse");
     let script = dir.join("steps.json");

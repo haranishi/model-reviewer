@@ -14,6 +14,7 @@ use model_reviewer_core::review_file::{parse, restore, to_json};
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 const TEXT: &str = "ここを\n直して「角」";
 
@@ -63,6 +64,7 @@ fn model_ref(bytes: &[u8]) -> ModelRef {
         relative_path: Some("../models/review-sample.glb".to_owned()),
         identity: ModelIdentity::from_bytes(bytes),
         stl_unit: None,
+        stl_up: None,
     }
 }
 
@@ -645,8 +647,6 @@ fn version_one_files_still_load_and_cannot_claim_orthographic() {
 
 #[test]
 fn stl_unit_round_trips() {
-    use model_reviewer_core::units::UnitLabel;
-
     let (model, mut model_ref, state) = sample();
     for (unit, text) in [
         (UnitLabel::Mm, "\"mm\""),
@@ -686,6 +686,62 @@ fn stl_unit_round_trips() {
             matches!(parse(&value.to_string()), Err(ReviewError::InvalidValue(_))),
             "{bad}"
         );
+    }
+}
+
+#[test]
+fn stl_up_is_written_for_stl_only() {
+    let (model, mut reference, state) = sample();
+    let glb = render(&state, &model, &reference);
+    assert!(!glb.contains("\"stl_up\""));
+    reference.stl_unit = Some(UnitLabel::Mm);
+    reference.stl_up = Some(UpAxis::Z);
+    let stl = render(&state, &model, &reference);
+    assert!(stl.contains("\"stl_up\": \"z\""));
+    assert_eq!(parse(&glb).unwrap().version, parse(&stl).unwrap().version);
+}
+
+#[test]
+fn stl_up_round_trips() {
+    let (model, mut reference, state) = sample();
+    reference.stl_unit = Some(UnitLabel::Mm);
+    for (up, key) in [(UpAxis::Z, "z"), (UpAxis::Y, "y")] {
+        reference.stl_up = Some(up);
+        let json = render(&state, &model, &reference);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["model"]["stl_up"], key);
+        assert_eq!(parse(&json).unwrap().model.stl_up, Some(up));
+    }
+}
+
+#[test]
+fn missing_stl_up_reads_as_none() {
+    let (model, reference, state) = sample();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&render(&state, &model, &reference)).unwrap();
+    value["model"]["stl_unit"] = serde_json::json!("mm");
+    assert_eq!(parse(&value.to_string()).unwrap().model.stl_up, None);
+}
+
+#[test]
+fn unknown_stl_up_is_rejected() {
+    use serde_json::json;
+    let (model, reference, state) = sample();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&render(&state, &model, &reference)).unwrap();
+    for bad in [
+        json!("x"),
+        json!("Z"),
+        json!(""),
+        json!(1),
+        json!(null),
+        json!({"z": null}),
+    ] {
+        value["model"]["stl_up"] = bad;
+        assert!(matches!(
+            parse(&value.to_string()),
+            Err(ReviewError::InvalidValue(_))
+        ));
     }
 }
 
@@ -754,4 +810,20 @@ fn glb_review_bytes_are_unchanged() {
         hex = model_ref.identity.blake3_hex,
     );
     assert_eq!(json, expected);
+}
+
+#[test]
+fn missing_stl_up_restores_as_y_up() {
+    let (model, mut reference, state) = sample();
+    reference.stl_unit = Some(UnitLabel::Mm);
+    for (written, restored) in [
+        (None, UpAxis::Y),
+        (Some(UpAxis::Z), UpAxis::Z),
+        (Some(UpAxis::Y), UpAxis::Y),
+    ] {
+        reference.stl_up = written;
+        let file = parse(&render(&state, &model, &reference)).unwrap();
+        assert_eq!(file.model.stl_up, written);
+        assert_eq!(file.model.saved_stl_up(), restored, "{written:?}");
+    }
 }

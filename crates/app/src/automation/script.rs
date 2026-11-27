@@ -79,11 +79,27 @@ fn parse_step(value: &Value) -> Result<Step, String> {
         "open_model" => {
             reject_unknown(
                 map,
-                &["op", "timeout_secs", "path", "relative_to", "stl_unit"],
+                &[
+                    "op",
+                    "timeout_secs",
+                    "path",
+                    "relative_to",
+                    "stl_unit",
+                    "stl_up",
+                ],
             )?;
             Op::OpenModel {
                 path: parse_path(map, PathBase::Script)?,
                 stl_unit: parse_stl_unit(map.get("stl_unit"))?,
+                stl_up: map
+                    .get("stl_up")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .and_then(model_reviewer_core::units::UpAxis::from_key)
+                            .ok_or_else(|| "stl_up は z、y のいずれかです".to_owned())
+                    })
+                    .transpose()?,
             }
         }
         "load_review" => {

@@ -8,6 +8,7 @@ use model_reviewer::session::Session;
 use model_reviewer::ui::{details, ids};
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::NodeId;
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 fn sample_session() -> Session {
     let bytes = model_reviewer_testdata::sample_glb();
@@ -17,6 +18,38 @@ fn sample_session() -> Session {
     session.set_model(model);
     session.selection = Some(NodeId(11));
     session.panel_details = true;
+    session
+}
+
+fn stl_session_with_warning() -> Session {
+    use model_reviewer::session::SourceKind;
+    use model_reviewer_core::identity::{ModelIdentity, ModelRef};
+    use model_reviewer_stl::{StlOptions, load_stl};
+
+    let mut bytes = model_reviewer_testdata::stl_sample();
+    bytes.push(0); // 末尾の余分な1バイトで簡略表示の知らせを出す。
+    let options = StlOptions {
+        name: "review-sample",
+        unit: UnitLabel::Mm,
+        up: UpAxis::Z,
+        allow_trailing: true,
+    };
+    let model = Arc::new(load_stl(&bytes, &options).unwrap());
+    let mut session = Session::default();
+    session.review = Some(ReviewState::new(&model));
+    session.set_model(model);
+    session.source_kind = SourceKind::Stl {
+        unit: options.unit,
+        up: options.up,
+    };
+    session.model_ref = Some(ModelRef {
+        file_name: "review-sample.stl".into(),
+        path: "review-sample.stl".into(),
+        relative_path: None,
+        identity: ModelIdentity::from_bytes(&bytes),
+        stl_unit: Some(options.unit),
+        stl_up: Some(options.up),
+    });
     session
 }
 
@@ -409,20 +442,23 @@ fn status_bar_with_display_unit_fits_at_960() {
     use model_reviewer::command::{Command, Tool};
     use model_reviewer_core::doc::NodeKey;
     use model_reviewer_core::measure::MeasurePoint;
-    use model_reviewer_core::units::UnitLabel;
-
-    for (size, heavy) in [
-        (egui::vec2(960.0, 600.0), true),
-        (egui::vec2(960.0, 600.0), false),
-        (egui::vec2(1280.0, 800.0), true),
+    for (size, heavy, stl) in [
+        (egui::vec2(960.0, 600.0), true, false),
+        (egui::vec2(960.0, 600.0), false, false),
+        (egui::vec2(1280.0, 800.0), true, false),
+        (egui::vec2(960.0, 600.0), true, true),
     ] {
-        let mut session = sample_session();
+        let mut session = if stl {
+            stl_session_with_warning()
+        } else {
+            sample_session()
+        };
         session.panel_details = false;
         session.apply(Command::SetTool(Tool::Measure));
         session.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
         if heavy {
             session.apply(Command::SetVisible {
-                node: NodeId(1),
+                node: NodeId(if stl { 0 } else { 1 }),
                 visible: false,
             });
             session.apply(Command::AddShape(
@@ -432,10 +468,15 @@ fn status_bar_with_display_unit_fits_at_960() {
         } else {
             session.selection = None;
         }
-        for node in [1, 9] {
+        let points = if stl {
+            [(0, glam::Vec3::ZERO), (0, glam::Vec3::X * 20.0)]
+        } else {
+            [(1, glam::Vec3::ZERO), (9, glam::Vec3::ZERO)]
+        };
+        for (node, local) in points {
             session.measurement.push(MeasurePoint {
                 node: NodeKey(node),
-                local: glam::Vec3::ZERO,
+                local,
             });
         }
         session.status_text = "計測: もう1点をクリック".to_owned();
@@ -478,6 +519,16 @@ fn status_bar_with_display_unit_fits_at_960() {
             rects.push(("レビュー", harness.get_by_label("●レビュー未保存").rect()));
         }
         let all = entries(&harness);
+        if stl {
+            rects.push((
+                "ファイル名",
+                harness.get_by_label("review-sample.stl").rect(),
+            ));
+            rects.push(("向き", widget_rect(&harness, ids::STATUS_STL_UP)));
+            rects.push(("簡略表示", widget_rect(&harness, ids::STATUS_WARNINGS)));
+        } else {
+            assert!(!all.iter().any(|(id, _)| id == ids::STATUS_STL_UP));
+        }
         if let Some((_, rect)) = all.iter().find(|(n, _)| n == ids::STATUS_DISPLAY_UNIT) {
             rects.push(("表示", *rect));
         }
@@ -489,7 +540,7 @@ fn status_bar_with_display_unit_fits_at_960() {
         }
         for (i, (an, a)) in rects.iter().enumerate() {
             assert!(
-                a.max.x <= size.x + 0.5 && a.min.y >= status.min.y - 0.5,
+                status.expand(0.5).contains_rect(*a),
                 "{size:?}: {an} {a:?} がはみ出す"
             );
             for (bn, b) in &rects[i + 1..] {
@@ -511,6 +562,14 @@ fn status_bar_with_display_unit_fits_at_960() {
             let grid = model_reviewer::ui::status::grid_text(harness.state());
             assert!(grid.ends_with(" mm"), "{grid}");
             assert!(harness.query_by_label(&grid).is_some(), "{grid}");
+        }
+        if stl {
+            harness.get_by_label("上 = Z（仮定）").click();
+            harness.run();
+            assert!(
+                harness.state().dialog.is_some(),
+                "向きを替える前に未保存の確認が出る"
+            );
         }
     }
 }

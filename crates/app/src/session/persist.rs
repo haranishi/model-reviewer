@@ -178,62 +178,36 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         }
     };
     let expected = identity_of(&file);
-    // STL は同じファイルでも単位の仮定が違えば部品の大きさが違う。レビューの単位（無ければ mm）と
-    // 開いている単位が違うときは、その場で当てはめず、レビューの単位で開き直す（要件8.5）。
-    let same_unit = match session.source_kind {
+    // 同じ STL でも、単位か向きが違うと保存した視点が部品に合わない。
+    let same_assumptions = match session.source_kind {
         super::SourceKind::Glb => true,
         // 新規の文書には識別が無く、レビューが指すモデルではない（開き直す）。
         super::SourceKind::New => false,
-        super::SourceKind::Stl { unit } => {
+        super::SourceKind::Stl { unit, up } => {
             file.model
                 .stl_unit
                 .unwrap_or(model_reviewer_core::units::UnitLabel::Mm)
                 == unit
+                && file.model.saved_stl_up() == up
         }
     };
-    let same_loaded = session.model.is_some()
-        && same_unit
-        && session
-            .model_ref
-            .as_ref()
-            .is_some_and(|model_ref| model_ref.identity == expected);
-    if same_loaded {
-        if !session.exported_since_load || !session.doc_unsaved() {
-            apply_in_place(session, &file);
-            return;
-        }
-        // 書き出し後にさらに形を編集した状態で、書き出したファイル向けのレビューを読み込む場合。
-        // `session.model` は書き出し前の古い土台なので、書き出したファイルを開き直して復元する。
-        let mut existing = Vec::new();
-        if let Some(current) = session
-            .model_ref
-            .as_ref()
-            .map(|model_ref| model_ref.path.clone())
-            .filter(|candidate| candidate.is_file())
-        {
-            existing.push(current);
-        }
-        for candidate in candidate_paths(&path, &file) {
-            if candidate.is_file()
-                && !existing
-                    .iter()
-                    .any(|seen| crate::exporter::same_file(seen, &candidate))
-            {
-                existing.push(candidate);
-            }
-        }
-        if !existing.is_empty() {
-            let first = existing.remove(0);
-            session.restore = Some(PendingRestore {
-                file,
-                remaining: existing,
-                first_mismatch: None,
-            });
-            session.start_model_load_for_restore(first, expected);
-            return;
-        }
+    let current = session
+        .model_ref
+        .as_ref()
+        .filter(|model| session.model.is_some() && model.identity == expected);
+    if current.is_some()
+        && same_assumptions
+        && (!session.exported_since_load || !session.doc_unsaved())
+    {
+        apply_in_place(session, &file);
+        return;
     }
-    let searched = candidate_paths(&path, &file);
+    let mut searched = candidate_paths(&path, &file);
+    if let Some(current) = current {
+        // 改名した STL や書き出した GLB は、レビューに記録された場所より先に今の実パスを試す。
+        searched.retain(|candidate| !crate::exporter::same_file(&current.path, candidate));
+        searched.insert(0, current.path.clone());
+    }
     let mut existing: Vec<PathBuf> = searched
         .iter()
         .filter(|candidate| candidate.is_file())

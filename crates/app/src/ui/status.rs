@@ -2,11 +2,11 @@
 //!
 //! 単位は2つの部品で出す。左が前提（GLB は「1単位 = m」、STL は「STL = mm（仮定）」）、右が表示
 //! （「表示 ファイルと同じ」「表示 mm」）。幅が足りないときは「格子」「表示の単位」「部品の数」の
-//! 順に省く。前提の単位と未保存の印は省かない。
+//! 順に省く。前提の単位、STL の上の向き、未保存の印は常に出す。
 
 use model_reviewer_core::camera::grid_spacing;
 use model_reviewer_core::gizmo::Tool;
-use model_reviewer_core::units::{UnitLabel, Units};
+use model_reviewer_core::units::{UnitLabel, Units, UpAxis};
 
 use crate::command::{Command, PanelKind};
 use crate::keymap::Action;
@@ -17,27 +17,32 @@ use crate::theme;
 use super::ids;
 use super::reg;
 
+const DOC_BADGE: &str = "●形の編集 未書き出し";
+const REVIEW_BADGE: &str = "●レビュー未保存";
+
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     ui.horizontal(|ui| {
-        ui.label(file_name(session));
+        let fixed = fixed_width(ui, session);
+        let name_width = max_name_width(ui, session, fixed);
+        name_label(ui, file_name(session).into(), name_width);
         if session.doc_unsaved() {
             // 失うと困る状態なので、色と太字で目立たせる。
             ui.label(
-                egui::RichText::new("●形の編集 未書き出し")
+                egui::RichText::new(DOC_BADGE)
                     .color(theme::SELECTION)
                     .strong(),
             );
         }
         if session.review_unsaved() {
             ui.label(
-                egui::RichText::new("●レビュー未保存")
+                egui::RichText::new(REVIEW_BADGE)
                     .color(theme::SELECTION)
                     .strong(),
             );
         }
         // 右端の「詳細」と統計・格子・選択名を右から先に並べ、残りの幅で状態文を省略する。
         // 幅960で2つの未保存の印と長い知らせが同時に出ても重ならない。
-        let shown = optional_items(ui, session);
+        let shown = optional_items(ui, session, fixed);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = if session.panel_details {
                 "詳細▴"
@@ -79,11 +84,22 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                         "ファイルの数値1が表す長さの前提です。押すと m → cm → mm と替わります（ファイルの数値は変えません）",
                         Command::SetUnit(session.units.source.next()),
                     ),
-                    SourceKind::Stl { unit } => (
-                        stl_unit_text(unit),
-                        "STL には単位が無いため、この単位と仮定しています。押すと仮定を替えて開き直します",
-                        Command::SetStlUnit(unit.next()),
-                    ),
+                    SourceKind::Stl { unit, up } => {
+                        let hint = match up {
+                            UpAxis::Z => "STL には上の向きの決まりが無いため、Z を上と仮定しています。押すと Y を上にして開き直します。画面の X・Y・Z はこのアプリの軸（Y が上）です",
+                            UpAxis::Y => "STL には上の向きの決まりが無いため、Y を上と仮定し、ファイルの座標のまま表示しています。押すと Z を上にして開き直します。画面の X・Y・Z はこのアプリの軸（Y が上）です",
+                        };
+                        let button = ui.button(stl_up_text(up)).on_hover_text(hint);
+                        reg(ids::STATUS_STL_UP, &button);
+                        if button.clicked() {
+                            out.push(Command::SetStlUp(up.other()));
+                        }
+                        (
+                            stl_unit_text(unit),
+                            "STL には単位が無いため、この単位と仮定しています。押すと仮定を替えて開き直します",
+                            Command::SetStlUnit(unit.next()),
+                        )
+                    }
                 };
                 let unit = ui.button(text).on_hover_text(hint);
                 reg(ids::STATUS_UNIT, &unit);
@@ -120,7 +136,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 }
             }
             if let Some(name) = selected_name(session) {
-                ui.label(egui::RichText::new(name).strong())
+                name_label(ui, egui::RichText::new(name).strong(), name_width)
                     .on_hover_text("選択中の部品");
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -199,21 +215,18 @@ const MIDDLE_MIN: f32 = 160.0;
 /// ボタンの左右の余白と部品の間の分。
 const BUTTON_PAD: f32 = 16.0;
 
-/// 使える幅に収まるように、省く部品を決める。ファイル名と未保存の印を並べた後に呼ぶ。
-fn optional_items(ui: &egui::Ui, session: &Session) -> Optional {
-    let mut shown = Optional {
-        grid: session.grid_visible,
-        display: true,
-        parts: true,
-    };
-    if session.model.is_none() {
-        return shown;
-    }
+/// 常に出す操作と数値の幅。ファイル名、選択名、知らせには残った幅を使う。
+fn fixed_width(ui: &egui::Ui, session: &Session) -> f32 {
     let gap = ui.spacing().item_spacing.x;
     let width = |text: &str, pad: f32| text_width(ui, text) + pad + gap;
-    // ファイル名と未保存の印は、呼ぶ時点で並べ終えている（使える幅から引かれている）。
     let mut fixed = width("詳細▴", BUTTON_PAD);
+    if session.model.is_none() {
+        return fixed;
+    }
     fixed += width(&unit_button_text(session), BUTTON_PAD);
+    if let SourceKind::Stl { up, .. } = session.source_kind {
+        fixed += width(&stl_up_text(up), BUTTON_PAD);
+    }
     if let Some(distance) = crate::session::measure_distance(session) {
         fixed += width(&format!("距離 {}", session.units.format(distance, 4)), 0.0);
     }
@@ -224,6 +237,49 @@ fn optional_items(ui: &egui::Ui, session: &Session) -> Optional {
     {
         fixed += width("簡略表示 000 件", BUTTON_PAD);
     }
+    fixed
+}
+
+fn max_name_width(ui: &egui::Ui, session: &Session, fixed: f32) -> f32 {
+    let gap = ui.spacing().item_spacing.x;
+    let mut left = ui.available_width() - fixed;
+    for (visible, label) in [
+        (session.doc_unsaved(), DOC_BADGE),
+        (session.review_unsaved(), REVIEW_BADGE),
+    ] {
+        if visible {
+            left -= text_width(ui, label) + gap;
+        }
+    }
+    // 名前が長くても、もう一方の名前と知らせが読める幅を残す。
+    let columns = if session.selection.is_some() {
+        3.0
+    } else {
+        2.0
+    };
+    (left / columns - gap).max(0.0)
+}
+
+fn name_label(ui: &mut egui::Ui, text: egui::RichText, max_width: f32) -> egui::Response {
+    ui.scope(|ui| {
+        ui.set_max_width(max_width);
+        ui.add(egui::Label::new(text).truncate())
+    })
+    .inner
+}
+
+/// ファイル名と未保存の印を並べた後、残りの幅に収まる部品を選ぶ。
+fn optional_items(ui: &egui::Ui, session: &Session, mut fixed: f32) -> Optional {
+    let mut shown = Optional {
+        grid: session.grid_visible,
+        display: true,
+        parts: true,
+    };
+    if session.model.is_none() {
+        return shown;
+    }
+    let gap = ui.spacing().item_spacing.x;
+    let width = |text: &str, pad: f32| text_width(ui, text) + pad + gap;
     if let Some(name) = selected_name(session) {
         fixed += width(&name, 0.0);
     }
@@ -298,8 +354,12 @@ pub fn stl_unit_text(unit: UnitLabel) -> String {
 fn unit_button_text(session: &Session) -> String {
     match session.source_kind {
         SourceKind::Glb | SourceKind::New => unit_text(session.units.source),
-        SourceKind::Stl { unit } => stl_unit_text(unit),
+        SourceKind::Stl { unit, .. } => stl_unit_text(unit),
     }
+}
+
+fn stl_up_text(up: UpAxis) -> String {
+    format!("上 = {}（仮定）", up.suffix())
 }
 
 /// 道具の使い方の一文（状態欄に知らせが無いときに出す）。

@@ -159,6 +159,7 @@ fn sample_session() -> Session {
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
         stl_unit: None,
+        stl_up: None,
     });
     session.set_model(model);
     session.panel_details = true;

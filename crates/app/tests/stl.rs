@@ -1,7 +1,9 @@
-//! STL を開く・単位の仮定を替える・レビューを保存して戻す・GLB へ書き出す。GPUは使わない。
+//! STL を開く・単位と上の向きを替える・レビューを保存して戻す・GLB へ書き出す。GPUは使わない。
 //!
 //! 見本は 20 × 30 × 40 mm の箱（原点の角から伸びる）。mm と仮定すると、部品の大きさが 0.001 になり、
-//! シーン（メートル）での外形は 0.02 × 0.03 × 0.04 になる。
+//! Z が上ならシーン（メートル）での外形は 0.02 × 0.04 × 0.03 になる。
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,17 +11,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use glam::{Affine3A, Vec2, Vec3};
-use model_reviewer::command::{Command, ShapeKind};
+use model_reviewer::command::{Command, Handle, KeyInput, ShapeKind, Tool, ViewDir};
 use model_reviewer::loader::{LoadOptions, LoadPhase, NEITHER_GLB_NOR_STL};
 use model_reviewer::session::{Session, SourceKind, selection_dims, stl_export_note};
 use model_reviewer_core::gizmo::decompose;
 use model_reviewer_core::scene::{NodeId, PrimId, SceneRead};
 use model_reviewer_core::section::{Axis, SectionPlane};
 use model_reviewer_core::shapes::{Dims, scale_for};
-use model_reviewer_core::units::{UnitLabel, Units};
+use model_reviewer_core::units::{UnitLabel, Units, UpAxis};
 use model_reviewer_testdata::stl::{
     STL_SAMPLE_SIZE, ascii_stl, box_triangles, stl_inputs, stl_sample,
 };
+
+const Z_OPENING_NOTE: &str = "開いたときは Z を上と仮定し、回転 X の初期値を -90° にしました";
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -87,7 +91,8 @@ fn extent(session: &Session) -> Vec3 {
 }
 
 fn sample_extent_m(meters: f32) -> Vec3 {
-    Vec3::from_array(STL_SAMPLE_SIZE) * meters
+    let [x, y, z] = STL_SAMPLE_SIZE;
+    Vec3::new(x, z, y) * meters
 }
 
 fn failure_body(session: &Session) -> String {
@@ -135,7 +140,8 @@ fn opens_binary_and_ascii_stl() {
         assert_eq!(
             session.source_kind,
             SourceKind::Stl {
-                unit: UnitLabel::Mm
+                unit: UnitLabel::Mm,
+                up: UpAxis::Z,
             }
         );
         assert_eq!(
@@ -168,6 +174,82 @@ fn opens_binary_and_ascii_stl() {
     }
     // 元のファイルは書き換えない。
     assert_eq!(std::fs::read(&inputs[0]).unwrap(), stl_sample());
+}
+
+#[test]
+fn stl_opens_z_up_by_default() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use model_reviewer::ui::{inspector, inspector_input};
+
+    let stl = write_bytes(&scratch("default-up"), "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    assert_eq!(session.model_ref.as_ref().unwrap().stl_up, Some(UpAxis::Z));
+    session.apply(Command::Select(Some(NodeId(0))));
+    let dims = selection_dims(&session).unwrap();
+    let mm = dims
+        .extent
+        .unwrap()
+        .map(|value| dims.units.to_display(value));
+    assert!(close3(mm.into(), Vec3::new(20.0, 40.0, 30.0)));
+
+    let input = inspector_input(&session);
+    let mut harness = Harness::builder()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .build_ui(move |ui| inspector::show(ui, &input, &mut Vec::new()));
+    harness.step();
+    let rotation_x = harness
+        .get_all_by_role(egui::accesskit::Role::SpinButton)
+        .nth(3)
+        .unwrap();
+    let text = rotation_x.value().unwrap();
+    let degrees = text.trim_end_matches('°').replace('−', "-");
+    // 表示の桁で -90 になり、分解時の端数が欄に出ない。
+    assert_eq!(degrees.parse::<f64>().unwrap(), -90.0, "{text}");
+
+    let local = session.doc.as_ref().unwrap().nodes()[0].local;
+    let mut trs = decompose(&local).unwrap();
+    trs.rotation = glam::Quat::IDENTITY;
+    session.apply(Command::CommitLocal(trs));
+    assert!(close3(
+        extent(&session),
+        Vec3::from(STL_SAMPLE_SIZE) * 0.001
+    ));
+    session.apply(Command::Undo);
+    assert!(close3(extent(&session), sample_extent_m(0.001)));
+}
+
+#[test]
+fn z_up_part_moves_along_world_y_with_keys_and_handle() {
+    let stl = write_bytes(&scratch("up-move"), "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::Select(Some(NodeId(0))));
+    session.apply(Command::SetTool(Tool::Move));
+    session.apply(Command::BeginKeyTransform(Axis::Y));
+    session.apply(Command::KeyTransformInput(KeyInput::Char('5')));
+    session.apply(Command::CommitTransform);
+    let translation =
+        |s: &Session| Vec3::from(s.doc.as_ref().unwrap().nodes()[0].world.translation);
+    assert!(close3(translation(&session), Vec3::Y * 0.005));
+    session.apply(Command::Undo);
+
+    session.apply(Command::SnapView(ViewDir::Front));
+    let pivot = session.doc.as_ref().unwrap().bounds().center();
+    let start = session
+        .camera
+        .project(pivot + Vec3::Y * 0.002, 1.0)
+        .unwrap();
+    let end = session
+        .camera
+        .project(pivot + Vec3::Y * 0.007, 1.0)
+        .unwrap();
+    session.apply(Command::BeginTransform {
+        handle: Handle::MoveY,
+        ndc: start,
+    });
+    session.apply(Command::DragTransform { ndc: end });
+    session.apply(Command::CommitTransform);
+    assert!(close3(translation(&session), Vec3::Y * 0.005));
 }
 
 #[test]
@@ -232,7 +314,8 @@ fn broken_stl_keeps_the_open_model() {
         assert_eq!(
             session.source_kind,
             SourceKind::Stl {
-                unit: UnitLabel::Mm
+                unit: UnitLabel::Mm,
+                up: UpAxis::Z,
             }
         );
         session.apply(Command::DismissDialog);
@@ -249,13 +332,15 @@ fn stl_review_saves_and_restores_with_unit() {
         stl.clone(),
         LoadOptions {
             stl_unit: Some(UnitLabel::Cm),
+            ..LoadOptions::default()
         },
     );
     pump_load(&mut session);
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     assert!(close3(extent(&session), sample_extent_m(0.01)));
@@ -275,7 +360,8 @@ fn stl_review_saves_and_restores_with_unit() {
     assert_eq!(
         restored.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     assert_eq!(restored.units.display, Some(UnitLabel::Cm));
@@ -292,7 +378,8 @@ fn stl_review_saves_and_restores_with_unit() {
     assert_eq!(
         other.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     assert!(close3(extent(&other), sample_extent_m(0.01)));
@@ -308,10 +395,143 @@ fn stl_review_saves_and_restores_with_unit() {
     assert_eq!(
         old.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Mm
+            unit: UnitLabel::Mm,
+            up: UpAxis::Z,
         }
     );
     assert_eq!(std::fs::read(&stl).unwrap(), stl_sample());
+}
+
+#[test]
+fn stl_review_saves_and_restores_with_up() {
+    let dir = scratch("review-up");
+    let stl = write_bytes(&dir, "original.stl", &stl_sample());
+    let mut author = open(&stl);
+    author.apply(Command::SetStlUp(UpAxis::Y));
+    pump_load(&mut author);
+    annotate_center(&mut author, "上の面");
+    let note = author.review.as_ref().unwrap().annotations[0].clone();
+    author.apply(Command::SaveView {
+        name: "検査位置".into(),
+    });
+    let review = dir.join("review.json");
+    author.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    assert_eq!(json["model"]["stl_up"], "y");
+
+    // 同じ内容を既定の Z で開いている。改名後でも現在の実パスで Y に戻せる。
+    let renamed = dir.join("renamed.stl");
+    std::fs::rename(&stl, &renamed).unwrap();
+    let mut session = open(&renamed);
+    session.apply(Command::LoadReview(review.clone()));
+    pump_load(&mut session);
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Y
+        }
+    );
+    assert!(close3(
+        extent(&session),
+        Vec3::from(STL_SAMPLE_SIZE) * 0.001
+    ));
+    let restored = session.review.as_ref().unwrap();
+    assert_eq!(restored.annotations[0].node, note.node);
+    assert!(close3(restored.annotations[0].local_pos, note.local_pos));
+    assert!(close3(
+        restored.views[0].camera.target,
+        author.camera.target
+    ));
+    assert!(near(
+        restored.views[0].camera.distance,
+        author.camera.distance
+    ));
+
+    // 記録された場所にも同じ内容があっても、今開いている STL を Z で開き直す。
+    std::fs::copy(&renamed, &stl).unwrap();
+    json["model"]["stl_up"] = "z".into();
+    std::fs::write(&review, json.to_string()).unwrap();
+    session.apply(Command::LoadReview(review.clone()));
+    pump_load(&mut session);
+    assert_eq!(
+        session.model_ref.as_ref().unwrap().path,
+        std::fs::canonicalize(&renamed).unwrap()
+    );
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Z
+        }
+    );
+    assert!(close3(extent(&session), sample_extent_m(0.001)));
+    assert!(close3(
+        session.review.as_ref().unwrap().annotations[0].local_pos,
+        note.local_pos
+    ));
+
+    // 向きの記録が無いレビュー（向きを書かない版で保存したもの）は、Y が上として戻す。
+    // 現在の実パスの内容が変わったので、記録された場所の STL で視点を戻す。
+    let mut changed = stl_sample();
+    changed[0] ^= 1;
+    std::fs::write(&renamed, changed).unwrap();
+    json["model"].as_object_mut().unwrap().remove("stl_up");
+    std::fs::write(&review, json.to_string()).unwrap();
+    session.apply(Command::LoadReview(review));
+    pump_load(&mut session);
+    assert_eq!(
+        session.model_ref.as_ref().unwrap().path,
+        std::fs::canonicalize(&stl).unwrap()
+    );
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Y
+        }
+    );
+    assert!(close3(
+        extent(&session),
+        Vec3::from(STL_SAMPLE_SIZE) * 0.001
+    ));
+    let restored = session.review.as_ref().unwrap();
+    assert!(close3(restored.annotations[0].local_pos, note.local_pos));
+    assert!(close3(
+        restored.views[0].camera.target,
+        author.camera.target
+    ));
+}
+
+#[test]
+fn annotation_stays_on_the_same_surface_across_up() {
+    let stl = write_bytes(&scratch("annotation-up"), "box.stl", &stl_sample());
+    let file_point = Vec3::new(20.0, 8.0, 26.0);
+    // 両方で +X の面の同じ場所を押す。画面での位置は上の向きに合わせて変わる。
+    for (up, point_mm) in [
+        (UpAxis::Y, file_point),
+        (UpAxis::Z, Vec3::new(20.0, 26.0, -8.0)),
+    ] {
+        let mut session = open(&stl);
+        session.apply(Command::SetStlUp(up));
+        pump_load(&mut session);
+        session.apply(Command::SnapView(ViewDir::Right));
+        let ndc = session.camera.project(point_mm * 0.001, 1.0).unwrap();
+        session.apply(Command::SetAnnotateMode(true));
+        session.apply(Command::ViewClick { ndc });
+        session.apply(Command::CommitDraft {
+            text: "右面".into(),
+        });
+        let note = &session.review.as_ref().unwrap().annotations[0];
+        assert_eq!(note.node, NodeId(0));
+        assert!(
+            close3(note.local_pos, file_point),
+            "{up:?}: {:?}",
+            note.local_pos
+        );
+        assert!(close3(note.local_normal, Vec3::X));
+    }
 }
 
 #[test]
@@ -345,19 +565,92 @@ fn renamed_stl_restores_the_annotation_and_hidden_part_after_relink() {
     assert_eq!(review.annotations, session.review.unwrap().annotations);
     assert!(!review.visibility.effective(NodeId(0)));
 
-    let identity = &restored.model_ref.unwrap().identity;
+    let loaded = restored.model_ref.as_ref().unwrap();
     file.hidden_nodes.clear();
     file.model.stl_unit = None;
     assert_eq!(
-        review_file::restore(&file, doc, identity).unwrap_err(),
+        review_file::restore_loaded(&file, doc, loaded)
+            .unwrap()
+            .annotations,
+        review.annotations
+    );
+    // 読んだ形式が分からない呼び出しでは、従来どおり部品名も照合する。
+    assert_eq!(
+        review_file::restore(&file, doc, &loaded.identity).unwrap_err(),
         ReviewError::UnknownNode { gltf_index: 0 }
     );
     file.model.stl_unit = Some(UnitLabel::Mm);
     file.annotations[0].node.gltf_index = 1;
     assert_eq!(
-        review_file::restore(&file, doc, identity).unwrap_err(),
+        review_file::restore_loaded(&file, doc, loaded).unwrap_err(),
         ReviewError::UnknownNode { gltf_index: 1 }
     );
+}
+
+#[test]
+fn changing_stl_up_reopens_after_confirm() {
+    let stl = write_bytes(&scratch("confirm-up"), "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    annotate_center(&mut session, "面");
+    let before = Arc::clone(session.model.as_ref().unwrap());
+    session.apply(Command::SetStlUp(UpAxis::Y));
+    assert!(session.dialog.is_some() && session.loading_file_name.is_none());
+    session.apply(Command::CancelPending);
+    assert!(Arc::ptr_eq(&before, session.model.as_ref().unwrap()));
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Z
+        }
+    );
+    assert_eq!(session.review.as_ref().unwrap().annotations.len(), 1);
+    session.apply(Command::SetStlUp(UpAxis::Y));
+    session.apply(Command::ConfirmDiscard);
+    pump_load(&mut session);
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Y
+        }
+    );
+    assert!(session.review.as_ref().unwrap().annotations.is_empty());
+    assert!(session.history.is_empty());
+}
+
+#[test]
+fn changing_unit_keeps_up_and_changing_up_keeps_unit() {
+    let stl = write_bytes(&scratch("unit-and-up"), "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::SetStlUp(UpAxis::Y));
+    session.apply(Command::SetStlUnit(UnitLabel::M));
+    assert!(session.status_text.contains("読み込み中"));
+    pump_load(&mut session);
+    assert_eq!(
+        session.model_ref.as_ref().unwrap().stl_unit,
+        Some(UnitLabel::Mm)
+    );
+    session.apply(Command::SetStlUnit(UnitLabel::Cm));
+    pump_load(&mut session);
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Cm,
+            up: UpAxis::Y
+        }
+    );
+    assert!(close3(extent(&session), Vec3::from(STL_SAMPLE_SIZE) * 0.01));
+    session.apply(Command::SetStlUp(UpAxis::Z));
+    pump_load(&mut session);
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z
+        }
+    );
+    assert!(close3(extent(&session), sample_extent_m(0.01)));
 }
 
 #[test]
@@ -365,6 +658,8 @@ fn protect_legacy_stl() {
     let dir = scratch("legacy-renamed");
     let path = write_bytes(&dir, "before.stl", &stl_sample());
     let mut session = open(&path);
+    session.apply(Command::SetStlUp(UpAxis::Y));
+    pump_load(&mut session);
     annotate_center(&mut session, "角");
     session.apply(Command::SetVisible {
         node: NodeId(0),
@@ -374,7 +669,9 @@ fn protect_legacy_stl() {
     session.apply(Command::SaveReview(review.clone()));
     let mut json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
-    json["model"].as_object_mut().unwrap().remove("stl_unit");
+    let model = json["model"].as_object_mut().unwrap();
+    model.remove("stl_unit");
+    model.remove("stl_up");
     std::fs::write(&review, json.to_string()).unwrap();
     let moved = dir.join("after.data");
     std::fs::rename(path, &moved).unwrap();
@@ -386,7 +683,8 @@ fn protect_legacy_stl() {
     assert_eq!(
         restored.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Mm
+            unit: UnitLabel::Mm,
+            up: UpAxis::Y
         }
     );
     assert_eq!(
@@ -394,8 +692,10 @@ fn protect_legacy_stl() {
         session.review.unwrap().annotations
     );
     assert!(!restored.review.as_ref().unwrap().visibility.own(NodeId(0)));
+    let model = Arc::clone(restored.model.as_ref().unwrap());
     restored.apply(Command::LoadReview(review));
     assert_eq!(restored.status_text, "レビューを復元しました");
+    assert!(Arc::ptr_eq(&model, restored.model.as_ref().unwrap()));
 }
 
 #[test]
@@ -424,13 +724,44 @@ fn protect_glb_node_name() {
 
 #[test]
 fn protect_stl_unit_identity() {
-    let dir = scratch("unit-file-changed");
+    check_changed_stl(
+        "unit-file-changed",
+        UnitLabel::Mm,
+        UpAxis::Z,
+        Command::SetStlUnit(UnitLabel::Cm),
+    );
+}
+
+#[test]
+fn protect_stl_up_identity() {
+    check_changed_stl(
+        "up-file-changed",
+        UnitLabel::Cm,
+        UpAxis::Y,
+        Command::SetStlUp(UpAxis::Z),
+    );
+}
+
+fn check_changed_stl(name: &str, unit: UnitLabel, up: UpAxis, change: Command) {
     let mut bytes = stl_sample();
-    let path = write_bytes(&dir, "box.stl", &bytes);
-    let mut session = open(&path);
+    let path = write_bytes(&scratch(name), "box.stl", &bytes);
+    let mut session = Session::default();
+    session.set_viewport([800, 800]);
+    session.open_model_with(
+        path.clone(),
+        LoadOptions {
+            stl_unit: Some(unit),
+            stl_up: Some(up),
+        },
+    );
+    pump_load(&mut session);
     annotate_center(&mut session, "残す");
-    let model = std::sync::Arc::clone(session.model.as_ref().unwrap());
-    session.apply(Command::SetStlUnit(UnitLabel::Cm));
+    session.apply(Command::AddShape(ShapeKind::Cube));
+    let model = Arc::clone(session.model.as_ref().unwrap());
+    let reference = session.model_ref.clone();
+    let revision = session.history.doc_rev();
+    let nodes = session.doc.as_ref().unwrap().node_count();
+    session.apply(change);
     assert!(session.dialog.is_some());
     // 同じ長さで読める別の STL に、未保存の確認中に入れ替える。
     bytes[0] ^= 1;
@@ -438,17 +769,18 @@ fn protect_stl_unit_identity() {
     session.apply(Command::ConfirmDiscard);
     pump_load(&mut session);
     assert!(matches!(session.load, LoadPhase::Failed(_)));
-    assert!(failure_body(&session).contains("変わ"));
-    assert!(std::sync::Arc::ptr_eq(
-        &model,
-        session.model.as_ref().unwrap()
-    ));
     assert_eq!(
-        session.source_kind,
-        SourceKind::Stl {
-            unit: UnitLabel::Mm
-        }
+        session.dialog.as_ref().unwrap().title,
+        "STL の単位や上の向きを変更できません"
     );
+    assert!(failure_body(&session).contains("STL の内容が変わ"));
+    assert!(Arc::ptr_eq(&model, session.model.as_ref().unwrap()));
+    assert_eq!(session.model_ref, reference);
+    assert_eq!(session.source_kind, SourceKind::Stl { unit, up });
+    assert_eq!(session.units.display, Some(unit));
+    assert_eq!(session.doc.as_ref().unwrap().node_count(), nodes);
+    assert_eq!(session.history.doc_rev(), revision);
+    assert!(session.doc_unsaved());
     assert_eq!(session.review.as_ref().unwrap().annotations[0].text, "残す");
     assert!(session.review_unsaved());
 }
@@ -465,7 +797,8 @@ fn changing_stl_unit_reopens_after_confirm() {
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     assert_eq!(session.units.display, Some(UnitLabel::Cm));
@@ -487,7 +820,8 @@ fn changing_stl_unit_reopens_after_confirm() {
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     assert_eq!(session.doc.as_ref().unwrap().node_count(), nodes);
@@ -504,7 +838,8 @@ fn changing_stl_unit_reopens_after_confirm() {
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Cm
+            unit: UnitLabel::Cm,
+            up: UpAxis::Z,
         }
     );
     session.apply(Command::DismissDialog);
@@ -516,7 +851,13 @@ fn changing_stl_unit_reopens_after_confirm() {
     assert!(session.dialog.is_some());
     session.apply(Command::ConfirmDiscard);
     pump_load(&mut session);
-    assert_eq!(session.source_kind, SourceKind::Stl { unit: UnitLabel::M });
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::M,
+            up: UpAxis::Z
+        }
+    );
     assert_eq!(session.units.display, Some(UnitLabel::M));
     assert!(close3(extent(&session), sample_extent_m(1.0)));
     assert_eq!(session.doc.as_ref().unwrap().node_count(), 1);
@@ -578,9 +919,13 @@ fn stl_exports_to_glb_and_moves_target() {
     let model_ref = session.model_ref.as_ref().unwrap();
     assert!(model_ref.path.ends_with("part.glb"));
     assert_eq!(model_ref.stl_unit, None);
+    assert_eq!(model_ref.stl_up, None);
     assert!(!session.doc_unsaved());
     let body = failure_body(&session);
-    assert!(body.contains(&stl_export_note(UnitLabel::Mm)), "{body}");
+    assert!(
+        body.contains(&stl_export_note(UnitLabel::Mm, UpAxis::Z)),
+        "{body}"
+    );
     assert!(body.contains("0.001"), "{body}");
     // 単位は変えない（シーンはメートルのまま、表示は mm）。
     assert_eq!(
@@ -598,6 +943,7 @@ fn stl_exports_to_glb_and_moves_target() {
     assert!(shape.dims.is_some() && shape.blocked.is_none());
     // 次の書き出しは新しい GLB が土台。STL の単位を替える操作は、もう働かない。
     session.apply(Command::SetStlUnit(UnitLabel::Cm));
+    session.apply(Command::SetStlUp(UpAxis::Y));
     assert!(session.loading_file_name.is_none());
     let mut trs = shape.trs;
     trs.translation.x += 0.005;
@@ -733,7 +1079,8 @@ fn stl_export_refuses_a_changed_stl() {
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
-            unit: UnitLabel::Mm
+            unit: UnitLabel::Mm,
+            up: UpAxis::Z,
         }
     );
     assert!(session.doc_unsaved());
@@ -795,6 +1142,84 @@ fn scene_numbers_do_not_change_across_stl_export() {
 }
 
 #[test]
+fn z_up_stl_exports_rotation() {
+    let dir = scratch("export-up");
+    let stl = write_bytes(&dir, "box.stl", &stl_sample());
+    for up in [UpAxis::Z, UpAxis::Y] {
+        let mut session = open(&stl);
+        session.apply(Command::SetStlUp(up));
+        pump_load(&mut session);
+        let before = extent(&session);
+        let shown = |s: &Session| {
+            extent(s)
+                .to_array()
+                .map(|v| s.units.format(v, model_reviewer::ui::dims::PANEL_DIGITS))
+        };
+        let labels = shown(&session);
+        let (base_tx, base_rx) = std::sync::mpsc::channel();
+        session.set_export_hooks(model_reviewer::exporter::ExportHooks {
+            after_stl_base: Some(Arc::new(move |bytes| base_tx.send(bytes.to_vec()).unwrap())),
+            ..Default::default()
+        });
+        let target = dir.join(format!("{}.glb", up.key()));
+        session.apply(Command::ExportGlb(target.clone()));
+        session.apply(Command::SetStlUp(up.other()));
+        assert!(session.status_text.contains("書き出し中"));
+        assert!(session.loading_file_name.is_none());
+        pump_export(&mut session);
+        assert_eq!(session.export_error(), None);
+        assert_eq!(
+            failure_body(&session).contains(Z_OPENING_NOTE),
+            up == UpAxis::Z
+        );
+        let base =
+            model_reviewer_gltf::load_glb(&base_rx.try_recv().expect("合成直後の土台")).unwrap();
+        let scale = 0.001;
+        let expected = Affine3A::from_mat3(up.rotation() * scale);
+        let local = base.nodes[0].local;
+        assert!(
+            local.abs_diff_eq(expected, scale * 1.0e-6),
+            "{up:?} が上の土台の回転と倍率: {local:?}"
+        );
+        let bytes = std::fs::read(&target).unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let node = &json["nodes"][0];
+        assert!(node.get("matrix").is_none());
+        assert_eq!(node.get("rotation").is_some(), up == UpAxis::Z);
+        assert!(node["scale"].is_array());
+        let mut reopened = open(&target);
+        let local = reopened.doc.as_ref().unwrap().nodes()[0].local;
+        let z = if up == UpAxis::Z { Vec3::Y } else { Vec3::Z };
+        assert!(close3(local.transform_vector3(Vec3::Z), z * 0.001));
+        assert!(close3(extent(&reopened), before));
+        reopened.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
+        assert_eq!(shown(&reopened), labels);
+    }
+}
+
+#[test]
+fn export_note_describes_initial_rotation_after_edit() {
+    let dir = scratch("edited-rotation");
+    let stl = write_bytes(&dir, "box.stl", &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::Select(Some(NodeId(0))));
+    let mut trs = decompose(&session.doc.as_ref().unwrap().nodes()[0].local).unwrap();
+    trs.rotation = glam::Quat::IDENTITY;
+    session.apply(Command::CommitLocal(trs));
+
+    let target = dir.join("edited.glb");
+    session.apply(Command::ExportGlb(target.clone()));
+    pump_export(&mut session);
+    assert_eq!(session.export_error(), None);
+    let body = failure_body(&session);
+    assert!(body.contains(Z_OPENING_NOTE), "{body}");
+    let model = model_reviewer_gltf::load_glb(&std::fs::read(target).unwrap()).unwrap();
+    let expected = Affine3A::from_scale(Vec3::splat(0.001));
+    assert!(model.nodes[0].local.abs_diff_eq(expected, 0.001 * 1.0e-6));
+}
+
+#[test]
 fn exported_glb_from_stl_reopens_with_same_extent() {
     let dir = scratch("reopen");
     let (mut session, _) = edited_stl(&dir);
@@ -826,6 +1251,28 @@ fn exported_glb_from_stl_reopens_with_same_extent() {
     assert!(close3(trs.scale, Vec3::splat(0.001)));
     // 合成した土台を開き直すと「法線の無い形状」の簡略表示が出る（事実なので、そのまま）。
     assert!(!reopened.model.as_ref().unwrap().warnings.is_empty());
+}
+
+#[test]
+fn exported_stl_status_fits_at_960() {
+    use model_reviewer::ui::ids;
+
+    let dir = scratch("export-status");
+    let name = "W".repeat(100);
+    let stl = write_bytes(&dir, &format!("{name}.stl"), &stl_sample());
+    let mut session = open(&stl);
+    session.apply(Command::Select(Some(NodeId(0))));
+    session.apply(Command::ExportGlb(stl.with_extension("glb")));
+    pump_export(&mut session);
+    assert_eq!(session.source_kind, SourceKind::Glb);
+    session.apply(Command::DismissDialog);
+
+    let size = egui::vec2(960.0, 600.0);
+    let (mut harness, _) = support::harness(session, size);
+    harness.run_steps(4);
+    let details = support::widget_rect(&harness, ids::STATUS_DETAILS).expect("詳細ボタン");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    assert!(screen.contains_rect(details), "詳細が画面の外: {details:?}");
 }
 
 #[test]

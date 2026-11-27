@@ -258,6 +258,17 @@ fn readout_status(readout: Readout) -> String {
 }
 
 pub(super) fn commit_transform(session: &mut Session) {
+    // キーで打った量が確定できない（拡大の倍率が 0 以下など）なら、理由を出して入力を続ける
+    // （要件11.10）。差分の行列は前に読めた量のままなので、そのまま入れてはいけない。
+    if let Some(Transform {
+        source: TransformSource::Keys(entry),
+        ..
+    }) = session.transform.as_ref()
+        && let Some(reason) = super::keymove::commit_refusal(entry)
+    {
+        session.status_text = super::keymove::status_with(session, entry, reason);
+        return;
+    }
     let Some(transform) = session.transform.take() else {
         return;
     };
@@ -284,7 +295,7 @@ pub(super) fn commit_transform(session: &mut Session) {
         session.status_text = NOT_FINITE.to_owned();
         return;
     };
-    commit_local_matrix(session, transform.key, before, after, label_of(&transform));
+    let _ = commit_local_matrix(session, transform.key, before, after, label_of(&transform));
     session.metrics.edit_commit = Some(started.elapsed());
 }
 
@@ -297,25 +308,25 @@ fn label_of(transform: &Transform) -> &'static str {
     }
 }
 
-/// 確定の共通部。有限で大きさのある行列だけを、履歴を通して文書へ入れる。
-fn commit_local_matrix(
+/// 確定の共通部。有限で大きさのある行列だけを、履歴を通して文書へ入れる。積んだら真。
+pub(super) fn commit_local_matrix(
     session: &mut Session,
     key: NodeKey,
     before: Affine3A,
     after: Affine3A,
     label: &'static str,
-) {
+) -> bool {
     if !after.is_finite() {
         session.status_text = NOT_FINITE.to_owned();
-        return;
+        return false;
     }
     let det = after.matrix3.determinant();
     if !det.is_finite() || det.abs() < 1.0e-30 {
         session.status_text = ZERO_SIZE.to_owned();
-        return;
+        return false;
     }
     if after == before {
-        return;
+        return false;
     }
     let step = Step::new(
         label,
@@ -324,6 +335,9 @@ fn commit_local_matrix(
     );
     if execute(session, step).is_some() {
         session.status_text = format!("{label}を確定しました");
+        true
+    } else {
+        false
     }
 }
 
@@ -409,7 +423,7 @@ pub(super) fn commit_local(session: &mut Session, trs: Trs) {
     if gizmo::decompose(&before).is_some_and(|now| same_trs(&now, &trs)) {
         return;
     }
-    commit_local_matrix(session, key, before, compose(&trs), "数値の変更");
+    let _ = commit_local_matrix(session, key, before, compose(&trs), "数値の変更");
     session.metrics.edit_commit = Some(started.elapsed());
 }
 

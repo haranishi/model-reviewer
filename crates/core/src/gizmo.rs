@@ -437,21 +437,13 @@ impl Drag {
             }
             Handle::ScaleX | Handle::ScaleY | Handle::ScaleZ => {
                 let factor = (self.axis_param(ndc)? / self.start_value).max(MIN_FACTOR);
-                let index = axis_index(self.handle);
-                let basis = Mat3A::from_cols(
-                    Vec3A::from(unit(self.frame.axes[0])?),
-                    Vec3A::from(unit(self.frame.axes[1])?),
-                    Vec3A::from(unit(self.frame.axes[2])?),
-                );
-                let det = basis.determinant();
-                if !det.is_finite() || det.abs() < 1.0e-6 {
-                    return None;
-                }
-                let mut diagonal = Vec3::ONE;
-                diagonal[index] = factor;
-                let linear = basis * Mat3A::from_diagonal(diagonal) * basis.inverse();
                 DragState {
-                    world_delta: about_pivot(pivot, Affine3A::from_mat3(linear.into())),
+                    world_delta: axis_scale(
+                        pivot,
+                        &self.frame.axes,
+                        axis_index(self.handle),
+                        factor,
+                    )?,
                     readout: Readout::Factor(factor),
                 }
             }
@@ -552,6 +544,24 @@ fn axis_index(handle: Handle) -> usize {
     }
 }
 
+/// 部品の軸 `axes[index]` の向きにだけ `factor` 倍する、`pivot` を動かさない変換。軸がそろって
+/// いない（つぶれている）か有限でなければ `None`。
+fn axis_scale(pivot: Vec3, axes: &[Vec3; 3], index: usize, factor: f32) -> Option<Affine3A> {
+    let basis = Mat3A::from_cols(
+        Vec3A::from(unit(axes[0])?),
+        Vec3A::from(unit(axes[1])?),
+        Vec3A::from(unit(axes[2])?),
+    );
+    let det = basis.determinant();
+    if !det.is_finite() || det.abs() < 1.0e-6 {
+        return None;
+    }
+    let mut diagonal = Vec3::ONE;
+    diagonal[index] = factor;
+    let linear = basis * Mat3A::from_diagonal(diagonal) * basis.inverse();
+    Some(about_pivot(pivot, Affine3A::from_mat3(linear.into())))
+}
+
 /// `pivot` を動かさない変換（`T(pivot) × linear × T(-pivot)`）。
 fn about_pivot(pivot: Vec3, linear: Affine3A) -> Affine3A {
     Affine3A::from_translation(pivot) * linear * Affine3A::from_translation(-pivot)
@@ -579,10 +589,43 @@ pub fn apply_world_delta(
 /// 移動は距離（シーンの単位）、回転は度、拡大は倍率。有限でない量と、0 以下の倍率は `None`。
 /// `ScaleAll` は `None`。カメラは使わない（視線と軸が平行でも値が出る）。
 ///
-/// いまは形だけを置いている（WP-K1 が中身を書く）。常に `None`。
+/// 量が変化なし（移動と回転の 0、拡大の 1）なら、差分はちょうど単位行列にする（確定で何も積まない
+/// ため。回転の行列を通すと丸めで単位行列から外れることがある）。
 pub fn key_delta(handle: Handle, pivot: Vec3, axes: [Vec3; 3], value: f32) -> Option<DragState> {
-    let _ = (handle, pivot, axes, value);
-    None
+    if !value.is_finite() || !pivot.is_finite() {
+        return None;
+    }
+    let index = axis_index(handle);
+    let axis = unit(axes[index])?;
+    let state = match handle {
+        Handle::MoveX | Handle::MoveY | Handle::MoveZ => DragState {
+            world_delta: Affine3A::from_translation(axis * value),
+            readout: Readout::Distance(value),
+        },
+        Handle::RotX | Handle::RotY | Handle::RotZ => DragState {
+            world_delta: if value == 0.0 {
+                Affine3A::IDENTITY
+            } else {
+                about_pivot(pivot, Affine3A::from_axis_angle(axis, value.to_radians()))
+            },
+            readout: Readout::AngleDeg(value),
+        },
+        Handle::ScaleX | Handle::ScaleY | Handle::ScaleZ => {
+            if value <= 0.0 {
+                return None;
+            }
+            DragState {
+                world_delta: if value == 1.0 {
+                    Affine3A::IDENTITY
+                } else {
+                    axis_scale(pivot, &axes, index, value)?
+                },
+                readout: Readout::Factor(value),
+            }
+        }
+        Handle::ScaleAll => return None,
+    };
+    state.world_delta.is_finite().then_some(state)
 }
 
 /// 位置・回転・大きさ。
@@ -663,4 +706,175 @@ pub fn from_euler_deg(deg: Vec3) -> Quat {
         deg.y.to_radians(),
         deg.z.to_radians(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEWPORT: [f32; 2] = [800.0, 600.0];
+
+    fn frame(axes: [Vec3; 3]) -> GizmoFrame {
+        GizmoFrame {
+            pivot: Vec3::new(1.0, 0.5, -0.5),
+            axes,
+            camera: OrbitCamera {
+                target: Vec3::new(1.0, 0.5, -0.5),
+                yaw: 35_f32.to_radians(),
+                pitch: 25_f32.to_radians(),
+                distance: 6.0,
+                fov_y: 40_f32.to_radians(),
+                projection: Projection::Perspective,
+            },
+            viewport_px: VIEWPORT,
+            size_px: 90.0,
+        }
+    }
+
+    fn close(a: &Affine3A, b: &Affine3A) -> bool {
+        a.to_cols_array()
+            .iter()
+            .zip(b.to_cols_array().iter())
+            .all(|(x, y)| (x - y).abs() <= 1.0e-4 * (1.0 + y.abs()))
+    }
+
+    fn value_of(readout: Readout) -> f32 {
+        match readout {
+            Readout::Distance(v) | Readout::AngleDeg(v) | Readout::Factor(v) => v,
+        }
+    }
+
+    /// 同じ量のドラッグの結果（`Drag::update` の差分）と一致する。
+    #[test]
+    fn key_delta_matches_drag_result() {
+        let tilted = Quat::from_euler(EulerRot::XYZ, 0.3, -0.4, 0.2);
+        let part_axes = [tilted * Vec3::X, tilted * Vec3::Y, tilted * Vec3::Z];
+        let world = [Vec3::X, Vec3::Y, Vec3::Z];
+        let cases = [
+            (Handle::MoveX, world, Vec2::new(0.25, 0.05)),
+            (Handle::MoveY, world, Vec2::new(0.02, 0.3)),
+            (Handle::MoveZ, world, Vec2::new(-0.2, -0.1)),
+            (Handle::RotX, world, Vec2::new(0.1, 0.25)),
+            (Handle::RotY, world, Vec2::new(0.3, -0.1)),
+            (Handle::RotZ, world, Vec2::new(-0.2, 0.2)),
+            (Handle::ScaleX, part_axes, Vec2::new(0.3, 0.1)),
+            (Handle::ScaleY, part_axes, Vec2::new(0.05, 0.35)),
+            (Handle::ScaleZ, part_axes, Vec2::new(-0.25, -0.15)),
+        ];
+        for (handle, axes, offset) in cases {
+            let frame = frame(axes);
+            let grab = grab_points_of(handle, &frame);
+            let drag = Drag::begin(handle, &frame, grab).expect("掴める");
+            let state = drag.update(grab + offset).expect("値が出る");
+            let value = value_of(state.readout);
+            assert!(value.abs() > 1.0e-3, "{handle:?} の量が小さすぎる: {value}");
+            let keyed = key_delta(handle, frame.pivot, axes, value).expect("量から作れる");
+            assert!(
+                close(&keyed.world_delta, &state.world_delta),
+                "{handle:?}: {:?} と {:?}",
+                keyed.world_delta,
+                state.world_delta
+            );
+            assert_eq!(keyed.readout, state.readout, "{handle:?}");
+        }
+    }
+
+    /// ハンドルの掴める点の正規化座標（軸の線の先寄り、輪の上の点）。
+    fn grab_points_of(handle: Handle, frame: &GizmoFrame) -> Vec2 {
+        let tool = match handle {
+            Handle::MoveX | Handle::MoveY | Handle::MoveZ => Tool::Move,
+            Handle::RotX | Handle::RotY | Handle::RotZ => Tool::Rotate,
+            _ => Tool::Scale,
+        };
+        let shape = layout(tool, frame)
+            .into_iter()
+            .find(|s| s.handle == handle)
+            .expect("形がある");
+        let point = if shape.closed {
+            shape.points[shape.points.len() / 4]
+        } else {
+            shape.points[0].lerp(shape.points[1], 0.8)
+        };
+        let viewport = Vec2::from(frame.viewport_px);
+        Vec2::new(
+            point.x / viewport.x * 2.0 - 1.0,
+            1.0 - point.y / viewport.y * 2.0,
+        )
+    }
+
+    /// 視線と軸が平行でドラッグでは値が定まらない向きでも、量からは差分が出る。
+    #[test]
+    fn key_delta_works_when_view_is_parallel() {
+        let base = frame([Vec3::X, Vec3::Y, Vec3::Z]);
+        let (_, _, forward) = base.camera.axes();
+        let axes = [forward, forward.any_orthonormal_vector(), Vec3::ZERO];
+        let axes = [axes[0], axes[1], axes[0].cross(axes[1])];
+        let parallel = GizmoFrame { axes, ..base };
+        let center = parallel
+            .camera
+            .project(parallel.pivot, 800.0 / 600.0)
+            .unwrap();
+        assert!(
+            Drag::begin(Handle::MoveX, &parallel, center).is_none(),
+            "ドラッグでは定まらない向き"
+        );
+        let moved = key_delta(Handle::MoveX, parallel.pivot, axes, 2.5).expect("量から作れる");
+        assert!(
+            moved
+                .world_delta
+                .translation
+                .distance(Vec3A::from(forward * 2.5))
+                < 1.0e-5
+        );
+        assert_eq!(moved.readout, Readout::Distance(2.5));
+        let turned = key_delta(Handle::RotZ, parallel.pivot, axes, 90.0).expect("回転も作れる");
+        assert!(
+            turned
+                .world_delta
+                .transform_point3(parallel.pivot)
+                .distance(parallel.pivot)
+                < 1.0e-5
+        );
+        let scaled = key_delta(Handle::ScaleX, parallel.pivot, axes, 2.0).expect("拡大も作れる");
+        let tip = scaled
+            .world_delta
+            .transform_point3(parallel.pivot + forward);
+        assert!(tip.distance(parallel.pivot + forward * 2.0) < 1.0e-5);
+    }
+
+    /// 有限でない量、0 以下の倍率、全体の拡大、つぶれた軸は作らない。変化なしは単位行列そのもの。
+    #[test]
+    fn key_delta_refuses_bad_amounts() {
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+        let pivot = Vec3::new(1.0, 2.0, 3.0);
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for handle in [Handle::MoveX, Handle::RotY, Handle::ScaleZ] {
+                assert!(
+                    key_delta(handle, pivot, axes, value).is_none(),
+                    "{handle:?} {value}"
+                );
+            }
+        }
+        for value in [0.0, -0.5, -2.0] {
+            assert!(
+                key_delta(Handle::ScaleX, pivot, axes, value).is_none(),
+                "{value}"
+            );
+        }
+        assert!(key_delta(Handle::ScaleAll, pivot, axes, 2.0).is_none());
+        assert!(key_delta(Handle::MoveX, Vec3::NAN, axes, 1.0).is_none());
+        assert!(key_delta(Handle::MoveY, pivot, [Vec3::X, Vec3::ZERO, Vec3::Z], 1.0).is_none());
+        assert!(key_delta(Handle::ScaleY, pivot, [Vec3::X, Vec3::X, Vec3::Z], 2.0).is_none());
+        // 負の移動と回転は量として正しい。
+        assert!(key_delta(Handle::MoveX, pivot, axes, -3.0).is_some());
+        assert!(key_delta(Handle::RotX, pivot, axes, -45.0).is_some());
+        for (handle, neutral) in [
+            (Handle::MoveZ, 0.0),
+            (Handle::RotX, 0.0),
+            (Handle::ScaleY, 1.0),
+        ] {
+            let state = key_delta(handle, pivot, axes, neutral).expect("変化なし");
+            assert_eq!(state.world_delta, Affine3A::IDENTITY, "{handle:?}");
+        }
+    }
 }

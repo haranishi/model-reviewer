@@ -1,5 +1,6 @@
 //! 3Dビューの上端のボタン。押すと期待した `Command` が積まれ、線が使えないときは理由が出る。
 
+use egui::accesskit::Toggled;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use model_reviewer::automation::WidgetFrame;
@@ -9,6 +10,8 @@ use model_reviewer::ui::viewbar::{self, NO_LINES_REASON, ViewBarInput};
 
 struct Probe {
     input: ViewBarInput,
+    /// 断面の状態（`None` なら `show` を呼ぶ）。
+    section: Option<bool>,
     out: Vec<Command>,
 }
 
@@ -35,11 +38,15 @@ fn harness(input: ViewBarInput) -> Harness<'static, Probe> {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(egui::Id::NULL, WidgetFrame::default()));
                 let mut out = Vec::new();
-                viewbar::show(ui, &probe.input, &mut out);
+                match probe.section {
+                    None => viewbar::show(ui, &probe.input, &mut out),
+                    Some(_) => viewbar::show_with(ui, &probe.input, probe.section, &mut out),
+                }
                 probe.out.extend(out);
             },
             Probe {
                 input,
+                section: None,
                 out: Vec::new(),
             },
         )
@@ -183,6 +190,40 @@ fn lines_buttons_are_disabled_with_a_reason_without_line_support() {
 }
 
 #[test]
+fn section_button_toggles_and_shows_its_state() {
+    // 状態を渡さなければ出さない（接合の前の呼び方）。
+    let mut harness = harness(input(true));
+    harness.step();
+    assert!(
+        harness
+            .ctx
+            .data(|data| data.get_temp::<WidgetFrame>(egui::Id::NULL))
+            .unwrap_or_default()
+            .entries()
+            .iter()
+            .all(|entry| entry.name != ids::VIEW_SECTION)
+    );
+    for on in [false, true] {
+        harness.state_mut().section = Some(on);
+        harness.step();
+        let grid = widget(&harness, ids::VIEW_GRID);
+        let section = widget(&harness, ids::VIEW_SECTION);
+        assert!(section.left() >= grid.right(), "格子の右: {section:?}");
+        assert!(section.height() >= 28.0 && section.width() >= 40.0);
+        let node = harness.get_by_label("断面");
+        let toggled = node.accesskit_node().toggled();
+        assert_eq!(
+            toggled,
+            Some(if on { Toggled::True } else { Toggled::False })
+        );
+        assert_eq!(
+            click(&mut harness, ids::VIEW_SECTION),
+            vec![Command::ToggleSection]
+        );
+    }
+}
+
+#[test]
 #[ignore = "wgpuで画面をPNGへ書き出す"]
 fn render_viewbar_for_visual_check() {
     let cases = [
@@ -224,6 +265,7 @@ fn render_viewbar_for_visual_check() {
                 },
                 Probe {
                     input,
+                    section: None,
                     out: Vec::new(),
                 },
             );

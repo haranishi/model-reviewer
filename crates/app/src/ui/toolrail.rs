@@ -4,6 +4,8 @@
 //! 道具の絵は図形として描く（絵文字や記号の書体に頼らない）。選ばれている道具は、地の色に加えて
 //! 左の琥珀の帯と太字で示す。押せない道具は薄く描き、触れると理由が出る。
 //! 図形の4つは「図形」の道具を選んでいる間だけ、その道具の横に並べる。
+//! [吸着] も同じく「計測」の道具を選んでいる間だけ、その道具の横に出し、押すと `SetSnap` を積む
+//! （名前は `ids::MEASURE_SNAP`）。吸着の状態は `show_with` で渡す（`show` は出さない）。
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -80,7 +82,7 @@ const TOOLS: [ToolDef; 7] = [
         tool: Tool::Measure,
         label: "計測",
         id: ids::TOOL_MEASURE,
-        hint: "計測（M）: 表面を2回クリックして距離を測ります",
+        hint: "計測（M）: 角や辺に近づけて2回クリックし、距離を測ります",
         edits: false,
     },
     ToolDef {
@@ -120,9 +122,26 @@ pub fn shape_disabled_reason(input: &ToolRailInput) -> Option<String> {
     tool_disabled_reason(input, Tool::Shape)
 }
 
-/// 道具の列を置き、列そのものの矩形（図形の4つを除く）を返す。1列が使える高さに収まらない
-/// とき（幅960・高さ600で詳細を開いたときなど）は2列に並べ、押しやすい大きさを保つ。
+/// 道具の列を置き、列そのものの矩形（図形の4つを除く）を返す。[吸着] は出さない。
 pub fn show(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>) -> egui::Rect {
+    show_with(ui, input, None, out)
+}
+
+/// [吸着] の言葉（「吸着 入」「吸着 切」）。
+pub fn snap_label(enabled: bool) -> &'static str {
+    if enabled { "吸着 入" } else { "吸着 切" }
+}
+
+/// 道具の列を置き、列そのものの矩形（図形の4つと [吸着] を除く）を返す。`snap` は吸着が
+/// 入っているか（`None` なら [吸着] を出さない）。[吸着] は計測の道具のときだけ出す。
+/// 1列が使える高さに収まらないとき（幅960・高さ600で詳細を開いたときなど）は2列に並べ、
+/// 押しやすい大きさを保つ。
+pub fn show_with(
+    ui: &mut egui::Ui,
+    input: &ToolRailInput,
+    snap: Option<bool>,
+    out: &mut Vec<Command>,
+) -> egui::Rect {
     let one_column = TOOLS.len() as f32 * (BUTTON.y + 2.0) + 8.0;
     let columns = if ui.available_height() >= one_column {
         1
@@ -133,6 +152,7 @@ pub fn show(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>) ->
     let mut rail_rect = egui::Rect::NOTHING;
     ui.horizontal_top(|ui| {
         let mut shape_row_top = None;
+        let mut measure_row_top = None;
         rail_rect = rail_frame()
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
@@ -140,8 +160,11 @@ pub fn show(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>) ->
                     for column in TOOLS.chunks(rows) {
                         ui.vertical(|ui| {
                             for def in column {
-                                if let Some(top) = tool_button(ui, input, def, out) {
-                                    shape_row_top = Some(top);
+                                let top = tool_button(ui, input, def, out);
+                                match def.tool {
+                                    Tool::Shape => shape_row_top = Some(top),
+                                    Tool::Measure => measure_row_top = Some(top),
+                                    _ => {}
                                 }
                             }
                         });
@@ -162,17 +185,28 @@ pub fn show(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>) ->
                 show_shapes(ui, input, out);
             });
         }
+        if input.tool == Tool::Measure
+            && let (Some(top), Some(enabled)) = (measure_row_top, snap)
+        {
+            ui.vertical(|ui| {
+                let offset = top - ui.cursor().top() - 4.0;
+                if offset > 0.0 {
+                    ui.add_space(offset);
+                }
+                show_snap(ui, input, enabled, out);
+            });
+        }
     });
     rail_rect
 }
 
-/// 道具のボタン1つ。図形の道具なら、そのボタンの上端を返す（図形の4つをそろえるため）。
+/// 道具のボタン1つ。ボタンの上端を返す（横に並べる図形の4つと [吸着] をそろえるため）。
 fn tool_button(
     ui: &mut egui::Ui,
     input: &ToolRailInput,
     def: &ToolDef,
     out: &mut Vec<Command>,
-) -> Option<f32> {
+) -> f32 {
     let reason = tool_disabled_reason(input, def.tool);
     let draw = |painter: &egui::Painter, rect: egui::Rect, color: egui::Color32| {
         paint_tool_icon(painter, def.tool, rect, color);
@@ -194,7 +228,59 @@ fn tool_button(
     if response.clicked() && input.tool != def.tool {
         out.push(Command::SetTool(def.tool));
     }
-    (def.tool == Tool::Shape).then_some(response.rect.top())
+    response.rect.top()
+}
+
+fn show_snap(ui: &mut egui::Ui, input: &ToolRailInput, enabled: bool, out: &mut Vec<Command>) {
+    let reason = tool_disabled_reason(input, Tool::Measure);
+    rail_frame().show(ui, |ui| {
+        let draw = |painter: &egui::Painter, rect: egui::Rect, color: egui::Color32| {
+            paint_snap_icon(painter, rect, color);
+        };
+        let hint = if enabled {
+            "吸着（X）: 角や辺に近づけると、そこへ点を置きます。押すと切ります"
+        } else {
+            "吸着（X）: 切っている間は、押した面の上に点を置きます。押すと入れます"
+        };
+        let response = chip(
+            ui,
+            &Chip {
+                label: snap_label(enabled),
+                selected: enabled,
+                enabled: reason.is_none(),
+                reason: reason.as_deref(),
+                hint,
+                size: egui::vec2(64.0, BUTTON.y),
+                band: BandSide::Bottom,
+            },
+            Some(&draw),
+        );
+        reg(ids::MEASURE_SNAP, &response);
+        if response.clicked() {
+            out.push(Command::SetSnap(!enabled));
+        }
+    });
+}
+
+/// 吸着の絵（四角い頂点の印と、そこへ向かう4本の線）。
+fn paint_snap_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.5;
+    let p = |x: f32, y: f32| c + egui::vec2(x * r, y * r);
+    painter.rect_stroke(
+        egui::Rect::from_center_size(c, egui::vec2(r * 0.7, r * 0.7)),
+        0.0,
+        egui::Stroke::new(1.6, color),
+        egui::StrokeKind::Middle,
+    );
+    for (from, to) in [
+        ((-0.95, 0.0), (-0.5, 0.0)),
+        ((0.5, 0.0), (0.95, 0.0)),
+        ((0.0, -0.95), (0.0, -0.5)),
+        ((0.0, 0.5), (0.0, 0.95)),
+    ] {
+        line(painter, vec![p(from.0, from.1), p(to.0, to.1)], color);
+    }
 }
 
 fn show_shapes(ui: &mut egui::Ui, input: &ToolRailInput, out: &mut Vec<Command>) {

@@ -64,7 +64,7 @@ pub fn synthesize_base(model: &Model) -> Result<Vec<u8>, ExportError>;      // �
 pub enum ExportBase { File, Stl { unit: UnitLabel, name: String } }         // ExportRequest に base_kind として足す（既定は File）
 ```
 - 土台が STL のとき、書き出しのスレッドは「STL を読み直す → 大きさとハッシュを照合 → `load_stl` → `synthesize_base`」で土台のバイト列を作り、あとは第2段階の `build`・`write_container`・照合へ渡す。土台のバイト列を常駐させない方針（第2段階）を保つ。
-- 合成する GLB: BIN は位置（`f32` × 3）と番号（`u32`）。JSON は `asset`（`version` と `generator: "model-reviewer"`）、シーン1つ、ノード1つ（名前、`mesh`、倍率が1でなければ `scale`）、メッシュ1つ（`POSITION` と `indices`、三角形リスト）、材質1つ（基本色のみ）、アクセサ2つ（位置には `min`・`max`）。`NORMAL` は書かない。
+- 合成する GLB: BIN は位置（`f32` × 3）と番号（`u32`）。JSON は `asset`（`version` と `generator: "model-reviewer"`）、シーン1つ、ノード1つ（名前、`mesh`、倍率が1でなければ `scale`）、メッシュ1つ（`POSITION` と `indices`、三角形リスト）、材質1つ（基本色と、足した図形と同じ `metallicFactor: 0`。ほかのソフトで金属に見えないようにする）、アクセサ2つ（位置には `min`・`max`）。`NORMAL` は書かない。
 - **約束**: `load_glb(synthesize_base(m))` は、部品の数・名前・`local`（相対 1e-6 以内）・位置と番号のバイト・色が `m` と同じになる。これが崩れると、文書の部品と形状の番号が土台とずれる。
 - 書き出しが終わると `source_kind` は `Glb` になり、次の書き出しは新しい GLB を土台にする。`units` は変えない（シーンは最初からメートルなので、数値は動かない）。結果の一覧に、`app` が1行足す:「STL から GLB を作りました。座標の値は元のまま（mm）で、部品の大きさ 0.001 でメートルに合わせています」。開き直すと「法線の無い形状 1 件」の簡略表示が出る（事実なので、そのままにする）。
 

@@ -32,14 +32,10 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
             ids::TOOLBAR_SAVE_REVIEW,
             "レビュー保存",
             button_hint(keys, Action::FileSaveReview, "レビュー保存"),
-            has_model && !exporting,
-            if exporting {
-                Some("書き出しが終わってからレビューを保存してください")
-            } else if !has_model {
-                Some("モデルを開くとレビューを保存できます")
-            } else {
-                None
-            },
+            has_model && !locked,
+            session
+                .review_save_block_reason()
+                .or((!has_model).then_some("モデルを開くとレビューを保存できます")),
             Command::SaveReviewDialog,
             out,
         );

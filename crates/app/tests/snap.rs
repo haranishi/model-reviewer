@@ -21,6 +21,14 @@ fn measuring() -> Session {
     session
 }
 
+/// ポインタを動かす。先に休みを明ける。遅い実行環境（デバッグ構成の CI）では1回の探索が
+/// 8ミリ秒を超えて休みに入り、続く移動の候補が出なくなるため。休みの動きは
+/// `slow_search_backs_off` で確かめる。
+fn hover(session: &mut Session, ndc: Vec2) {
+    session.rest_snap_for(Duration::ZERO);
+    session.apply(Command::ViewHover { ndc: Some(ndc) });
+}
+
 fn local_of(session: &Session, index: usize) -> Vec3 {
     let point = [session.measurement.first, session.measurement.second][index].unwrap();
     point.local
@@ -82,7 +90,7 @@ fn click_does_not_use_stale_preview() {
     let corner = ndc_of(&session, CORNER_A, -4.0, -4.0);
     let middle = ndc_of(&session, Vec3::new(0.1, 0.1, 3.0), 0.0, 0.0);
     // 角で候補が出たまま、移動の出来事より先に面の中央でクリックが届いた。
-    session.apply(Command::ViewHover { ndc: Some(corner) });
+    hover(&mut session, corner);
     assert_eq!(session.snap_preview.map(|t| t.kind), Some(SnapKind::Vertex));
     session.apply(Command::ViewClick { ndc: middle });
     assert_eq!(session.measurement.kinds[0], SnapKind::Face);
@@ -92,7 +100,7 @@ fn click_does_not_use_stale_preview() {
         "古い候補の角に付かない: {point}"
     );
     // 逆に、面の中央で候補が出たまま角でクリックしても、角に付く。
-    session.apply(Command::ViewHover { ndc: Some(middle) });
+    hover(&mut session, middle);
     assert_eq!(session.snap_preview.map(|t| t.kind), Some(SnapKind::Face));
     session.apply(Command::ViewClick { ndc: corner });
     assert_eq!(session.measurement.kinds[1], SnapKind::Vertex);
@@ -103,11 +111,11 @@ fn click_does_not_use_stale_preview() {
 fn hover_searches_only_in_the_measure_tool_and_clears() {
     let mut session = support::session();
     let corner = ndc_of(&session, CORNER_A, -4.0, -4.0);
-    session.apply(Command::ViewHover { ndc: Some(corner) });
+    hover(&mut session, corner);
     assert_eq!(session.snap_preview, None, "選択の道具では探さない");
     assert_eq!(session.metrics.snap_last, None, "探していない");
     session.apply(Command::SetTool(Tool::Measure));
-    session.apply(Command::ViewHover { ndc: Some(corner) });
+    hover(&mut session, corner);
     let preview = session.snap_preview.expect("候補");
     assert_eq!(preview.kind, SnapKind::Vertex);
     assert!(close3(preview.world, CORNER_A));
@@ -117,7 +125,7 @@ fn hover_searches_only_in_the_measure_tool_and_clears() {
     assert_eq!(session.snap_preview, None);
     // 道具を替える・視点を変える・吸着を替える・断面を変えると消える。
     let restore = |session: &mut Session| {
-        session.apply(Command::ViewHover { ndc: Some(corner) });
+        hover(session, corner);
         assert!(session.snap_preview.is_some());
     };
     restore(&mut session);
@@ -157,7 +165,7 @@ fn slow_search_backs_off() {
     );
     let mut session = measuring();
     let corner = ndc_of(&session, CORNER_A, -4.0, -4.0);
-    session.apply(Command::ViewHover { ndc: Some(corner) });
+    hover(&mut session, corner);
     assert!(session.snap_preview.is_some());
     // 遅い探索の後と同じ状態。休んでいる間は探さず、古い候補を消す。
     session.rest_snap_for(Duration::from_secs(60));
@@ -172,11 +180,11 @@ fn slow_search_backs_off() {
     session.apply(Command::ViewClick { ndc: corner });
     assert_eq!(session.measurement.kinds[0], SnapKind::Vertex);
     assert!(session.metrics.snap_last.is_some(), "クリックの探索も測る");
-    // 休みが明けると、また探す。
+    // 休みが明けると、また探す。探索が遅ければ次の休みに入るので、休みの有無は探索の前に見る。
     session.rest_snap_for(Duration::ZERO);
+    assert!(!session.snap_resting());
     session.apply(Command::ViewHover { ndc: Some(corner) });
     assert!(session.snap_preview.is_some());
-    assert!(!session.snap_resting());
 }
 
 #[test]

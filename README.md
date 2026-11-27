@@ -1,6 +1,6 @@
 # model-reviewer
 
-A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB or an STL file, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. The file you opened is never overwritten.
+A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB or an STL file, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. During the session, the app protects the paths of opened models and recognizes their unchanged contents after a rename or move. You can export again to a GLB the app wrote. Review saves can replace an existing file only if the app can read it as a review.
 
 **Status: early version (0.1.0).** The window has been run only on macOS (Apple Silicon). The user interface is in Japanese. Vertices and faces cannot be edited yet.
 
@@ -32,7 +32,7 @@ Arguments: `[GLB, STL or review JSON]`, `--script` and `--out` for scripted runs
 - **Add and remove**: add a box, sphere, cylinder or plane and set its dimensions (in mm, for example) in the Dimensions panel; selecting a part also shows its overall width, height and depth; duplicate or delete a part together with its children.
 - **Measure**: click two points to get the distance and the X, Y and Z differences. The pointer snaps to corners and edges (X turns it off). Measurements are not saved.
 - **Section**: cut the model with one plane perpendicular to X, Y or Z to look inside. Drag the arrow or type the position.
-- **Units**: the status bar switches the shown unit between the file unit, mm, cm and m. The file unit is an assumption (GLB is read as metres; STL is assumed to be in mm, which the status bar can change).
+- Use the status bar to choose **display units** from file units, mm, cm and m. GLB uses metres. STL opens in mm with Z up. You can change either STL setting in the status bar if the file still matches what you opened.
 - **Review**: save notes, hidden parts and named views to a separate review JSON file.
 - **Export**: write a new GLB that keeps the original contents (textures, animations, unknown extensions) and changes only what you edited.
 
@@ -62,7 +62,7 @@ The app reads GLB files whose geometry is inside the file (BIN chunk), with unco
 
 ## Review JSON
 
-It stores hidden parts, notes, views, and the path and fingerprint of the source model, and restores them only onto a file with the same size and BLAKE3 hash. **`path` is an absolute path and may contain your user name. Check the file before sharing it.** Format: [docs/review-json.md](docs/review-json.md) (Japanese).
+Reviews store hidden parts, notes, views, and the path and fingerprint of the source model. Restoring a review requires a model with the same size and BLAKE3 hash. STL reviews also store the unit and up axis. A missing unit defaults to mm and a missing up axis defaults to Y. Review saving pauses while a replacement model loads. **`path` is an absolute path and may contain your user name. Check the file before sharing it.** [Review JSON format (Japanese)](docs/review-json.md)
 
 ## Limitations
 

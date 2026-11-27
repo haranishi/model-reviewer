@@ -9,16 +9,16 @@
 - GPU と画面が要る確認（実機の自動操作、撮影、画像の目視）は進行役が行う。実装者は、実行していないものを「未確認」と報告する。design.md の「要確認」は、確かめた結果を報告に書く。
 - 文書とコードに、個人名・メール・ホームの絶対パス・作業に使った道具の名前を書かない。画面の言葉は日本語にする。
 
-- [ ] 1. WP-Z1 STL の上の向き
-- [ ] 1.1 型と読み込み（`core`・`stl`）
+- [x] 1. WP-Z1 STL の上の向き
+- [x] 1.1 型と読み込み（`core`・`stl`）
   - `core::units::UpAxis`（既定は Z。`suffix`・`key`・`other`・`rotation`）。`StlOptions.up`。`assemble_model` が `local` に倍率と回転を入れる。回転は 0 と ±1 を直に並べた行列で作る（design.md）
   - 合格（`stl/tests/parse.rs`・`core` の単体試験）: `z_up_puts_file_z_on_world_y`（見本の箱の外形が 20×40×30）、`y_up_keeps_file_coordinates`（今までと同じ `local`）、`up_rotation_keeps_positions_and_winding`（形状の位置と番号のバイトがどちらの向きでも同じ。行列式が正）、`up_axis_keys_and_other`
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
-- [ ] 1.2 レビューJSON（`core`）
+- [x] 1.2 レビューJSON（`core`）
   - `ModelRef` と `ReviewModelRecord` に `stl_up`。STL のときだけ書く。無ければ `None`（復元では Y。`saved_stl_up`）。2つ以外は `InvalidValue`
   - 合格: `stl_up_is_written_for_stl_only`（GLB のレビューのバイト列が変わらない）、`stl_up_round_trips`、`unknown_stl_up_is_rejected`、`missing_stl_up_reads_as_none`
   - _Requirements: 3.4, 3.5_
-- [ ] 1.3 つなぐ（`app`）
+- [x] 1.3 つなぐ（`app`）
   - `LoadOptions.stl_up`、`SourceKind::Stl { unit, up }`、`Command::SetStlUp`、`ExportBase::Stl { unit, up, name }`。単位と向きの切り替えを1つの関数にまとめ、片方を替えてももう片方が残るようにする
   - 状態欄のボタン（`ids::STATUS_STL_UP = "status.stl_up"`。文は ux.md の表層）。幅の見積もり（`optional_items`）に足す。ヘルプの表1行と制限の文
   - 書き出し: 土台の作り直しに `up` を渡す。結果の一覧の1行（Z のときだけ足す）。レビュー: 保存・復元・照合（単位か向きが違えば開き直す）
@@ -36,7 +36,7 @@
     - 幅960で STL・未保存の印2つ・簡略表示が同時に出ても、状態欄の項目が重ならない。`exported_stl_status_fits_at_960` では、100文字の名前で GLB を書き出すと、修正前は「詳細」の右端が x=1374 にはみ出した。修正後は画面内に収まった
   - 既存の試験で、既定で開いて座標や外形を比べているものは、期待する値を Z が上の値へ直す（比べる項目は減らさない）。座標の意味を保ちたい試験は `stl_up: Some(UpAxis::Y)` を指定する。どちらにしたかを報告する
   - _Requirements: 1.5, 1.6, 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.5, 3.6, 4.1, 4.4_
-- [ ] 1.4 手順と文書
+- [x] 1.4 手順と文書
   - `e2e/stl-1.json` と `heavy-inspect.json` の STL に `"stl_up": "y"`。`guide-05-stl.json` は変えない。`guide-03-measure.json` にも、いまは `"stl_up": "y"` を足して通す（仮の扱い。進行役が2点を取り直して外す）
   - 画面を使わずに `stl-1` の STL 保存と `stl-3` の復元を別のセッションで確認した。レビューに `"stl_up": "y"` が入り、保存直後の状態と一致した。レビューの向きだけを Z に書き換えると比較は失敗した
   - `docs/stl.md`・`docs/review-json.md`・`docs/verify.md`・`docs/roadmap.md`・`docs/guide/05-stl.md`（中身は design.md の「文書の直し」）。どの文書も100行以内
@@ -44,7 +44,7 @@
 - _Boundary: `core/src/{units,review_file}.rs` と `ModelRef` のあるファイル、`stl/src/lib.rs`、`stl/tests/`、`gltf/tests/`、`app/src/{loader,exporter,command,automation}.rs`、`app/src/automation/`、`app/src/session/{mod,open,persist,export}.rs`、`app/src/ui/{status,ids,help}.rs`、`app/tests/{stl,layout,ui_shots}.rs` と通らなくなった既存の試験、`app/e2e/{stl-1,stl-3,heavy-inspect,guide-03-measure}.json`、`docs/`_
 - _Depends: 第3段階の WP-J2、creation-basics の WP-N2（`SourceKind::New` の分岐がある）_
 
-- [ ] 2. 仕上げ（進行役）
+- [x] 2. 仕上げ（進行役）
   - 実機の自動操作を全部通す。同じ出力先で `stl-1` の後、別々に起動して `stl-2` で GLB、`stl-3` で Y が上の STL の状態が一致すること、見本の GLB と STL のハッシュが前後で同じことを確かめる
   - `guide-03-measure.json` から `"stl_up": "y"` を外して2点を取り直し（「頂点」の印が出る位置。距離が 20.00 mm）、手順書 03 と 05 の絵を撮り直して目で確かめる（状態欄に「上 = Z（仮定）」、箱が立っている、寸法が 20・40・30）
   - 書き出した GLB を別のソフトで開き、向きと大きさを確かめる。使ったソフトと版を `verification.md` に書く
@@ -56,3 +56,9 @@
 3. **レビューの照合が単位だけを見る。** 向きの違う STL に、その場でレビューを当てはめると、保存した視点がずれる。
 4. **回転を角度から作る。** 外形に小さな余りが乗り、試験の許容差や表示の桁の境目で揺れる。
 5. **状態欄の幅。** ボタンが1つ増える。幅の見積もりに足し忘れると、幅960で重なる。
+
+## 元ファイル保護との統合時の検証
+
+- 単位と上の向きの両方で、確認中に同じ長さの別の STL に差し替えた。モデル、読み込みの仮定、注釈、追加した図形と編集履歴が残った。
+- 復元時に同じ内容の候補が2つあると現在の実パスを使い、その内容が変わっていればレビューに記録された候補を使った。単位と向きを両方省いた旧レビューは、改名後も mm・Y が上で復元した。
+- 書式検査、警告をエラーとする静的検査、リリースビルドが成功。ワークスペースの試験は701件成功、失敗0件、実行対象外54件。アプリの起動と GPU 描画は今回未確認。

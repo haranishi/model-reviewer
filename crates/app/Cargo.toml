@@ -22,14 +22,19 @@ glam = { workspace = true }
 serde_json = { workspace = true }
 egui_system_font_provider = { workspace = true }
 
-# Cargo.lock にある objc2 0.6.5 と objc2-app-kit 0.3.2。eframe と同じ版で、新しいクレートは足さない。
+# Cargo.lock にある objc2 0.6.5、objc2-app-kit 0.3.2、winit 0.30.13。eframe と同じ版で、新しいクレートは足さない。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSApplication",
     "NSMenu",
     "NSMenuItem",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "objc2-core-foundation",
 ] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 # Cargo.lock にある same-file（Windows でハードリンクを同じファイルと見分ける）。
 [target.'cfg(windows)'.dependencies]

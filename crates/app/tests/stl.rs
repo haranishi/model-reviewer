@@ -449,11 +449,16 @@ fn stl_review_saves_and_restores_with_up() {
         author.camera.distance
     ));
 
-    // "z" と書いたレビューは、Y で開いている同じ STL を Z で開き直す。
+    // 記録された場所にも同じ内容があっても、今開いている STL を Z で開き直す。
+    std::fs::copy(&renamed, &stl).unwrap();
     json["model"]["stl_up"] = "z".into();
     std::fs::write(&review, json.to_string()).unwrap();
     session.apply(Command::LoadReview(review.clone()));
     pump_load(&mut session);
+    assert_eq!(
+        session.model_ref.as_ref().unwrap().path,
+        std::fs::canonicalize(&renamed).unwrap()
+    );
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
@@ -468,11 +473,18 @@ fn stl_review_saves_and_restores_with_up() {
     ));
 
     // 向きの記録が無いレビュー（向きを書かない版で保存したもの）は、Y が上として戻す。
-    // 保存した視点は、その版の表示（Y が上）のままで合う。
+    // 現在の実パスの内容が変わったので、記録された場所の STL で視点を戻す。
+    let mut changed = stl_sample();
+    changed[0] ^= 1;
+    std::fs::write(&renamed, changed).unwrap();
     json["model"].as_object_mut().unwrap().remove("stl_up");
     std::fs::write(&review, json.to_string()).unwrap();
     session.apply(Command::LoadReview(review));
     pump_load(&mut session);
+    assert_eq!(
+        session.model_ref.as_ref().unwrap().path,
+        std::fs::canonicalize(&stl).unwrap()
+    );
     assert_eq!(
         session.source_kind,
         SourceKind::Stl {
@@ -553,17 +565,24 @@ fn renamed_stl_restores_the_annotation_and_hidden_part_after_relink() {
     assert_eq!(review.annotations, session.review.unwrap().annotations);
     assert!(!review.visibility.effective(NodeId(0)));
 
-    let identity = &restored.model_ref.unwrap().identity;
+    let loaded = restored.model_ref.as_ref().unwrap();
     file.hidden_nodes.clear();
     file.model.stl_unit = None;
     assert_eq!(
-        review_file::restore(&file, doc, identity).unwrap_err(),
+        review_file::restore_loaded(&file, doc, loaded)
+            .unwrap()
+            .annotations,
+        review.annotations
+    );
+    // 読んだ形式が分からない呼び出しでは、従来どおり部品名も照合する。
+    assert_eq!(
+        review_file::restore(&file, doc, &loaded.identity).unwrap_err(),
         ReviewError::UnknownNode { gltf_index: 0 }
     );
     file.model.stl_unit = Some(UnitLabel::Mm);
     file.annotations[0].node.gltf_index = 1;
     assert_eq!(
-        review_file::restore(&file, doc, identity).unwrap_err(),
+        review_file::restore_loaded(&file, doc, loaded).unwrap_err(),
         ReviewError::UnknownNode { gltf_index: 1 }
     );
 }
@@ -632,6 +651,138 @@ fn changing_unit_keeps_up_and_changing_up_keeps_unit() {
         }
     );
     assert!(close3(extent(&session), sample_extent_m(0.01)));
+}
+
+#[test]
+fn protect_legacy_stl() {
+    let dir = scratch("legacy-renamed");
+    let path = write_bytes(&dir, "before.stl", &stl_sample());
+    let mut session = open(&path);
+    session.apply(Command::SetStlUp(UpAxis::Y));
+    pump_load(&mut session);
+    annotate_center(&mut session, "角");
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    let model = json["model"].as_object_mut().unwrap();
+    model.remove("stl_unit");
+    model.remove("stl_up");
+    std::fs::write(&review, json.to_string()).unwrap();
+    let moved = dir.join("after.data");
+    std::fs::rename(path, &moved).unwrap();
+    let mut restored = Session::default();
+    restored.apply(Command::LoadReview(review.clone()));
+    restored.apply(Command::RelinkModel(moved));
+    pump_load(&mut restored);
+    assert_eq!(restored.status_text, "レビューを復元しました");
+    assert_eq!(
+        restored.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm,
+            up: UpAxis::Y
+        }
+    );
+    assert_eq!(
+        restored.review.as_ref().unwrap().annotations,
+        session.review.unwrap().annotations
+    );
+    assert!(!restored.review.as_ref().unwrap().visibility.own(NodeId(0)));
+    let model = Arc::clone(restored.model.as_ref().unwrap());
+    restored.apply(Command::LoadReview(review));
+    assert_eq!(restored.status_text, "レビューを復元しました");
+    assert!(Arc::ptr_eq(&model, restored.model.as_ref().unwrap()));
+}
+
+#[test]
+fn protect_glb_node_name() {
+    let dir = scratch("glb-false-stl");
+    let path = write_bytes(
+        &dir,
+        "triangle.stl",
+        &model_reviewer_testdata::inputs::triangle(),
+    );
+    let mut session = open(&path);
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    json["model"]["stl_unit"] = "mm".into();
+    json["hidden_nodes"][0]["name"] = "別の部品".into();
+    std::fs::write(&review, json.to_string()).unwrap();
+    session.apply(Command::LoadReview(review));
+    assert!(failure_body(&session).contains("部品"));
+}
+
+#[test]
+fn protect_stl_unit_identity() {
+    check_changed_stl(
+        "unit-file-changed",
+        UnitLabel::Mm,
+        UpAxis::Z,
+        Command::SetStlUnit(UnitLabel::Cm),
+    );
+}
+
+#[test]
+fn protect_stl_up_identity() {
+    check_changed_stl(
+        "up-file-changed",
+        UnitLabel::Cm,
+        UpAxis::Y,
+        Command::SetStlUp(UpAxis::Z),
+    );
+}
+
+fn check_changed_stl(name: &str, unit: UnitLabel, up: UpAxis, change: Command) {
+    let mut bytes = stl_sample();
+    let path = write_bytes(&scratch(name), "box.stl", &bytes);
+    let mut session = Session::default();
+    session.set_viewport([800, 800]);
+    session.open_model_with(
+        path.clone(),
+        LoadOptions {
+            stl_unit: Some(unit),
+            stl_up: Some(up),
+        },
+    );
+    pump_load(&mut session);
+    annotate_center(&mut session, "残す");
+    session.apply(Command::AddShape(ShapeKind::Cube));
+    let model = Arc::clone(session.model.as_ref().unwrap());
+    let reference = session.model_ref.clone();
+    let revision = session.history.doc_rev();
+    let nodes = session.doc.as_ref().unwrap().node_count();
+    session.apply(change);
+    assert!(session.dialog.is_some());
+    // 同じ長さで読める別の STL に、未保存の確認中に入れ替える。
+    bytes[0] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    session.apply(Command::ConfirmDiscard);
+    pump_load(&mut session);
+    assert!(matches!(session.load, LoadPhase::Failed(_)));
+    assert_eq!(
+        session.dialog.as_ref().unwrap().title,
+        "STL の単位や上の向きを変更できません"
+    );
+    assert!(failure_body(&session).contains("STL の内容が変わ"));
+    assert!(Arc::ptr_eq(&model, session.model.as_ref().unwrap()));
+    assert_eq!(session.model_ref, reference);
+    assert_eq!(session.source_kind, SourceKind::Stl { unit, up });
+    assert_eq!(session.units.display, Some(unit));
+    assert_eq!(session.doc.as_ref().unwrap().node_count(), nodes);
+    assert_eq!(session.history.doc_rev(), revision);
+    assert!(session.doc_unsaved());
+    assert_eq!(session.review.as_ref().unwrap().annotations[0].text, "残す");
+    assert!(session.review_unsaved());
 }
 
 #[test]

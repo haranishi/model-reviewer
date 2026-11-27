@@ -382,6 +382,37 @@ fn refuses_same_file_via_relative_symlink_and_hardlink_without_leaving_files() {
 }
 
 #[test]
+#[cfg(unix)]
+fn removed_opening_symlink_keeps_its_target_protected_for_both_writes() {
+    let dir = scratch("removed-opening-link");
+    let original = sample_glb();
+    let target = write_bytes(&dir, "original.glb", &original);
+    let link = dir.join("link.glb");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let mut session = Session::default();
+    session.apply(Command::OpenModel(link.clone()));
+    pump_load(&mut session);
+    assert_eq!(session.status_text, "読み込み完了");
+    std::fs::remove_file(&link).unwrap();
+
+    // 作業対象を切り替え、開いたファイルの記録だけで原本を守れるかを確かめる。
+    let other = write_bytes(&dir, "other.glb", &inputs::triangle());
+    session.apply(Command::OpenModel(other));
+    pump_load(&mut session);
+    assert_eq!(session.status_text, "読み込み完了");
+    session.apply(Command::SaveReview(target.clone()));
+    let save_status = session.status_text.clone();
+    session.apply(Command::ExportGlb(target.clone()));
+    pump_export(&mut session);
+    assert_eq!(
+        (save_status.as_str(), session.status_text.as_str()),
+        ("レビューを保存できません", "書き出しに失敗しました")
+    );
+    assert!(session.dialog.as_ref().unwrap().body.contains("別の名前"));
+    assert!(std::fs::read(target).unwrap() == original);
+}
+
+#[test]
 fn refuses_when_base_file_changed_or_missing_and_keeps_edits() {
     let dir = scratch("base-changed");
     let original = sample_glb();

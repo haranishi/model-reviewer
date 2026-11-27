@@ -1,5 +1,7 @@
 //! レビューJSON。往復、別モデル、未知のノード、版（版1と版2）、形式、非数。
 
+use std::cell::Cell;
+
 use glam::{Affine3A, Vec3};
 
 use model_reviewer_core::camera::{OrbitCamera, Projection};
@@ -9,7 +11,9 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::pick::Hit;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::review_file::{parse, restore, to_json};
-use model_reviewer_core::scene::{Model, ModelStats, Node, NodeId};
+use model_reviewer_core::scene::{
+    Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
+};
 
 const TEXT: &str = "ここを\n直して「角」";
 
@@ -209,6 +213,101 @@ fn roundtrip_keeps_japanese_text_visibility_and_views() {
     let json = render(&state, &model, &model_ref);
     let restored = restore(&parse(&json).unwrap(), &model, &model_ref.identity).unwrap();
     close3(restored.annotations[0].local_normal, Vec3::ZERO);
+}
+
+#[test]
+fn adding_an_annotation_at_the_id_limit_roundtrips() {
+    let (model, model_ref, state) = sample();
+    let mut file = parse(&render(&state, &model, &model_ref)).unwrap();
+    let mut last_view = file.views[0].clone();
+    last_view.id = u64::MAX - 1024;
+    file.views.push(last_view);
+    let mut restored = restore(&file, &model, &model_ref.identity).unwrap();
+    let hit = Hit {
+        node: NodeId(1),
+        t: 1.0,
+        world_pos: Vec3::ZERO,
+        local_pos: Vec3::ZERO,
+        local_normal: Vec3::Y,
+    };
+    let id = restored.add_annotation(&hit, "追記".to_owned()).unwrap();
+    let saved = parse(&render(&restored, &model, &model_ref)).expect("追記後も読める");
+    let reopened = restore(&saved, &model, &model_ref.identity).unwrap();
+    assert_eq!(id, 3, "注釈1と視点2を避けて採番する");
+    assert_eq!(reopened.annotations, restored.annotations);
+    assert_eq!(reopened.views, restored.views);
+}
+
+struct CountParentReads<'a> {
+    model: &'a Model,
+    reads: Cell<usize>,
+}
+
+impl SceneRead for CountParentReads<'_> {
+    fn node_count(&self) -> usize {
+        self.model.node_count()
+    }
+    fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.reads.set(self.reads.get() + 1);
+        self.model.parent(id)
+    }
+    fn subtree_end(&self, id: NodeId) -> u32 {
+        self.model.subtree_end(id)
+    }
+    fn depth(&self, id: NodeId) -> u32 {
+        self.model.depth(id)
+    }
+    fn name(&self, id: NodeId) -> &str {
+        self.model.name(id)
+    }
+    fn world(&self, id: NodeId) -> &Affine3A {
+        self.model.world(id)
+    }
+    fn world_aabb(&self, id: NodeId) -> Aabb {
+        self.model.world_aabb(id)
+    }
+    fn draws(&self, id: NodeId) -> &[Draw] {
+        self.model.draws(id)
+    }
+    fn primitive(&self, id: PrimId) -> Option<&Primitive> {
+        self.model.primitive(id)
+    }
+    fn primitive_count(&self) -> usize {
+        self.model.primitive_count()
+    }
+    fn file_index(&self, id: NodeId) -> Option<u32> {
+        self.model.file_index(id)
+    }
+    fn find_file_index(&self, index: u32) -> Option<NodeId> {
+        self.model.find_file_index(index)
+    }
+    fn bounds(&self) -> Aabb {
+        self.model.bounds()
+    }
+    fn shares_geometry_with(&self, model: &Model) -> bool {
+        self.model.shares_geometry_with(model)
+    }
+}
+
+#[test]
+fn restoring_hidden_parents_and_children_traverses_the_hierarchy_once() {
+    let (model, model_ref, mut state) = sample();
+    state.visibility.set(&model, NodeId(0), false);
+    let mut file = parse(&render(&state, &model, &model_ref)).unwrap();
+    let counted = CountParentReads {
+        model: &model,
+        reads: Cell::new(0),
+    };
+    let restored = restore(&file, &counted, &model_ref.identity).unwrap();
+    assert_eq!(restored.visibility, state.visibility);
+    assert_eq!(counted.reads.get(), model.node_count());
+
+    file.hidden_nodes.clear();
+    counted.reads.set(0);
+    let restored = restore(&file, &counted, &model_ref.identity).unwrap();
+    state.visibility.show_all();
+    assert_eq!(restored.visibility, state.visibility);
+    assert_eq!(counted.reads.get(), 0);
 }
 
 #[test]

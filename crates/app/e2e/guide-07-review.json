@@ -11,6 +11,7 @@
     { "op": "click_widget", "name": "views.name" },
     { "op": "type_text", "text": "仕上げの確認" },
     { "op": "click_widget", "name": "views.save" },
+    { "op": "sample", "label": "settle", "frames": 10 },
     { "op": "screenshot", "path": "review-notes.png" },
     { "op": "quit" }
   ]

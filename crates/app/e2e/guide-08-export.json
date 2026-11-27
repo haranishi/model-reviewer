@@ -7,7 +7,7 @@
     { "op": "click_widget", "name": "color.swatch.4" },
     { "op": "export_glb", "path": "guide-cart.glb" },
     { "op": "wait_idle" },
-    { "op": "sample", "label": "書き出しの結果", "frames": 12 },
+    { "op": "sample", "label": "書き出しの結果", "frames": 60 },
     { "op": "screenshot", "path": "export-result.png" },
     { "op": "quit" }
   ]

@@ -140,7 +140,6 @@ fn guide_links_resolve() {
 }
 
 #[test]
-#[ignore = "F1 で撮影した画像を目視し、docs/guide/images に配置してから実行する"]
 fn guide_image_files_exist() {
     check_relative_files(true);
 }

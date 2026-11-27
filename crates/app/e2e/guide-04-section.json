@@ -9,6 +9,7 @@
     { "op": "type_text", "text": "0.6" },
     { "op": "key", "key": "Enter" },
     { "op": "click_widget", "name": "section.flip" },
+    { "op": "sample", "label": "settle", "frames": 10 },
     { "op": "screenshot", "path": "section-on.png" },
     { "op": "quit" }
   ]

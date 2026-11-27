@@ -45,7 +45,7 @@ cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii targe
 
 ## 手順書の画像
 
-`guide-*.json` の追加後、各手順を `--out target/guide` で実行します。`--keymap` は省略します。出力した画像を1枚ずつ開いてから `docs/guide/images/` に置き、撮影したOS、ウィンドウの大きさ、画面の倍率をここに記録します。
+各手順（`guide-*.json`）を `--out target/guide` で実行します。`guide-09-shortcuts.json` だけは `--keymap target/guide/keymap.json`（まだ無いファイル）を付けます（付けないと、設定の画面に「自動操作のため、変更は保存されません」と出ます）。ほかは `--keymap` を省略します。出力した画像を1枚ずつ開き、色数を256色に落として（`ffmpeg` の `palettegen`・`paletteuse`）`docs/guide/images/` に置きます。いまの画像は、2026-11-27 に macOS 27.2.1（Apple Silicon）、ウィンドウ 1280×800（画面の倍率 1）で撮りました。
 
 ## 性能値の定義
 

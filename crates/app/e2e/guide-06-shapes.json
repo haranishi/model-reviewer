@@ -19,6 +19,7 @@
     { "op": "type_text", "text": "40" },
     { "op": "key", "key": "Enter" },
     { "op": "click_widget", "name": "toolbar.fit_all" },
+    { "op": "sample", "label": "settle", "frames": 10 },
     { "op": "screenshot", "path": "shapes-dims.png" },
     { "op": "quit" }
   ]

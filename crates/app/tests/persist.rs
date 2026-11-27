@@ -174,6 +174,92 @@ fn failed_review_save_removes_only_its_own_temp_file() {
 }
 
 #[test]
+fn protect_moved_review() {
+    for (tag, bytes) in [
+        ("review-renamed-glb", sample_glb()),
+        ("review-renamed-stl", model_reviewer_testdata::stl_sample()),
+    ] {
+        let dir = scratch(tag);
+        let source = write_bytes(&dir, "before", &bytes);
+        let mut session = Session::default();
+        session.apply(Command::OpenModel(source.clone()));
+        pump(&mut session);
+        let target = dir.join("after.json");
+        std::fs::rename(source, &target).unwrap();
+        session.apply(Command::SaveView {
+            name: "正面".into(),
+        });
+        session.apply(Command::SaveReview(target.clone()));
+        assert!(session.review_unsaved());
+        assert!(session.dialog.as_ref().unwrap().body.contains("別の名前"));
+        assert_eq!(std::fs::read(target).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn protect_foreign_review() {
+    let dir = scratch("foreign-review");
+    let (mut session, _, _) = open_sample(&dir);
+    let review = dir.join("valid.data");
+    session.apply(Command::SaveReview(review.clone()));
+    let saved = std::fs::read(&review).unwrap();
+    let mut future: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    future["version"] = 99.into();
+    hide_one(&mut session);
+    let other = dir.join("not-a-review.json");
+    for bytes in [
+        inputs::triangle(),
+        model_reviewer_testdata::stl_sample(),
+        b"{}".to_vec(),
+        b"{".to_vec(),
+        br#"{"format":"model-reviewer.review","version":1}"#.to_vec(),
+        future.to_string().into_bytes(),
+    ] {
+        std::fs::write(&other, &bytes).unwrap();
+        session.apply(Command::SaveReview(other.clone()));
+        assert!(session.review_unsaved());
+        assert!(session.dialog.as_ref().unwrap().body.contains("レビュー"));
+        assert_eq!(std::fs::read(&other).unwrap(), bytes);
+    }
+    session.apply(Command::SaveReview(review.clone()));
+    assert!(!session.review_unsaved());
+    assert_ne!(std::fs::read(review).unwrap(), saved);
+}
+
+#[test]
+fn protect_loading_review() {
+    let dir = scratch("save-during-restore");
+    let (mut session, source, _) = open_sample(&dir);
+    hide_one(&mut session);
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let bytes = std::fs::read(&review).unwrap();
+    let other = write_bytes(&dir, "other.glb", &inputs::triangle());
+    for command in [
+        Command::OpenModel(source),
+        Command::LoadReview(review.clone()),
+    ] {
+        session.apply(Command::OpenModel(other.clone()));
+        pump(&mut session);
+        session.apply(command);
+        assert!(session.is_loading_replacement());
+        session.apply(Command::SaveReview(review.clone()));
+        assert_eq!(std::fs::read(&review).unwrap(), bytes);
+        assert!(session.status_text.contains("読み込み"));
+        session.status_text.clear();
+        session.apply(Command::SaveReviewDialog);
+        assert!(session.status_text.contains("読み込み"));
+        pump(&mut session);
+    }
+    assert!(!session.review.as_ref().unwrap().visibility.own(NodeId(1)));
+    session.apply(Command::OpenModel(other));
+    session.apply(Command::SaveReviewDialog);
+    let (mut ui, _) = ui_harness(session);
+    ui.step();
+    ui.get_by_label_contains("読み込みが終わってからレビューを保存してください");
+}
+
+#[test]
 fn same_identity_restores_in_place() {
     let dir = scratch("inplace");
     let (mut session, _, _) = open_sample(&dir);

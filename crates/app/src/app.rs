@@ -558,7 +558,11 @@ fn resolve_dialog(
     }
     let dialog = match command {
         Command::OpenModelDialog => FileDialog::OpenModel,
-        Command::SaveReviewDialog if !session.doc_unsaved() && !session.is_new_document() => {
+        // 新規の文書は書き出すまで保存できず、読み込みの間は前のレビューで置き換えないように、
+        // どちらも保存先を聞かずに Session が断る。
+        Command::SaveReviewDialog
+            if !session.doc_unsaved() && !session.is_new_document() && !session.edits_locked() =>
+        {
             FileDialog::SaveReview
         }
         Command::LoadReviewDialog => FileDialog::LoadReview,
@@ -683,6 +687,20 @@ mod tests {
         assert_eq!(resolve_dialog(&session, &save, true), Ok(None));
         session.load = LoadPhase::Reading;
         assert_eq!(resolve_dialog(&session, &export, true), Ok(None));
+    }
+
+    #[test]
+    fn saving_during_a_replacement_load_stays_with_the_session() {
+        let mut session = Session::default();
+        session.set_model(Model::empty().into());
+        session.load = LoadPhase::Reading;
+        assert!(session.edits_locked() && !session.doc_unsaved());
+        for automated in [false, true] {
+            assert_eq!(
+                resolve_dialog(&session, &Command::SaveReviewDialog, automated),
+                Ok(None)
+            );
+        }
     }
 
     #[test]

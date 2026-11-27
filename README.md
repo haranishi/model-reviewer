@@ -1,6 +1,6 @@
 # model-reviewer
 
-A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB or an STL file, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. The file you opened is never overwritten.
+A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB or an STL file, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. During the session, the app protects the paths of opened models and recognizes their unchanged contents after a rename or move. You can export again to a GLB the app wrote. Review saves can replace an existing file only if the app can read it as a review.
 
 **Status: early version (0.1.0).** The window has been run only on macOS (Apple Silicon). The user interface is in Japanese. Vertices and faces cannot be edited yet.
 

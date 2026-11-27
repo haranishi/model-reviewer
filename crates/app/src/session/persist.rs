@@ -1,4 +1,4 @@
-//! レビューの保存と復元。GLBそのものは読まない・書かない。
+//! レビューの保存と復元。
 
 use std::path::{Path, PathBuf};
 
@@ -20,9 +20,12 @@ pub(super) enum Restored {
     Blocked,
 }
 
+const MODEL_DESTINATION: &str =
+    "モデルのファイルへはレビューを保存できません。別の名前を選んでください。";
+
 pub fn save_review(session: &mut Session, path: PathBuf) {
-    if session.is_exporting() {
-        session.status_text = "書き出しが終わってからレビューを保存してください".to_owned();
+    if let Some(reason) = session.review_save_block_reason() {
+        session.status_text = reason.to_owned();
         return;
     }
     if session.doc.is_none() {
@@ -74,21 +77,8 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         return;
     };
     let destination = parent.join(file_name);
-    // レビューの保存先に、開いたGLBやいまの作業対象のGLBを選ぶと、モデルが消える。
-    // 別名のリンク経由も含めて断る（書き出しの `forbidden` と同じ判定）。
-    let model_file = |candidate: &Path| {
-        crate::exporter::same_file(candidate, &model_ref.path)
-            || session
-                .opened_files
-                .iter()
-                .any(|opened| crate::exporter::same_file(candidate, opened))
-    };
-    if model_file(&path) || model_file(&destination) {
-        fail(
-            session,
-            "レビューを保存できません",
-            "モデルのファイルへはレビューを保存できません。別の名前を選んでください。",
-        );
+    if is_model_path(session, &path, &destination) {
+        fail(session, "レビューを保存できません", MODEL_DESTINATION);
         return;
     }
     let mut stamped = model_ref;
@@ -107,7 +97,7 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
             return;
         }
     };
-    if let Err(message) = write_atomic(&destination, json.as_bytes()) {
+    if let Err(message) = write_atomic(session, &path, &destination, json.as_bytes()) {
         fail(session, "レビューを保存できません", &message);
         return;
     }
@@ -239,7 +229,7 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
                 remaining: existing,
                 first_mismatch: None,
             });
-            session.start_model_load_for_exported_restore(first, expected);
+            session.start_model_load_for_restore(first, expected);
             return;
         }
     }
@@ -274,11 +264,6 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
 /// 候補の識別が一致しなかったとき、次の候補があれば別スレッドで確かめる。
 pub(super) fn on_candidate_mismatch(session: &mut Session, actual: ModelIdentity) {
     let Some(pending) = session.restore.as_mut() else {
-        session.loading_file_name = None;
-        session.open_started = None;
-        session.awaiting_present = false;
-        session.end_discard_bypass();
-        session.load = crate::loader::LoadPhase::Idle;
         return;
     };
     if pending.first_mismatch.is_none() {
@@ -297,9 +282,11 @@ pub(super) fn on_candidate_mismatch(session: &mut Session, actual: ModelIdentity
         .clone()
         .unwrap_or_else(|| ModelIdentity::from_bytes(&[]));
     let dialog = mismatch_dialog(&pending.file, &mismatch);
-    session.loading_file_name = None;
-    session.open_started = None;
-    session.awaiting_present = false;
+    show_mismatch(session, dialog);
+}
+
+fn show_mismatch(session: &mut Session, dialog: DialogRequest) {
+    session.cancel_pending_load();
     session.end_discard_bypass();
     session.load = crate::loader::LoadPhase::Idle;
     session.dialog = Some(dialog);
@@ -321,13 +308,7 @@ pub(super) fn try_next_candidate_after_error(session: &mut Session) -> bool {
     }
     if let Some(mismatch) = pending.first_mismatch.clone() {
         let dialog = mismatch_dialog(&pending.file, &mismatch);
-        session.loading_file_name = None;
-        session.open_started = None;
-        session.awaiting_present = false;
-        session.end_discard_bypass();
-        session.load = crate::loader::LoadPhase::Idle;
-        session.dialog = Some(dialog);
-        session.status_text = "モデルが一致しません".to_owned();
+        show_mismatch(session, dialog);
         return true;
     }
     false
@@ -345,22 +326,18 @@ pub(super) fn reject_mismatch(session: &mut Session, model_ref: &ModelRef) -> bo
     true
 }
 
-pub(super) fn take_restored(
-    session: &mut Session,
-    doc: &Document,
-    identity: &ModelIdentity,
-) -> Restored {
+pub(super) fn take_restored(session: &mut Session, doc: &Document, loaded: &ModelRef) -> Restored {
     let Some(pending) = session.restore.as_ref() else {
         return Restored::Absent;
     };
-    match review_file::restore(&pending.file, doc, identity) {
+    match review_file::restore_loaded(&pending.file, doc, loaded) {
         Ok(state) => {
             session.restore = None;
             session.dialog = None;
             Restored::State(state)
         }
         Err(ReviewError::ModelMismatch { .. }) => {
-            session.dialog = Some(mismatch_dialog(&pending.file, identity));
+            session.dialog = Some(mismatch_dialog(&pending.file, &loaded.identity));
             session.status_text = "モデルが一致しません".to_owned();
             Restored::Blocked
         }
@@ -378,11 +355,7 @@ fn apply_in_place(session: &mut Session, file: &ReviewFile) {
     if session.doc.is_none() {
         return;
     }
-    let Some(identity) = session
-        .model_ref
-        .as_ref()
-        .map(|model_ref| model_ref.identity.clone())
-    else {
+    let Some(loaded) = session.model_ref.as_ref() else {
         return;
     };
     // レビューを開くと履歴は空になる。書き出し前で未書き出しの編集があれば、元のファイルの形へ
@@ -409,7 +382,7 @@ fn apply_in_place(session: &mut Session, file: &ReviewFile) {
             doc
         });
     let restored = match fresh.as_ref().or(session.doc.as_ref()) {
-        Some(doc) => review_file::restore(file, doc, &identity),
+        Some(doc) => review_file::restore_loaded(file, doc, loaded),
         None => return,
     };
     match restored {
@@ -517,7 +490,60 @@ fn relative_from(from_dir: &Path, target: &Path) -> String {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn is_model_path(session: &Session, requested: &Path, destination: &Path) -> bool {
+    session
+        .opened_files
+        .iter()
+        .chain(session.model_ref.iter().map(|model| &model.path))
+        .any(|model| {
+            crate::exporter::same_file(requested, model)
+                || crate::exporter::same_file(destination, model)
+        })
+}
+
+fn check_review_destination(
+    session: &Session,
+    requested: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    if is_model_path(session, requested, path) {
+        return Err(MODEL_DESTINATION.to_owned());
+    }
+    let unreadable = |err| format!("保存先を確認できません（{}）", loader::io_error_ja(&err));
+    if let Err(err) = std::fs::symlink_metadata(path) {
+        return if err.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(unreadable(err))
+        };
+    }
+    let foreign =
+        "保存先はこのアプリで読めるレビュー JSON ではありません。別の名前を選んでください。";
+    if !std::fs::metadata(path).map_err(unreadable)?.is_file() {
+        return Err(foreign.to_owned());
+    }
+    let file = std::fs::File::open(path).map_err(unreadable)?;
+    let stamp = crate::exporter::protection::FileStamp::from_file(&file);
+    review_file::parse_reader(std::io::BufReader::new(file)).map_err(|_| foreign.to_owned())?;
+    if session
+        .file_history
+        .protects_contents(path)
+        .map_err(unreadable)?
+    {
+        return Err(MODEL_DESTINATION.to_owned());
+    }
+    if let Some(stamp) = stamp {
+        stamp.check_path(path).map_err(unreadable)?;
+    }
+    Ok(())
+}
+
+fn write_atomic(
+    session: &Session,
+    requested: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
     let (file, temp) = crate::exporter::create_temp(path)?;
     // 名前を付け替える前に装置へ書き切る。書き切らずに付け替えると、電源が落ちたときに
     // 中身の無いファイルが前のレビューを置き換えることがある。
@@ -527,6 +553,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             loader::io_error_ja(&err)
         )
     })?;
+    check_review_destination(session, requested, path)?;
     temp.replace(path).map_err(|err| {
         format!(
             "レビューを置き換えられませんでした（{}）",

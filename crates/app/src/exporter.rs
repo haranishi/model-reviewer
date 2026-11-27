@@ -6,7 +6,7 @@
 //!   新規の文書（`ExportBase::Empty`）は、ファイルを読まずに空の土台を使う。
 //! - 保存先と同じフォルダの一時ファイルへ書き、`model_reviewer_gltf::export::verify` で照合してから
 //!   名前を付け替える。失敗したら一時ファイルを消し、保存先には何も残さない。
-//! - 「開く」で開いたファイル（`forbidden`）へは書き出さない（正規化したパスか同じファイルなら断る）。
+//! - この起動で開いたファイルは、パス・リンクと内容で照合する。
 //! - 画面を起こすのは工程が進んだときだけ（読み込みと同じ）。
 
 use std::any::Any;
@@ -30,6 +30,9 @@ use model_reviewer_stl::{StlOptions, load_stl};
 
 use crate::loader;
 use crate::metrics;
+
+pub(crate) mod protection;
+use protection::{FileHistory, FileStamp};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -111,6 +114,7 @@ pub struct ExportDone {
     pub path: PathBuf,
     /// 書いたバイト列の大きさとハッシュ（新しい作業対象の識別）。
     pub identity: ModelIdentity,
+    pub(crate) stamp: Option<FileStamp>,
     /// 行きがけ順の各部品のファイル内の番号（`Document::set_file_indices` へ渡す）。
     pub assigned: Vec<u32>,
     /// 書いたファイルを読み直した、行きがけ順の各部品の親に対する行列
@@ -128,6 +132,7 @@ pub enum ExportFailure {
     BaseChanged,
     /// 保存先が「開く」で開いたファイルと同じ。
     SameAsOpened,
+    SameContentsAsOpened,
     Export(ExportError),
     Io(String),
 }
@@ -143,6 +148,7 @@ impl ExportFailure {
             Self::SameAsOpened => {
                 "開いたファイルへは書き出せません。別の名前を選んでください。".to_owned()
             }
+            Self::SameContentsAsOpened => "保存先の内容が、この起動で開いたモデルと一致します。別の名前を選んでください。".to_owned(),
             Self::Export(error) => error.message_ja(),
             Self::Io(detail) => format!("書き出せませんでした: {detail}"),
         }
@@ -179,6 +185,19 @@ pub fn start_with_hooks(
     hooks: ExportHooks,
     wake: Option<egui::Context>,
 ) -> ExportHandle {
+    let mut history = FileHistory::default();
+    if request.forbidden.contains(&request.base_path) {
+        history.remember_opened(&request.base_identity);
+    }
+    start_with_history(request, hooks, wake, history)
+}
+
+pub(crate) fn start_with_history(
+    request: ExportRequest,
+    hooks: ExportHooks,
+    wake: Option<egui::Context>,
+    history: FileHistory,
+) -> ExportHandle {
     let (tx, events) = mpsc::channel();
     let sender = tx.clone();
     let wake_if_unspawned = wake.clone();
@@ -186,7 +205,7 @@ pub fn start_with_hooks(
         .name("model-export".to_owned())
         .spawn(move || {
             let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let outcome = run_export(request, hooks, &sender, &wake);
+                let outcome = run_export(request, &history, hooks, &sender, &wake);
                 match outcome {
                     Ok(done) => emit(&sender, &wake, ExportEvent::Done(Box::new(done))),
                     Err(failure) => emit(&sender, &wake, ExportEvent::Failed(failure)),
@@ -256,17 +275,13 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 
 fn run_export(
     request: ExportRequest,
+    history: &FileHistory,
     hooks: ExportHooks,
     tx: &mpsc::Sender<ExportEvent>,
     wake: &Option<egui::Context>,
 ) -> Result<ExportDone, ExportFailure> {
-    if is_forbidden(&request.target, &request.forbidden) {
-        return Err(ExportFailure::SameAsOpened);
-    }
     let destination = resolve_destination(&request.target)?;
-    if is_forbidden(&destination, &request.forbidden) {
-        return Err(ExportFailure::SameAsOpened);
-    }
+    check_destination(&request, &destination, history)?;
     if destination.is_dir() {
         return Err(ExportFailure::Io("保存先がフォルダです".to_owned()));
     }
@@ -353,9 +368,8 @@ fn run_export(
     let locals = verify_locals(&written, &base_bytes, &request.scene, &built)
         .map_err(ExportFailure::Export)?;
     // 名前を付け替える直前にも、開いたファイルと重なっていないことを確かめる。
-    if is_forbidden(&destination, &request.forbidden) {
-        return Err(ExportFailure::SameAsOpened);
-    }
+    let stamp = FileStamp::read(&temp.path);
+    check_destination(&request, &destination, history)?;
     temp.replace(&destination).map_err(|err| {
         ExportFailure::Io(format!(
             "保存先へ置き換えられませんでした（{}）",
@@ -368,6 +382,7 @@ fn run_export(
     Ok(ExportDone {
         path: destination,
         identity,
+        stamp,
         assigned: built.assigned,
         locals,
         notes: built.notes,
@@ -400,8 +415,27 @@ fn synthesize_from_stl(
     synthesize_base(&model).map_err(ExportFailure::Export)
 }
 
-fn is_forbidden(candidate: &Path, forbidden: &[PathBuf]) -> bool {
-    forbidden.iter().any(|opened| same_file(opened, candidate))
+fn check_destination(
+    request: &ExportRequest,
+    destination: &Path,
+    history: &FileHistory,
+) -> Result<(), ExportFailure> {
+    if request
+        .forbidden
+        .iter()
+        .any(|opened| same_file(opened, &request.target) || same_file(opened, destination))
+    {
+        return Err(ExportFailure::SameAsOpened);
+    }
+    if history.protects_contents(destination).map_err(|err| {
+        ExportFailure::Io(format!(
+            "保存先の内容を確認できません（{}）",
+            loader::io_error_ja(&err)
+        ))
+    })? {
+        return Err(ExportFailure::SameContentsAsOpened);
+    }
+    Ok(())
 }
 
 fn resolve_destination(target: &Path) -> Result<PathBuf, ExportFailure> {

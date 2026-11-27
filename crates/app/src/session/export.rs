@@ -136,10 +136,11 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     session.export_failed = false;
     session.dialog = None;
     session.status_text.clear();
-    let handle = exporter::start_with_hooks(
+    let handle = exporter::start_with_history(
         request,
         session.export_hooks.clone(),
         session.egui_ctx.clone(),
+        session.file_history.clone(),
     );
     session.export_job = Some(ExportJob {
         generation: session.shown_generation,
@@ -203,6 +204,9 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     }
 
     let canonical = std::fs::canonicalize(&done.path).unwrap_or_else(|_| done.path.clone());
+    session
+        .file_history
+        .remember_output(&canonical, &done.identity, done.stamp);
     let model_ref = crate::loader::model_ref_for(canonical, done.identity, None);
     let file_name = model_ref.file_name.clone();
     session.model_ref = Some(model_ref);

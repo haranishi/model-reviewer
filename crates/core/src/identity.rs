@@ -17,6 +17,16 @@ impl ModelIdentity {
             blake3_hex: blake3::hash(bytes).to_hex().to_string(),
         }
     }
+
+    /// 全体をメモリに載せず、実際に読んだバイト数と内容を照合する。
+    pub fn from_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
+        let mut hash = blake3::Hasher::new();
+        hash.update_reader(reader)?;
+        Ok(Self {
+            size_bytes: hash.count(),
+            blake3_hex: hash.finalize().to_hex().to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

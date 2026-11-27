@@ -109,6 +109,7 @@ pub const DIMS_D: &str = "dims.d";
 pub const DIMS_H: &str = "dims.h";
 // 状態欄の表示の単位（ui::status）。ファイルの単位は既存の `STATUS_UNIT`。
 pub const STATUS_DISPLAY_UNIT: &str = "status.display_unit";
+pub const STATUS_STL_UP: &str = "status.stl_up";
 
 // ---- 第5段階 ----
 // 何も開いていない画面の［新規作成］（ui::empty）。

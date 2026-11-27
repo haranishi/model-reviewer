@@ -4,8 +4,9 @@
 //! 視点を1つでも含むときだけ版2で書き、含まなければ版1のまま書く（前の版のアプリでも読める）。
 //! 読むときは版1と版2の両方を受け付ける。版1のファイルに `"orthographic"` があれば不正とする。
 //!
-//! STL の単位の仮定は `model.stl_unit`（`"mm"`・`"cm"`・`"m"`）として書く。GLB では項目ごと
-//! 省略し、版も上げない。読むときは省略なら `None`、3つ以外の値は不正とする。
+//! STL の単位と上の向きの仮定は `model.stl_unit` と `model.stl_up` に書く。
+//! GLB では両方とも省略する。読むときは省略なら `None`、未知の値は不正とする。
+//! 向きの無い STL のレビューは、Y が上として復元する（`ReviewModelRecord::saved_stl_up`）。
 
 use std::collections::HashSet;
 
@@ -18,7 +19,7 @@ use crate::error::ReviewError;
 use crate::identity::{ModelIdentity, ModelRef};
 use crate::review::{Annotation, ReviewState, SavedView};
 use crate::scene::{NodeId, SceneRead};
-use crate::units::UnitLabel;
+use crate::units::{UnitLabel, UpAxis};
 use crate::visibility::Visibility;
 
 /// レビュー JSON の形式識別子。
@@ -62,6 +63,36 @@ pub struct ReviewModelRecord {
         with = "stl_unit_text"
     )]
     pub stl_unit: Option<UnitLabel>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "stl_up_text")]
+    pub stl_up: Option<UpAxis>,
+}
+
+impl ReviewModelRecord {
+    /// 復元で使う上の向き。項目の無い STL のレビューは、向きを書かない版（ファイルの座標のまま
+    /// Y を上にして表示していた）が保存したものなので、Y が上とする。
+    pub fn saved_stl_up(&self) -> UpAxis {
+        self.stl_up.unwrap_or(UpAxis::Y)
+    }
+}
+
+mod stl_up_text {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::units::UpAxis;
+
+    pub fn serialize<S: Serializer>(up: &Option<UpAxis>, serializer: S) -> Result<S::Ok, S::Error> {
+        up.map(UpAxis::key).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<UpAxis>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        UpAxis::from_key(&text)
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("stl_up"))
+    }
 }
 
 /// `model.stl_unit` の文字（`"mm"`・`"cm"`・`"m"`）。ほかの文字と文字列でない値は不正。
@@ -162,6 +193,7 @@ pub fn to_json(
             },
             node_count: model.node_count() as u32,
             stl_unit: model_ref.stl_unit,
+            stl_up: model_ref.stl_up,
         },
         hidden_nodes: state
             .visibility

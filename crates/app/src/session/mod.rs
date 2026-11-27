@@ -18,7 +18,7 @@ use model_reviewer_core::review_file::ReviewFile;
 use model_reviewer_core::scene::{Model, NodeId, SceneRead};
 use model_reviewer_core::section::{Axis, SectionPlane};
 use model_reviewer_core::snap::{SnapSettings, SnapTarget};
-use model_reviewer_core::units::{UnitLabel, Units};
+use model_reviewer_core::units::{UnitLabel, Units, UpAxis};
 use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
@@ -72,8 +72,8 @@ pub(super) struct PendingRestore {
 pub enum SourceKind {
     #[default]
     Glb,
-    /// STL。`unit` は座標の単位の仮定。
-    Stl { unit: UnitLabel },
+    /// STL を開いたときに仮定した単位と上の向き。
+    Stl { unit: UnitLabel, up: UpAxis },
     /// 新規作成した文書（まだ書き出していない）。書き出すと `Glb` へ移る。
     New,
 }
@@ -549,7 +549,8 @@ impl Session {
             Command::SetSection(plane) => section::set_section(self, plane),
             Command::ToggleSection => section::toggle_section(self),
             Command::SetDisplayUnit(unit) => measure::set_display_unit(self, unit),
-            Command::SetStlUnit(unit) => set_stl_unit(self, unit),
+            Command::SetStlUnit(unit) => set_stl_assumptions(self, Some(unit), None),
+            Command::SetStlUp(up) => set_stl_assumptions(self, None, Some(up)),
             Command::SetKeysOpen(open) => keys::set_open(self, open),
             Command::BeginKeyCapture(action) => keys::begin_capture(self, action),
             Command::CancelKeyCapture => keys::cancel_capture(self),
@@ -680,8 +681,7 @@ impl Session {
         open::open_launch(self, path);
     }
 
-    /// `Command::OpenModel` と同じ（未保存の確認を通る）。STL の単位の仮定を指定できる
-    /// （自動操作の `open_model` の `stl_unit`）。
+    /// 未保存の確認を通して開く。STL は単位と上の向きを指定できる。
     pub fn open_model_with(&mut self, path: PathBuf, options: LoadOptions) {
         if self.transform.is_some() {
             edit::cancel_transform(self);
@@ -929,14 +929,14 @@ impl Session {
         self.start_model_load_with_expected(path, Some(expected), true, options);
     }
 
-    /// 復元のときの読み込みの指定。レビューの `stl_unit`（無ければ mm）で STL を開く（要件8.5）。
+    /// 復元する STL を、レビューに記録された単位と向きで開く。
     fn restore_options(&self) -> LoadOptions {
-        LoadOptions {
-            stl_unit: self
-                .restore
-                .as_ref()
-                .and_then(|pending| pending.file.model.stl_unit),
-        }
+        self.restore
+            .as_ref()
+            .map_or_else(LoadOptions::default, |pending| LoadOptions {
+                stl_unit: pending.file.model.stl_unit,
+                stl_up: Some(pending.file.model.saved_stl_up()),
+            })
     }
 
     /// 書き出したファイルへのレビュー復元（未書き出し編集を破棄して開き直す場合）。
@@ -1341,7 +1341,7 @@ impl Session {
         // 新規の文書も GLB と同じ（シーンはメートル、表示は「ファイルと同じ」。要件1.5）。
         self.units = match incoming.source_kind {
             SourceKind::Glb | SourceKind::New => Units::default(),
-            SourceKind::Stl { unit } => Units {
+            SourceKind::Stl { unit, .. } => Units {
                 source: UnitLabel::M,
                 display: Some(unit),
             },
@@ -1432,13 +1432,13 @@ impl Session {
     }
 }
 
-/// STL の単位の仮定を替える（要件7.7）。同じファイルを新しい単位で開き直す。別のモデルを開くときと
-/// 同じ経路（書き出し中は断る・未保存の確認・読み込み中の表示・失敗しても前のモデルが残る）を通す。
-fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
-    let SourceKind::Stl { unit: current } = session.source_kind else {
+/// 変更しない仮定は今の値を引き継ぎ、未保存の確認を通して同じ STL を開き直す。
+fn set_stl_assumptions(session: &mut Session, new_unit: Option<UnitLabel>, new_up: Option<UpAxis>) {
+    let SourceKind::Stl { unit, up } = session.source_kind else {
         return;
     };
-    if current == unit {
+    let (next_unit, next_up) = (new_unit.unwrap_or(unit), new_up.unwrap_or(up));
+    if (unit, up) == (next_unit, next_up) {
         return;
     }
     if session.is_loading_replacement() {
@@ -1452,7 +1452,8 @@ fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
         session,
         model_ref.path.clone(),
         LoadOptions {
-            stl_unit: Some(unit),
+            stl_unit: Some(next_unit),
+            stl_up: Some(next_up),
         },
     );
 }
@@ -1636,6 +1637,7 @@ mod tests {
                 relative_path: None,
                 identity: ModelIdentity::from_bytes(bytes),
                 stl_unit: None,
+                stl_up: None,
             },
             source_kind: SourceKind::Glb,
             file_bytes: bytes.len() as u64,

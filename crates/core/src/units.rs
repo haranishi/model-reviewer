@@ -2,6 +2,54 @@
 //! 換算は画面に出すときと画面から受け取るときだけ行う。表示の既定は「ファイルと同じ」で、
 //! そのときは数値を1ビットも変えず、添える文字だけを替える。作業の間だけの設定で、保存しない。
 
+use glam::{Mat3, Vec3};
+
+/// STL で上と仮定する軸。画面では常に Y が上を向く。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpAxis {
+    #[default]
+    Z,
+    Y,
+}
+
+impl UpAxis {
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Z => "Z",
+            Self::Y => "Y",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Z => "z",
+            Self::Y => "y",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "z" => Some(Self::Z),
+            "y" => Some(Self::Y),
+            _ => None,
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::Z => Self::Y,
+            Self::Y => Self::Z,
+        }
+    }
+
+    pub fn rotation(self) -> Mat3 {
+        match self {
+            Self::Z => Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y),
+            Self::Y => Mat3::IDENTITY,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum UnitLabel {
     #[default]
@@ -119,6 +167,20 @@ pub fn format_length(value: f32, unit: UnitLabel, digits: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_axis_keys_and_other() {
+        assert_eq!(UpAxis::default(), UpAxis::Z);
+        for (up, key, suffix, other) in [
+            (UpAxis::Z, "z", "Z", UpAxis::Y),
+            (UpAxis::Y, "y", "Y", UpAxis::Z),
+        ] {
+            assert_eq!(up.key(), key);
+            assert_eq!(UpAxis::from_key(key), Some(up));
+            assert_eq!(up.suffix(), suffix);
+            assert_eq!(up.other(), other);
+        }
+    }
 
     #[test]
     fn labels_cycle_and_numbers_stay_the_same() {

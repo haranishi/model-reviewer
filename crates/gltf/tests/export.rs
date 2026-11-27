@@ -1551,6 +1551,39 @@ fn synth_base_round_trips_through_load_glb() {
 }
 
 #[test]
+fn synthesized_base_keeps_rotation_and_scale() {
+    use model_reviewer_core::units::UpAxis;
+
+    for scale in [0.001, 0.01, 1.0] {
+        let mut model = stl_like_model(scale);
+        let local = Affine3A::from_mat3(UpAxis::Z.rotation() * scale);
+        model.nodes[0].local = local;
+        model.nodes[0].world = local;
+        model.bounds = model.primitives[0].local_aabb.transformed(&local);
+        model.nodes[0].world_aabb = model.bounds;
+        let base = synthesize_base(&model).unwrap();
+        let json = json_of(&base);
+        let part = node(&json, 0);
+        assert_eq!(part["rotation"].as_array().unwrap().len(), 4);
+        assert!(part.get("matrix").is_none());
+        assert_eq!(part.get("scale").is_some(), scale != 1.0);
+        let loaded = load_glb(&base).unwrap();
+        // 四元数から戻した行列の 0 付近の誤差も、元の倍率に対して相対 1e-6 以内。
+        for (actual, expected) in loaded.nodes[0]
+            .local
+            .to_cols_array()
+            .iter()
+            .zip(local.to_cols_array())
+        {
+            assert!(
+                (actual - expected).abs() <= scale * 1.0e-6,
+                "{scale}: {actual} != {expected}"
+            );
+        }
+    }
+}
+
+#[test]
 fn synth_base_is_deterministic() {
     let model = stl_like_model(0.001);
     let first = synthesize_base(&model).unwrap();

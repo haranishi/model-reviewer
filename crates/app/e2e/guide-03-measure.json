@@ -1,7 +1,7 @@
 {
   "timeout_secs": 30,
   "steps": [
-    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl" },
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl", "stl_up": "y" },
     { "op": "wait_idle" },
     { "op": "click_widget", "name": "tool.measure" },
     { "op": "hover_view", "at": [0.202, 0.808] },

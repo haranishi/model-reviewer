@@ -62,6 +62,7 @@ fn options(allow_trailing: bool) -> StlOptions<'static> {
     StlOptions {
         name: "壊れた",
         unit: UnitLabel::Mm,
+        up: Default::default(),
         allow_trailing,
     }
 }

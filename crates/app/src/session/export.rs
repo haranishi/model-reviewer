@@ -21,7 +21,7 @@ use crate::metrics;
 use crate::ui::ids;
 
 use super::{ExportJob, Session, SourceKind, failure_dialog};
-use model_reviewer_core::units::UnitLabel;
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 /// 文書の現在の状態から、書き出しスレッドへ渡す部品の表の写しを作る。
 pub fn export_scene(doc: &Document) -> ExportScene {
@@ -48,14 +48,15 @@ pub fn export_scene(doc: &Document) -> ExportScene {
     }
 }
 
-/// 書き出しの土台の種類。STL なら、開いたときの単位と部品の名前で読み直して合成する。
+/// 書き出しの土台の種類。STL は開いたときの単位・上の向き・部品名を引き継ぐ。
 fn export_base(session: &Session) -> exporter::ExportBase {
     match session.source_kind {
         SourceKind::Glb => exporter::ExportBase::File,
         // 新規の文書は、元のファイルの代わりに「空の土台」を使う（要件2.1）。
         SourceKind::New => exporter::ExportBase::Empty,
-        SourceKind::Stl { unit } => exporter::ExportBase::Stl {
+        SourceKind::Stl { unit, up } => exporter::ExportBase::Stl {
             unit,
+            up,
             name: session
                 .model
                 .as_ref()
@@ -67,12 +68,16 @@ fn export_base(session: &Session) -> exporter::ExportBase {
 }
 
 /// STL から書き出したときに結果の一覧へ足す1行（要件8.2）。
-pub fn stl_export_note(unit: UnitLabel) -> String {
-    format!(
+pub fn stl_export_note(unit: UnitLabel, up: UpAxis) -> String {
+    let mut note = format!(
         "STL から GLB を作りました。座標の値は元のまま（{}）で、部品の大きさ {} でメートルに合わせています",
         unit.suffix(),
         unit.meters()
-    )
+    );
+    if up == UpAxis::Z {
+        note.push_str("。Z を上として、部品に回転 X -90° を入れています");
+    }
+    note
 }
 
 /// 新規の文書から書き出したときに結果の一覧へ足す1行。
@@ -203,7 +208,7 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     }
 
     let canonical = std::fs::canonicalize(&done.path).unwrap_or_else(|_| done.path.clone());
-    let model_ref = crate::loader::model_ref_for(canonical, done.identity, None);
+    let model_ref = crate::loader::model_ref_for(canonical, done.identity, SourceKind::Glb);
     let file_name = model_ref.file_name.clone();
     session.model_ref = Some(model_ref);
     session.exported_since_load = true;
@@ -231,8 +236,8 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         lines.push(note.to_owned());
     }
     match session.source_kind {
-        SourceKind::Stl { unit } => {
-            lines.push(stl_export_note(unit));
+        SourceKind::Stl { unit, up } => {
+            lines.push(stl_export_note(unit, up));
             session.source_kind = SourceKind::Glb;
         }
         // 新規の文書も、書き出した GLB が以後の土台になる（要件2.3）。

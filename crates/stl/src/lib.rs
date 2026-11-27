@@ -4,7 +4,7 @@
 //! 約束:
 //! - 判定（`detect`）は、ASCII の印（`solid` の後に `facet` か `endsolid`）を先に見て、無ければ
 //!   バイナリの大きさ（`84 + 50 × 三角形の数`）を見る。`solid` で始まるバイナリもある。
-//! - 座標の値は形状にそのまま入れ、部品の `local` に単位の倍率（mm なら 0.001）を入れる。
+//! - 座標の値は形状にそのまま入れ、部品の `local` に単位の倍率と上の向きの回転を入れる。
 //! - 申告された三角形の数で確保しない。座標が有限でないか `COORD_LIMIT` を超えたら断る。
 
 mod ascii;
@@ -13,9 +13,9 @@ mod detect;
 mod error;
 mod weld;
 
-use glam::{Affine3A, Vec3};
+use glam::Affine3A;
 use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId};
-use model_reviewer_core::units::UnitLabel;
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 pub use detect::detect;
 pub use error::StlError;
@@ -33,6 +33,7 @@ pub enum StlKind {
 pub struct StlOptions<'a> {
     pub name: &'a str,
     pub unit: UnitLabel,
+    pub up: UpAxis,
     pub allow_trailing: bool,
 }
 
@@ -54,7 +55,7 @@ pub fn load_stl(bytes: &[u8], options: &StlOptions) -> Result<Model, StlError> {
 
 fn assemble_model(parsed: binary::Parsed, options: &StlOptions<'_>) -> Model {
     let scale = options.unit.meters() as f32;
-    let local = Affine3A::from_scale(Vec3::splat(scale));
+    let local = Affine3A::from_mat3(options.up.rotation() * scale);
     let world = local;
     let world_aabb = parsed.primitive.local_aabb.transformed(&world);
     let triangles = (parsed.primitive.indices.len() / 3) as u64;
@@ -98,6 +99,7 @@ mod tests {
         let options = StlOptions {
             name: "部品",
             unit: UnitLabel::Mm,
+            up: UpAxis::default(),
             allow_trailing: true,
         };
         assert_eq!(detect(&[], true), None);

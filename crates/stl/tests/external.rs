@@ -30,6 +30,7 @@ fn external_stl_directory() {
         let options = StlOptions {
             name: "外部",
             unit: UnitLabel::Mm,
+            up: Default::default(),
             allow_trailing: true,
         };
         let kind = detect(&bytes, true);

@@ -188,32 +188,30 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         }
     };
     let expected = identity_of(&file);
-    // STL は同じファイルでも単位の仮定が違えば部品の大きさが違う。レビューの単位（無ければ mm）と
-    // 開いている単位が違うときは、その場で当てはめず、レビューの単位で開き直す（要件8.5）。
-    let same_unit = match session.source_kind {
+    // 同じ STL でも、単位か向きが違うと保存した視点が部品に合わない。
+    let same_assumptions = match session.source_kind {
         super::SourceKind::Glb => true,
         // 新規の文書には識別が無く、レビューが指すモデルではない（開き直す）。
         super::SourceKind::New => false,
-        super::SourceKind::Stl { unit } => {
+        super::SourceKind::Stl { unit, up } => {
             file.model
                 .stl_unit
                 .unwrap_or(model_reviewer_core::units::UnitLabel::Mm)
                 == unit
+                && file.model.saved_stl_up() == up
         }
     };
     let same_loaded = session.model.is_some()
-        && same_unit
         && session
             .model_ref
             .as_ref()
             .is_some_and(|model_ref| model_ref.identity == expected);
     if same_loaded {
-        if !session.exported_since_load || !session.doc_unsaved() {
+        if same_assumptions && (!session.exported_since_load || !session.doc_unsaved()) {
             apply_in_place(session, &file);
             return;
         }
-        // 書き出し後にさらに形を編集した状態で、書き出したファイル向けのレビューを読み込む場合。
-        // `session.model` は書き出し前の古い土台なので、書き出したファイルを開き直して復元する。
+        // 改名した STL や書き出した GLB も、いま開いている実パスから先に探す。
         let mut existing = Vec::new();
         if let Some(current) = session
             .model_ref
@@ -239,7 +237,11 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
                 remaining: existing,
                 first_mismatch: None,
             });
-            session.start_model_load_for_exported_restore(first, expected);
+            if same_assumptions {
+                session.start_model_load_for_exported_restore(first, expected);
+            } else {
+                session.start_model_load_for_restore(first, expected);
+            }
             return;
         }
     }

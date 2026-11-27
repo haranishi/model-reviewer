@@ -24,7 +24,7 @@ README の4コマンドはGPUが無くても実行できます。CI（`.github/w
 | `edit-3` | 図形を足す・複製・削除・取り消し・書き出し。開き直して部品の数と位置が一致 |
 | `measure-1` | 2点の距離、部品を動かした後の距離、単位の切り替え、平行投影 |
 | `inspect-1` | 角や辺に吸着する計測、断面（軸・位置・反転、消えた側の当たり）、表示の単位 |
-| `stl-1` → `stl-2` | 見本の STL（20×30×40 mm の箱）を開く・角から角で 20 mm・注釈・円柱の寸法・GLB へ書き出し・レビュー保存。起動し直して一致 |
+| `stl-1` → `stl-2` | 見本の STL を Y が上で開く・角から角で 20 mm・注釈・円柱の寸法・GLB へ書き出し・書き出した GLB のレビュー保存。起動し直して一致 |
 | `new-1` | 何も開かずに［新規作成］・原点に大きさ 1 の立方体・レビュー保存が断られる・GLB へ書き出すと作業の対象が移る・Cmd+N で空に戻る |
 | `color-1` | 見本の車輪を赤にし、取り消しとやり直しの状態を照合。16進で青にし、複製だけ黄に変えて移動。書き出した GLB を開き直し、元と複製の色をそれぞれ照合する。状態の `selection_color` に sRGB の16進と最大8件のリニア RGBA が入る |
 | `desk-1` | 新規作成から寸法を cm で入力し、複製と軸キーで机1台（5部品）と椅子4脚（各6部品）を組む。`desk-1-assembled.json` の `nodes` は29件。`report.json` の `samples` で新規作成直後・組み立て後・書き出し後の性能値を比べる |
@@ -32,7 +32,7 @@ README の4コマンドはGPUが無くても実行できます。CI（`.github/w
 | `keymove-1` | X へ 12.5 動かして数値欄で指定した位置と比較し、矢印3回を取り消す。Y に90度回し、Z の拡大を Esc でやめる |
 | `heavy-edit`・`heavy-inspect` | 下の重いモデルで性能を測る（先に生成する）。`heavy-inspect` は吸着の探索300回・断面の矢印のドラッグ・重い STL を開く |
 
-終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。手順の `op` は `open_model`（STL の単位の仮定 `stl_unit` を省略できる）、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
+終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。手順の `op` は `open_model`（STL の `stl_unit` は省略時 `"mm"`、`stl_up` は `"z"`・`"y"` から選び、省略時は `"z"`）、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`（最上位の `stl_up` に `"z"`・`"y"` を出し、STL 以外は `null`）、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
 
 重いモデルは生成します（リポジトリには置きません）。`heavy-edit` と `heavy-inspect` は、下の2行目からの3つを使います。
 

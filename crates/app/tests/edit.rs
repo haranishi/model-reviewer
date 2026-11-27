@@ -30,6 +30,7 @@ fn sample_session() -> Session {
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
         stl_unit: None,
+        stl_up: None,
     });
     session.pick_index = Some(PickIndex::build(&model));
     session.set_model(model);

@@ -15,7 +15,7 @@
   - 合格（`stl/tests/parse.rs`・`core` の単体試験）: `z_up_puts_file_z_on_world_y`（見本の箱の外形が 20×40×30）、`y_up_keeps_file_coordinates`（今までと同じ `local`）、`up_rotation_keeps_positions_and_winding`（形状の位置と番号のバイトがどちらの向きでも同じ。行列式が正）、`up_axis_keys_and_other`
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 - [ ] 1.2 レビューJSON（`core`）
-  - `ModelRef` と `ReviewModelRecord` に `stl_up`。STL のときだけ書く。無ければ `None`（開くときに Z）。2つ以外は `InvalidValue`
+  - `ModelRef` と `ReviewModelRecord` に `stl_up`。STL のときだけ書く。無ければ `None`（復元では Y。`saved_stl_up`）。2つ以外は `InvalidValue`
   - 合格: `stl_up_is_written_for_stl_only`（GLB のレビューのバイト列が変わらない）、`stl_up_round_trips`、`unknown_stl_up_is_rejected`、`missing_stl_up_reads_as_none`
   - _Requirements: 3.4, 3.5_
 - [ ] 1.3 つなぐ（`app`）
@@ -27,7 +27,7 @@
     - `stl_opens_z_up_by_default`（外形 20×40×30 mm、回転の欄の X が -90、`source_kind` の向きが Z）
     - `changing_stl_up_reopens_after_confirm`（未保存があれば確認。取り消すと前のモデルと向きが残る）
     - `changing_unit_keeps_up_and_changing_up_keeps_unit`
-    - `stl_review_saves_and_restores_with_up`（`"stl_up": "y"` を書く。別の向きで開いていれば開き直す。項目が無ければ Z）
+    - `stl_review_saves_and_restores_with_up`（`"stl_up": "y"` を書く。別の向きで開いていれば開き直す。項目が無ければ Y）
     - `annotation_stays_on_the_same_surface_across_up`（同じ注釈の部品の中の座標が、どちらの向きでも同じ）
     - `z_up_stl_exports_rotation`（開き直した GLB の部品に回転と倍率があり、外形が書き出す前と同じ）
     - 既存の `scene_numbers_do_not_change_across_stl_export`・`exported_glb_from_stl_reopens_with_same_extent` が、既定（Z が上）のまま通る

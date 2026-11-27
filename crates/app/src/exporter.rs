@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use model_reviewer_core::identity::ModelIdentity;
-use model_reviewer_core::units::UnitLabel;
+use model_reviewer_core::units::{UnitLabel, UpAxis};
 use model_reviewer_gltf::export::{
     ExportError, ExportNote, ExportScene, build, empty_base, synthesize_base, verify_locals,
     write_container,
@@ -54,8 +54,12 @@ pub enum ExportBase {
     /// 土台のファイル（GLB）をそのまま使う。
     #[default]
     File,
-    /// 土台は STL。`unit` は読み込んだときの単位の仮定、`name` は部品の名前。
-    Stl { unit: UnitLabel, name: String },
+    /// 土台の STL を開いたときと同じ仮定と部品名で読み直す。
+    Stl {
+        unit: UnitLabel,
+        up: UpAxis,
+        name: String,
+    },
     /// 新規の文書。ファイルを読まず、識別も照合せず、`empty_base()` を土台にする
     /// （`base_path` と `base_identity` は使わない）。
     Empty,
@@ -299,7 +303,9 @@ fn run_export(
             // 土台が STL なら、読み直した STL から最小の GLB を作り、それを土台にする（要件8.1）。
             // STL のバイト列は合成が終わったら手放す（土台のバイト列を常駐させない）。
             match &request.base_kind {
-                ExportBase::Stl { unit, name } => synthesize_from_stl(&base_bytes, *unit, name)?,
+                ExportBase::Stl { unit, up, name } => {
+                    synthesize_from_stl(&base_bytes, *unit, *up, name)?
+                }
                 _ => base_bytes,
             }
         }
@@ -382,10 +388,11 @@ fn run_export(
 }
 
 /// STL のバイト列から、読み込みと同じ `Model` を作り直して最小の GLB にする。開いたときと同じ
-/// 名前と単位で読むので、部品0・描画0・形状0が文書と同じ物を指す（`synthesize_base` の約束）。
+/// 名前・単位・向きで読むので、部品0・描画0・形状0が文書と同じ物を指す。
 fn synthesize_from_stl(
     bytes: &[u8],
     unit: UnitLabel,
+    up: UpAxis,
     name: &str,
 ) -> Result<Vec<u8>, ExportFailure> {
     let model = load_stl(
@@ -393,6 +400,7 @@ fn synthesize_from_stl(
         &StlOptions {
             name,
             unit,
+            up,
             allow_trailing: true,
         },
     )

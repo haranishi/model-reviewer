@@ -128,10 +128,11 @@ struct PathStep {
 
 #[derive(Clone, Debug)]
 enum Op {
-    /// `stl_unit` は STL の単位の仮定（省略は mm）。GLB では使わない。
+    /// STL の単位と上の向きは省略できる（mm・Z が上）。
     OpenModel {
         path: PathStep,
         stl_unit: Option<model_reviewer_core::units::UnitLabel>,
+        stl_up: Option<model_reviewer_core::units::UpAxis>,
     },
     LoadReview(PathStep),
     SaveReview(PathStep),
@@ -545,16 +546,16 @@ impl Automation {
         op: Op,
     ) -> Result<(), String> {
         match op {
-            Op::OpenModel { path, stl_unit } => {
+            Op::OpenModel {
+                path,
+                stl_unit,
+                stl_up,
+            } => {
                 let path = self.resolve(&path)?;
-                match stl_unit {
-                    None => session.apply(Command::OpenModel(path)),
-                    Some(unit) => session.open_model_with(
-                        path,
-                        crate::loader::LoadOptions {
-                            stl_unit: Some(unit),
-                        },
-                    ),
+                if stl_unit.is_none() && stl_up.is_none() {
+                    session.apply(Command::OpenModel(path));
+                } else {
+                    session.open_model_with(path, crate::loader::LoadOptions { stl_unit, stl_up });
                 }
                 self.mark_ok();
             }

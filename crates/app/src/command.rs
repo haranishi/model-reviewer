@@ -12,7 +12,7 @@ pub use model_reviewer_core::camera::{Projection, ViewDir};
 pub use model_reviewer_core::gizmo::{Handle, Tool, Trs};
 pub use model_reviewer_core::section::{Axis, SectionPlane};
 pub use model_reviewer_core::shapes::ShapeKind;
-pub use model_reviewer_core::units::UnitLabel;
+pub use model_reviewer_core::units::{UnitLabel, UpAxis};
 pub use model_reviewer_render::DisplayMode;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +138,8 @@ pub enum Command {
     SetDisplayUnit(Option<UnitLabel>),
     /// STL の単位の仮定を替える（同じファイルを開き直す）。
     SetStlUnit(UnitLabel),
+    /// STL の上の向きを替える（同じ単位で開き直す）。
+    SetStlUp(UpAxis),
 
     // ---- 第5段階：新規作成（session/open.rs） ----
     /// 部品が0個の空の文書を開く。履歴と未保存の印には入らない（文書ごと入れ替える）。

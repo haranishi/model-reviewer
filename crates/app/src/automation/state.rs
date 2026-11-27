@@ -103,7 +103,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "display": session.units.display.map(|unit| unit.suffix()),
             "stl": match session.source_kind {
                 crate::session::SourceKind::Glb | crate::session::SourceKind::New => None,
-                crate::session::SourceKind::Stl { unit } => Some(unit.suffix()),
+                crate::session::SourceKind::Stl { unit, .. } => Some(unit.suffix()),
             },
         },
         "snap": {
@@ -127,6 +127,10 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             crate::session::SourceKind::Glb => "glb",
             crate::session::SourceKind::Stl { .. } => "stl",
             crate::session::SourceKind::New => "new",
+        },
+        "stl_up": match session.source_kind {
+            crate::session::SourceKind::Stl { up, .. } => Some(up.key()),
+            crate::session::SourceKind::Glb | crate::session::SourceKind::New => None,
         },
         // 選んだ部品の外形と寸法（シーンの単位）。`selection` は第2段階からの番号の項目なので、
         // 意味を変えずに別の項目にした。

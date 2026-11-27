@@ -20,13 +20,13 @@
 - GPUと画面が要る確認（実機の自動操作、画像の目視、実キー、性能）は進行役が行う。実装者は、実行していないものを「未確認」と報告する。API は推測で書かず、依存の実物で確かめる。「要確認」の項目は、確かめた結果を報告に書く。
 - 文書とコードに、個人名・メール・ホームの絶対パス・作業に使った道具の名前を書かない。画面の言葉は日本語にする。
 
-- [ ] 1. 新規作成
-- [ ] 1.1 WP-N1 空のモデルと空の土台（[design-new.md](design-new.md) の「型の約束」の `core` の分、[design-export.md](design-export.md) の「空の土台」）
+- [x] 1. 新規作成
+- [x] 1.1 WP-N1 空のモデルと空の土台（[design-new.md](design-new.md) の「型の約束」の `core` の分、[design-export.md](design-export.md) の「空の土台」）
   - `core::scene::Model::empty()`。`gltf::export::empty_base()`。土台を読む所（`export/base.rs`）が、ノード0個で `NoMesh` のときだけ空のモデルを土台にする（`load_glb` は変えない）。`build` が、土台が空で足す描画も無いとき `InvalidScene` を返す
   - 要確認を先に確かめる: BIN もバッファも無い GLB を、容器の読み取りと JSON の読み取りが受けるか。受けなければ、土台用の入口で扱い、報告する
   - 合格: `empty_model_makes_empty_document`、`empty_base_is_stable_bytes`、`empty_base_is_not_openable_as_model`、`exports_from_empty_base`（足した図形1つ。`load_glb` で開け、名前・行列・色・三角形の数が一致）、`same_document_same_bytes_from_empty_base`、`empty_scene_on_empty_base_is_refused`。既存の書き出しの試験が通る
   - _Boundary: `core/src/scene.rs`、`gltf/src/build.rs`（土台用の入口だけ）、`gltf/src/export/{mod,synth,base,patch}.rs`、`gltf/tests/`_ ／ _Requirements: 1.1, 2.1, 2.2, 2.5_
-- [ ] 1.2 WP-N2 新規作成をつなぐ（[design-new.md](design-new.md) の全部。N1 の後）
+- [x] 1.2 WP-N2 新規作成をつなぐ（[design-new.md](design-new.md) の全部。N1 の後）
   - `Command::NewDocument`、`SourceKind::New`、`Pending::New`、`Incoming.model_ref` を `Option` に。`session::open` に `new_guarded`・`new_document`。`commit_pending` の分岐（復元を呼ばない、単位、初期視点、状態欄、性能値）。`model_ref` が無いときに失敗や空になる箇所を洗い出して直す（状態欄の名前、詳細パネル、状態の書き出し）
   - 書き出し: `ExportBase::Empty`（読む工程と識別の照合を飛ばす）。描画を持つ部品が無ければ断る。保存先の既定の名前「無題.glb」。終わったら `source_kind` を Glb に。レビュー保存を断る文
   - 画面: 何も開いていない画面の［新規作成］（`empty.new`）、Cmd+N（`app.rs`。「パネルの上」の確かめの前）、ヘルプの1行、図形を置けないときの文
@@ -35,7 +35,7 @@
   - _Boundary: `app/src/{command,app,exporter}.rs`、`app/src/session/{mod,open,export,persist,edit}.rs`、`app/src/ui/{empty,help,status,details,ids}.rs`、`app/src/automation/`、`app/tests/{new_doc,gpu_flow}.rs`、`app/e2e/new-1.json`、`docs/{glb,verify,roadmap}.md`_ ／ _Depends: 1.1_ ／ _Requirements: 1.1〜1.10, 2.3, 2.4, 2.6, 2.7, 6.1〜6.4_
 
 - [ ] 2. 色と質感
-- [ ] 2.1 (P) WP-C1 文書・履歴・部分更新（[design-color.md](design-color.md) の「型の約束」と、`render::update_instances` の直し）
+- [x] 2.1 (P) WP-C1 文書・履歴・部分更新（[design-color.md](design-color.md) の「型の約束」と、`render::update_instances` の直し）
   - `core/src/color.rs`（換算、16進、見本12色）。`Document::subtree_colors`・`set_subtree_colors`。`Edit::SetColors` と `Applied::recolored`（`History` の実行・取り消し・やり直し、`bytes`、版）。`render::SceneRenderer::update_instances` が、行列と一緒に色も文書から読む
   - 合格: design-testing.md の「色の換算」「文書の色」「履歴」「部分更新」の行（`srgb_round_trips_all_256`、`hex_parse_table`、`swatches_are_distinct`、`color_does_not_leak_to_shared_shape`、`wrong_count_changes_nothing`、`duplicate_inherits_color`、`undo_restores_per_draw_colors`、`set_colors_keeps_alpha`、`recolor_bumps_document_rev_only`、`slots_follow_node_then_draw_order`、`patch_rewrites_color_and_keeps_ids`）。変形の部分更新の既存の試験が通る
   - _Boundary: `core/src/{color,doc,history,lib}.rs`、`render/src/{lib,instances}.rs`_ ／ _Requirements: 3.3, 3.4, 3.7, 3.10〜3.12_

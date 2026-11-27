@@ -447,6 +447,67 @@ fn times_out_while_waiting_for_idle() {
 }
 
 #[test]
+fn scripts_end_without_quit_with_unsaved_changes() {
+    use eframe::App as _;
+    use egui::ViewportCommand::{CancelClose, Close, RequestPaintWhileHidden};
+
+    let _guard = exit_lock();
+    let dir = scratch("end-without-quit");
+    let script = dir.join("steps.json");
+    fs::write(&script, r#"{"steps":[{"op":"wait_idle"}]}"#).unwrap();
+    let launch = parse_args([
+        "model-reviewer",
+        "--script",
+        script.to_str().unwrap(),
+        "--out",
+        dir.to_str().unwrap(),
+    ])
+    .unwrap();
+    let root = egui::ViewportId::ROOT;
+    for failed in [false, true] {
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = crate::App::new(&cc, launch.clone());
+        let mut frame = eframe::Frame::_new_kittest();
+        app.session_mut().mark_review_unsaved();
+        if failed {
+            app.session_mut().load = LoadPhase::Failed("読み込み失敗".to_owned());
+        }
+        let mut raw = egui::RawInput::default();
+        let running = ctx.run_logic(&raw, |ctx| app.logic(ctx, &mut frame));
+        assert_eq!(
+            running.viewport_commands[&root]
+                .iter()
+                .filter(|cmd| **cmd == RequestPaintWhileHidden)
+                .count(),
+            1
+        );
+        let finished = ctx.run_ui(raw.clone(), |ui| app.ui(ui, &mut frame));
+        let force_close = failed || cfg!(target_os = "macos");
+        assert_eq!(
+            finished.viewport_output[&root].commands.contains(&Close),
+            force_close
+        );
+        finished.drop_without_applying_deltas();
+        assert_eq!(super::exit_code(), i32::from(failed));
+
+        raw.viewports
+            .get_mut(&root)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let closing = ctx.run_logic(&raw, |ctx| app.logic(ctx, &mut frame));
+        let commands = &closing.viewport_commands[&root];
+        assert!(!commands.contains(&RequestPaintWhileHidden));
+        assert_eq!(commands.contains(&Close), force_close);
+        assert_eq!(commands.contains(&CancelClose), !force_close);
+        assert_eq!(app.session().dialog.is_none(), force_close);
+        assert!(app.session().has_unsaved());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn kittest_runs_dump_assert_and_quit() {
     let _guard = exit_lock();
     let dir = scratch("kittest");

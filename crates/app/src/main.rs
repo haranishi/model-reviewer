@@ -2,7 +2,7 @@
 //!
 //! - eframe の既定のGPU上限（`max_buffer_size` 256MiB）を、アダプタが許す値まで引き上げる。
 //! - 日本語フォントは `fonts::install` が言語 "ja" で登録するので、eframe の自動登録は切る。
-//! - GPUが無くウィンドウを作れないときは、理由を出して終了コード1で終わる（パニックしない）。
+//! - 起動できないときは、理由を出して終了コード1で終わる。
 
 use std::sync::Arc;
 
@@ -29,8 +29,7 @@ fn main() {
         .with_title("model-reviewer")
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([960.0, 600.0]);
-    // 自動操作の画面は選ばない。macOS ではさらにアプリを前面にせず（下の指定）、画面を透明にする
-    // （`macos::make_windows_invisible`）。使っている人の作業を邪魔しないためである。
+    // 自動操作を始めるときに、使っている人の画面から入力を奪わない。
     let automated = launch.script.is_some();
     if automated {
         viewport = viewport.with_active(false);
@@ -55,9 +54,15 @@ fn main() {
     if let Err(err) = eframe::run_native(
         "model-reviewer",
         options,
-        Box::new(move |cc| Ok(Box::new(model_reviewer::App::new(cc, launch)))),
+        Box::new(move |cc| {
+            #[cfg(target_os = "macos")]
+            if automated {
+                model_reviewer::hide_script_window(cc)?;
+            }
+            Ok(Box::new(model_reviewer::App::new(cc, launch)))
+        }),
     ) {
-        eprintln!("起動できませんでした（GPUが使えない可能性があります）: {err}");
+        eprintln!("起動できませんでした。{err}");
         std::process::exit(1);
     }
     let code = model_reviewer::automation::exit_code();

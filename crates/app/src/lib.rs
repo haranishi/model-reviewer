@@ -20,4 +20,6 @@ pub use command::{
     parse_args, usage,
 };
 pub use loader::LoadPhase;
+#[cfg(target_os = "macos")]
+pub use macos::hide_script_window;
 pub use session::Session;

@@ -79,9 +79,47 @@ pub fn pick_clipped(
     ray: &Ray,
     clip: Option<&SectionPlane>,
 ) -> Option<Hit> {
-    // 契約の先置き。断面での範囲の切り方は後の作業で書く（いまは `clip` を見ない）。
-    let _ = clip;
-    if !ray.origin.is_finite() || !ray.dir.is_finite() || ray.dir.length_squared() <= 1.0e-20 {
+    let Some(plane) = clip else {
+        return pick_within(model, index, vis, ray, f32::INFINITY);
+    };
+    // 視線が残す側にある範囲だけを探す。始点を範囲の入口へずらし、出口までを上限にして、
+    // 返す `t` と `world_pos` を元の視線の値へ戻す。
+    let (t0, t1) = plane.ray_range(ray)?;
+    let shifted = Ray {
+        origin: ray.origin + ray.dir * t0,
+        dir: ray.dir,
+    };
+    // 平面の上にちょうど乗った面を取りこぼさないよう、出口をわずかに広げる。
+    let limit = if t1.is_finite() {
+        (t1 - t0) * (1.0 + 1.0e-6) + 1.0e-6
+    } else {
+        f32::INFINITY
+    };
+    let mut hit = pick_within(model, index, vis, &shifted, limit)?;
+    let t = hit.t + t0;
+    let world_pos = ray.origin + ray.dir * t;
+    if !t.is_finite() || !world_pos.is_finite() {
+        return None;
+    }
+    hit.t = t;
+    hit.world_pos = world_pos;
+    Some(hit)
+}
+
+/// `pick` の本体。`max_t` より奥の当たりは数えない。
+fn pick_within(
+    model: &impl SceneRead,
+    index: &PickIndex,
+    vis: &Visibility,
+    ray: &Ray,
+    max_t: f32,
+) -> Option<Hit> {
+    if !ray.origin.is_finite()
+        || !ray.dir.is_finite()
+        || ray.dir.length_squared() <= 1.0e-20
+        || max_t.is_nan()
+        || max_t <= 0.0
+    {
         return None;
     }
     let mut candidates = Vec::new();
@@ -97,6 +135,9 @@ pub fn pick_clipped(
         let Some(entry) = crate_ray_aabb(ray, world_aabb.min, world_aabb.max) else {
             continue;
         };
+        if entry > max_t {
+            continue;
+        }
         candidates.push((entry, id, inverse));
     }
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
@@ -116,7 +157,7 @@ pub fn pick_clipped(
         {
             continue;
         }
-        let max_t = best.as_ref().map(|hit| hit.t).unwrap_or(f32::INFINITY);
+        let max_t = best.as_ref().map(|hit| hit.t).unwrap_or(max_t);
         for draw in model.draws(id) {
             let Some(prim) = model.primitive(draw.prim) else {
                 continue;

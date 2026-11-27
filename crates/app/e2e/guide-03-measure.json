@@ -1,14 +1,14 @@
 {
   "timeout_secs": 30,
   "steps": [
-    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl", "stl_up": "y" },
+    { "op": "open_model", "path": "../../../assets/samples/review-sample.stl" },
     { "op": "wait_idle" },
     { "op": "click_widget", "name": "tool.measure" },
-    { "op": "hover_view", "at": [0.202, 0.808] },
+    { "op": "hover_view", "at": [0.261, 0.845] },
     { "op": "sample", "label": "settle", "frames": 10 },
     { "op": "screenshot", "path": "measure-snap.png" },
-    { "op": "click_view", "at": [0.202, 0.808] },
-    { "op": "click_view", "at": [0.438, 0.938] },
+    { "op": "click_view", "at": [0.261, 0.845] },
+    { "op": "click_view", "at": [0.492, 0.972] },
     { "op": "sample", "label": "settle", "frames": 10 },
     { "op": "screenshot", "path": "measure-panel.png" },
     { "op": "quit" }

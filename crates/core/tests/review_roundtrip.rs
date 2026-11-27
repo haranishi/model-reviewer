@@ -59,7 +59,7 @@ fn review_model() -> Model {
 fn model_ref(bytes: &[u8]) -> ModelRef {
     ModelRef {
         file_name: "review-sample.glb".to_owned(),
-        path: "/work/models/review-sample.glb".to_owned(),
+        path: "/work/models/review-sample.glb".into(),
         relative_path: Some("../models/review-sample.glb".to_owned()),
         identity: ModelIdentity::from_bytes(bytes),
         stl_unit: None,
@@ -136,7 +136,7 @@ fn roundtrip_keeps_japanese_text_visibility_and_views() {
     assert_eq!(file.version, 1);
     assert_eq!(file.app_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(file.model.file_name, model_ref.file_name);
-    assert_eq!(file.model.path, model_ref.path);
+    assert_eq!(file.model.path, model_ref.path.to_string_lossy());
     assert_eq!(file.model.relative_path, model_ref.relative_path);
     assert_eq!(file.model.size_bytes, model_ref.identity.size_bytes);
     assert_eq!(file.model.hash.algorithm, "blake3");

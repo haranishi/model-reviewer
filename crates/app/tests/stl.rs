@@ -315,6 +315,52 @@ fn stl_review_saves_and_restores_with_unit() {
 }
 
 #[test]
+fn renamed_stl_restores_the_annotation_and_hidden_part_after_relink() {
+    use model_reviewer_core::{error::ReviewError, review_file};
+
+    let dir = scratch("renamed");
+    let path = write_bytes(&dir, "before.stl", &stl_sample());
+    let mut session = open(&path);
+    annotate_center(&mut session, "角");
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let review_path = dir.join("review.json");
+    session.apply(Command::SaveReview(review_path.clone()));
+    assert_eq!(session.status_text, "レビューを保存しました");
+    let mut file = review_file::parse(&std::fs::read_to_string(&review_path).unwrap()).unwrap();
+    let renamed = dir.join("after.stl");
+    std::fs::rename(path, &renamed).unwrap();
+
+    let mut restored = Session::default();
+    restored.apply(Command::LoadReview(review_path));
+    assert_eq!(restored.status_text, "モデルが見つかりません");
+    restored.apply(Command::RelinkModel(renamed));
+    pump_load(&mut restored);
+    assert_eq!(restored.status_text, "レビューを復元しました");
+    let doc = restored.doc.as_ref().unwrap();
+    assert_eq!(doc.name(NodeId(0)), "after");
+    let review = restored.review.unwrap();
+    assert_eq!(review.annotations, session.review.unwrap().annotations);
+    assert!(!review.visibility.effective(NodeId(0)));
+
+    let identity = &restored.model_ref.unwrap().identity;
+    file.hidden_nodes.clear();
+    file.model.stl_unit = None;
+    assert_eq!(
+        review_file::restore(&file, doc, identity).unwrap_err(),
+        ReviewError::UnknownNode { gltf_index: 0 }
+    );
+    file.model.stl_unit = Some(UnitLabel::Mm);
+    file.annotations[0].node.gltf_index = 1;
+    assert_eq!(
+        review_file::restore(&file, doc, identity).unwrap_err(),
+        ReviewError::UnknownNode { gltf_index: 1 }
+    );
+}
+
+#[test]
 fn changing_stl_unit_reopens_after_confirm() {
     let dir = scratch("unit");
     let stl = write_bytes(&dir, "box.stl", &stl_sample());
@@ -485,6 +531,99 @@ fn failure_body_or_empty(session: &Session) -> String {
         .as_ref()
         .map(|dialog| dialog.body.clone())
         .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn check_native_model_path(dir: &Path, name: &[u8], bytes: &[u8]) {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = dir.join(OsStr::from_bytes(name));
+    if let Err(err) = std::fs::write(&path, bytes) {
+        // macOS の保存先によっては名前自体を拒む（EILSEQ は Darwin で 92）。
+        #[cfg(target_os = "macos")]
+        if matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
+        ) || err.raw_os_error() == Some(92)
+        {
+            eprintln!("非UTF-8名の作成が拒まれたため、表示名との取り違えを検査します（{err}）");
+            check_missing_native_path(dir, &path, bytes);
+            return;
+        }
+        panic!("モデルを用意できません（{err}）");
+    }
+    let mut session = open(&path);
+    if matches!(session.source_kind, SourceKind::Stl { .. }) {
+        session.apply(Command::SetStlUnit(UnitLabel::Cm));
+        pump_load(&mut session);
+        assert_eq!(session.status_text, "読み込み完了");
+        assert!(close3(extent(&session), sample_extent_m(0.01)));
+    }
+    let review_path = dir.join("review.json");
+    session.apply(Command::SaveReview(review_path.clone()));
+    assert_eq!(session.status_text, "レビューを保存しました");
+    let text = std::fs::read_to_string(review_path).unwrap();
+    let file = model_reviewer_core::review_file::parse(&text).unwrap();
+    assert_eq!(file.model.file_name, String::from_utf8_lossy(name));
+
+    let exported = dir.join(OsStr::from_bytes(b"export-\xfd.glb"));
+    session.apply(Command::ExportGlb(exported.clone()));
+    pump_export(&mut session);
+    assert_eq!(session.export_error(), None);
+    let glb = std::fs::read(&exported).unwrap();
+    assert!(model_reviewer_gltf::load_glb(&glb).is_ok());
+    session.apply(Command::SaveReview(exported.clone()));
+    assert!(failure_body(&session).contains("モデルのファイルへはレビューを保存できません"));
+    assert_eq!(std::fs::read(exported).unwrap(), glb);
+
+    let second = dir.join("second.glb");
+    session.apply(Command::ExportGlb(second.clone()));
+    pump_export(&mut session);
+    assert_eq!(session.export_error(), None);
+    assert!(model_reviewer_gltf::load_glb(&std::fs::read(second).unwrap()).is_ok());
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+/// 元の実パスを読み直せなくても、同じ表示名の別ファイルを代わりに読んではいけない。
+#[cfg(target_os = "macos")]
+fn check_missing_native_path(dir: &Path, path: &Path, bytes: &[u8]) {
+    let printed = dir.join(path.file_name().unwrap().to_string_lossy().as_ref());
+    std::fs::write(&printed, bytes).unwrap();
+    let mut session = open(&printed);
+    session.model_ref.as_mut().unwrap().path = path.to_owned();
+    session.apply(Command::SaveReview(path.to_owned()));
+    assert!(failure_body(&session).contains("モデルのファイルへはレビューを保存できません"));
+    session.apply(Command::ExportGlb(dir.join("export.glb")));
+    pump_export(&mut session);
+    assert!(
+        session
+            .export_error()
+            .unwrap()
+            .contains("元のファイルを読めません")
+    );
+    if matches!(session.source_kind, SourceKind::Stl { .. }) {
+        session.apply(Command::SetStlUnit(UnitLabel::Cm));
+        pump_load(&mut session);
+        assert!(matches!(session.load, LoadPhase::Failed(_)));
+    }
+    assert_eq!(std::fs::read(printed).unwrap(), bytes);
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_stl_name_is_used_for_reopening() {
+    check_native_model_path(&scratch("non-utf8-stl"), b"box-\xff.stl", &stl_sample());
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_glb_name_is_used_for_reopening() {
+    check_native_model_path(
+        &scratch("non-utf8-glb"),
+        b"mesh-\xfe.glb",
+        &model_reviewer_testdata::sample_glb(),
+    );
 }
 
 #[test]

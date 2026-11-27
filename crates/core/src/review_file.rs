@@ -152,7 +152,7 @@ pub fn to_json(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         model: ReviewModelRecord {
             file_name: model_ref.file_name.clone(),
-            path: model_ref.path.clone(),
+            path: model_ref.path.display().to_string(),
             relative_path: model_ref.relative_path.clone(),
             size_bytes: model_ref.identity.size_bytes,
             hash: ReviewHashRecord {
@@ -217,18 +217,21 @@ pub fn restore(
             actual: identity.clone(),
         });
     }
+    // STL の部品名はファイル名から付く。同じファイルを改名しても部品番号は 0 のまま。
+    let single_stl = file.model.stl_unit.is_some() && model.node_count() == 1;
+    let resolve_node = |record: &ReviewNodeRecord| require_node(model, record, single_stl);
     let mut visibility = Visibility::all_visible(model.node_count());
     if !file.hidden_nodes.is_empty() {
         let hidden = file
             .hidden_nodes
             .iter()
-            .map(|record| require_node(model, record))
+            .map(resolve_node)
             .collect::<Result<Vec<_>, _>>()?;
         visibility.set_many(model, hidden, false);
     }
     let mut annotations = Vec::with_capacity(file.annotations.len());
     for record in &file.annotations {
-        let node = require_node(model, &record.node)?;
+        let node = resolve_node(&record.node)?;
         annotations.push(Annotation {
             id: record.id,
             node,
@@ -325,18 +328,17 @@ fn camera_from_record(
     })
 }
 
-fn require_node(model: &impl SceneRead, record: &ReviewNodeRecord) -> Result<NodeId, ReviewError> {
-    let Some(id) = model.find_file_index(record.gltf_index) else {
-        return Err(ReviewError::UnknownNode {
+fn require_node(
+    model: &impl SceneRead,
+    record: &ReviewNodeRecord,
+    single_stl: bool,
+) -> Result<NodeId, ReviewError> {
+    model
+        .find_file_index(record.gltf_index)
+        .filter(|&id| (single_stl && record.gltf_index == 0) || model.name(id) == record.name)
+        .ok_or(ReviewError::UnknownNode {
             gltf_index: record.gltf_index,
-        });
-    };
-    if model.name(id) != record.name {
-        return Err(ReviewError::UnknownNode {
-            gltf_index: record.gltf_index,
-        });
-    }
-    Ok(id)
+        })
 }
 
 fn validate_file(file: &ReviewFile) -> Result<(), ReviewError> {

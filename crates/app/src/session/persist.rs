@@ -70,11 +70,10 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         return;
     };
     let destination = parent.join(file_name);
-    let model_path = PathBuf::from(&model_ref.path);
     // レビューの保存先に、開いたGLBやいまの作業対象のGLBを選ぶと、モデルが消える。
     // 別名のリンク経由も含めて断る（書き出しの `forbidden` と同じ判定）。
     let model_file = |candidate: &Path| {
-        crate::exporter::same_file(candidate, &model_path)
+        crate::exporter::same_file(candidate, &model_ref.path)
             || session
                 .opened_files
                 .iter()
@@ -88,10 +87,11 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         );
         return;
     }
-    let model_abs = std::fs::canonicalize(&model_path).unwrap_or(model_path);
     let mut stamped = model_ref;
-    stamped.path = model_abs.display().to_string();
-    stamped.relative_path = Some(relative_from(&parent, &model_abs));
+    if let Ok(absolute) = std::fs::canonicalize(&stamped.path) {
+        stamped.path = absolute;
+    }
+    stamped.relative_path = Some(relative_from(&parent, &stamped.path));
     let written = match session.doc.as_ref() {
         Some(doc) => review_file::to_json(&review, doc, &stamped),
         None => return,
@@ -202,7 +202,7 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         if let Some(current) = session
             .model_ref
             .as_ref()
-            .map(|model_ref| PathBuf::from(&model_ref.path))
+            .map(|model_ref| model_ref.path.clone())
             .filter(|candidate| candidate.is_file())
         {
             existing.push(current);

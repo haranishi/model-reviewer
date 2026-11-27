@@ -1,5 +1,7 @@
 //! モデルの識別。ファイル全体の blake3 とバイト数。
 
+use std::path::PathBuf;
+
 use crate::units::UnitLabel;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,7 +22,8 @@ impl ModelIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelRef {
     pub file_name: String,
-    pub path: String,
+    /// 読み直しと同一ファイルの照合に使う実パス。
+    pub path: PathBuf,
     pub relative_path: Option<String>,
     pub identity: ModelIdentity,
     /// STL を開いたときの単位の仮定。GLB では `None`（レビューJSONに書かない）。

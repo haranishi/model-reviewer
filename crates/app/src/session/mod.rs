@@ -286,7 +286,6 @@ struct Incoming {
     review: Option<ReviewState>,
     model_ref: ModelRef,
     source_kind: SourceKind,
-    resolved_path: PathBuf,
     source_path: Option<PathBuf>,
     forbid_on_commit: bool,
     file_bytes: u64,
@@ -1009,7 +1008,6 @@ impl Session {
             review,
             model_ref: loaded.model_ref,
             source_kind: loaded.source_kind,
-            resolved_path: loaded.resolved_path,
             source_path,
             forbid_on_commit,
             file_bytes: loaded.file_bytes,
@@ -1168,7 +1166,7 @@ impl Session {
             if let Some(source) = incoming.source_path.as_deref() {
                 self.remember_opened_file(source);
             }
-            self.remember_opened_file(&incoming.resolved_path);
+            self.remember_opened_file(&incoming.model_ref.path);
         }
         self.exported_since_load = false;
         self.export_error = None;
@@ -1287,16 +1285,12 @@ fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
         session.block_edit_if_locked();
         return;
     }
-    let Some(path) = session
-        .model_ref
-        .as_ref()
-        .map(|model_ref| PathBuf::from(&model_ref.path))
-    else {
+    let Some(model_ref) = session.model_ref.as_ref() else {
         return;
     };
     open::open_guarded(
         session,
-        path,
+        model_ref.path.clone(),
         LoadOptions {
             stl_unit: Some(unit),
         },
@@ -1459,10 +1453,9 @@ mod tests {
         LoadedModel {
             generation,
             model: Arc::new(model_reviewer_gltf::load_glb(bytes).unwrap()),
-            resolved_path: PathBuf::from(name),
             model_ref: ModelRef {
                 file_name: name.to_owned(),
-                path: name.to_owned(),
+                path: PathBuf::from(name),
                 relative_path: None,
                 identity: ModelIdentity::from_bytes(bytes),
                 stl_unit: None,

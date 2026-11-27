@@ -82,7 +82,6 @@ pub(crate) struct LoadedModel {
     pub model_ref: ModelRef,
     /// 元の形式（STL なら単位の仮定つき）。
     pub source_kind: SourceKind,
-    pub resolved_path: PathBuf,
     pub file_bytes: u64,
     pub read: Duration,
     pub identity: Duration,
@@ -333,13 +332,12 @@ fn load_thread(
         SourceKind::Glb => None,
         SourceKind::Stl { unit } => Some(unit),
     };
-    let model_ref = model_ref_for(&resolved_path, identity, stl_unit);
+    let model_ref = model_ref_for(resolved_path, identity, stl_unit);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
         model_ref,
         source_kind,
-        resolved_path,
         file_bytes,
         read,
         identity: identity_elapsed,
@@ -418,14 +416,18 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
     }
 }
 
-fn model_ref_for(path: &Path, identity: ModelIdentity, stl_unit: Option<UnitLabel>) -> ModelRef {
+pub(crate) fn model_ref_for(
+    path: PathBuf,
+    identity: ModelIdentity,
+    stl_unit: Option<UnitLabel>,
+) -> ModelRef {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "モデル".to_owned());
     ModelRef {
         file_name,
-        path: path.display().to_string(),
+        path,
         relative_path: None,
         identity,
         stl_unit,
@@ -439,5 +441,33 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
         message.clone()
     } else {
         "unknown panic".to_owned()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use model_reviewer_core::{review::ReviewState, review_file};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn model_reference_keeps_the_native_reopen_path() {
+        let model = load_glb(&model_reviewer_testdata::inputs::triangle()).unwrap();
+        let review = ReviewState::new(&model);
+        for (bytes, unit) in [
+            (b"part-\xff.stl".as_slice(), Some(UnitLabel::Mm)),
+            (b"part-\xfe.glb".as_slice(), None),
+        ] {
+            let path = Path::new(OsStr::from_bytes(bytes));
+            let reference =
+                model_ref_for(path.to_owned(), ModelIdentity::from_bytes(b"model"), unit);
+            assert_eq!(reference.path, path);
+            assert_eq!(reference.file_name, path.to_string_lossy());
+            let json = review_file::to_json(&review, &model, &reference).unwrap();
+            let saved = review_file::parse(&json).unwrap().model;
+            assert_eq!(saved.path, path.to_string_lossy());
+            assert_eq!(saved.file_name, reference.file_name);
+        }
     }
 }

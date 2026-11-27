@@ -108,7 +108,7 @@ pub fn session() -> Session {
     session.review = Some(ReviewState::new(&model));
     session.model_ref = Some(ModelRef {
         file_name: "two-cubes.glb".to_owned(),
-        path: "two-cubes.glb".to_owned(),
+        path: "two-cubes.glb".into(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(b"two-cubes"),
         stl_unit: None,

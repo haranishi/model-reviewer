@@ -1,9 +1,7 @@
 //! 頂点を位置でまとめる。`-0.0` は `+0.0` にそろえてから 3 成分のビットを鍵にし、
-//! 最初に出た順で番号を振る（結果が決まる）。外部の依存は使わず、標準の `HashMap` に
-//! 自前の軽いハッシュ関数を付ける。
+//! 最初に出た順で番号を振る。表には標準の `HashMap` の `RandomState` を使う。
 
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash, Hasher};
 
 use glam::Vec3;
 use model_reviewer_core::math::Aabb;
@@ -11,73 +9,11 @@ use model_reviewer_core::scene::{Primitive, Vertex};
 
 use crate::StlError;
 
-/// `-0.0` を `+0.0` にそろえた 3 成分のビット。
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct PosKey([u32; 3]);
-
-impl Hash for PosKey {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let lo = u64::from(self.0[0]) | (u64::from(self.0[1]) << 32);
-        state.write_u64(lo);
-        state.write_u32(self.0[2]);
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct FastBuildHasher;
-
-impl BuildHasher for FastBuildHasher {
-    type Hasher = FastHasher;
-
-    #[inline]
-    fn build_hasher(&self) -> Self::Hasher {
-        FastHasher(0)
-    }
-}
-
-struct FastHasher(u64);
-
-impl FastHasher {
-    #[inline]
-    fn mix(&mut self, value: u64) {
-        const K: u64 = 0x517c_c1b7_2722_0a95;
-        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(K);
-    }
-}
-
-impl Hasher for FastHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        let mut h = self.0;
-        h ^= h >> 33;
-        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-        h ^ (h >> 33)
-    }
-
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.mix(u64::from(byte));
-        }
-    }
-
-    #[inline]
-    fn write_u32(&mut self, value: u32) {
-        self.mix(u64::from(value));
-    }
-
-    #[inline]
-    fn write_u64(&mut self, value: u64) {
-        self.mix(value);
-    }
-}
-
 /// 同じ位置の頂点を 1 つにまとめながら `Primitive` を組み立てる。
 pub(crate) struct Welder {
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
-    map: HashMap<PosKey, u32, FastBuildHasher>,
+    map: HashMap<[u32; 3], u32>,
     local_aabb: Aabb,
     max_vertices: usize,
     max_indices: usize,
@@ -114,7 +50,7 @@ impl Welder {
         Self {
             vertices: Vec::with_capacity(vertex_cap),
             indices: Vec::with_capacity(index_cap),
-            map: HashMap::with_capacity_and_hasher(vertex_cap, FastBuildHasher),
+            map: HashMap::with_capacity(vertex_cap),
             local_aabb: Aabb::empty(),
             max_vertices,
             max_indices,
@@ -143,11 +79,7 @@ impl Welder {
             canonical_zero(raw[1]),
             canonical_zero(raw[2]),
         ];
-        let key = PosKey([
-            position[0].to_bits(),
-            position[1].to_bits(),
-            position[2].to_bits(),
-        ]);
+        let key = position.map(f32::to_bits);
         if let Some(&index) = self.map.get(&key) {
             return Ok(index);
         }
@@ -189,6 +121,13 @@ fn canonical_zero(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weld_table_uses_random_state() {
+        let welder = Welder::new();
+        let hasher: &dyn std::any::Any = welder.map.hasher();
+        assert!(hasher.is::<std::hash::RandomState>());
+    }
 
     #[test]
     fn merges_negative_zero_with_positive_zero_in_first_seen_order() {

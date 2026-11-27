@@ -15,6 +15,8 @@ use super::Session;
 /// 全部を隠しているときは、全体の境界箱にする（断面を入れられなくならないように）。
 /// モデルが無ければ `None`。
 pub fn section_bounds(session: &Session) -> Option<Aabb> {
+    #[cfg(test)]
+    tests::BOUNDS_CALLS.set(tests::BOUNDS_CALLS.get() + 1);
     let doc = session.doc.as_ref()?;
     let Some(review) = session.review.as_ref() else {
         return Some(doc.bounds());
@@ -86,5 +88,40 @@ fn replace(session: &mut Session, next: Option<SectionPlane>) {
         session.section = next;
         session.scene_dirty.section = true;
         super::snap::set_preview(session, None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::command::Command;
+    use model_reviewer_core::review::ReviewState;
+
+    thread_local! {
+        pub(super) static BOUNDS_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn viewport_only_reads_section_bounds_with_an_active_plane() {
+        let bytes = model_reviewer_testdata::inputs::triangle();
+        let model = Arc::new(model_reviewer_gltf::load_glb(&bytes).unwrap());
+        let mut session = Session {
+            review: Some(ReviewState::new(&model)),
+            ..Session::default()
+        };
+        session.set_model(model);
+        let ctx = egui::Context::default();
+        for expected in [0, 1, 0] {
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                BOUNDS_CALLS.set(0);
+                crate::ui::viewport::show(ui, &session, &mut Vec::new());
+                assert_eq!(BOUNDS_CALLS.get(), expected);
+            });
+            output.textures_delta.clear();
+            session.apply(Command::ToggleSection);
+        }
     }
 }

@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 
 use model_reviewer_core::doc::Document;
-use model_reviewer_core::identity::ModelRef;
 use model_reviewer_core::scene::{NodeId, SceneRead};
 use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene};
 
@@ -91,7 +90,7 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         return;
     };
     let request = ExportRequest {
-        base_path: PathBuf::from(&model_ref.path),
+        base_path: model_ref.path.clone(),
         base_identity: model_ref.identity.clone(),
         target: path,
         scene: export_scene(doc),
@@ -169,17 +168,9 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     }
 
     let canonical = std::fs::canonicalize(&done.path).unwrap_or_else(|_| done.path.clone());
-    let file_name = canonical
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "モデル".to_owned());
-    session.model_ref = Some(ModelRef {
-        file_name: file_name.clone(),
-        path: canonical.display().to_string(),
-        relative_path: None,
-        identity: done.identity,
-        stl_unit: None,
-    });
+    let model_ref = crate::loader::model_ref_for(canonical, done.identity, None);
+    let file_name = model_ref.file_name.clone();
+    session.model_ref = Some(model_ref);
     session.exported_since_load = true;
     session.export_error = None;
     session.export_failed = false;

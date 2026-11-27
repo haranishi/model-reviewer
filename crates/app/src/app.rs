@@ -61,7 +61,16 @@ impl App {
     }
 
     fn apply_ui_command(&mut self, command: Command) {
-        if let Some(command) = resolve_dialog(&self.session, command) {
+        let automated = self.automation.running() || self.automation.forcing_quit();
+        let command = match resolve_dialog(&self.session, &command, automated) {
+            Ok(Some(dialog)) => dialog.pick(&self.session),
+            Ok(None) => Some(command),
+            Err(reason) => {
+                self.automation.fail(&self.session, reason.to_owned());
+                return;
+            }
+        };
+        if let Some(command) = command {
             self.session.apply(command);
         }
     }
@@ -83,6 +92,10 @@ impl eframe::App for App {
         if !self.quit_menu_done {
             crate::macos::retarget_quit_menu(true);
             self.quit_menu_done = true;
+        }
+        #[cfg(target_os = "macos")]
+        if self.launch.script.is_some() && _frame.winit_window().is_some() {
+            crate::macos::deactivate_if_active();
         }
         self.session.set_egui_ctx(ctx);
         let loader_news = self.session.poll_loader();
@@ -525,51 +538,83 @@ fn dropped_paths(ui: &egui::Ui) -> Vec<PathBuf> {
     })
 }
 
-fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
-    match command {
-        Command::OpenModelDialog if session.is_exporting() => Some(Command::OpenModelDialog),
-        Command::OpenModelDialog => rfd::FileDialog::new()
-            .add_filter("GLB・STL", &["glb", "stl", "STL"])
-            .add_filter("GLB", &["glb"])
-            .add_filter("STL", &["stl", "STL"])
-            .pick_file()
-            .map(Command::OpenModel),
-        // 新規の文書は書き出すまで保存できない。保存先を聞かずに `Session` が断る（要件2.6）。
+#[derive(Debug, PartialEq, Eq)]
+enum FileDialog {
+    OpenModel,
+    SaveReview,
+    LoadReview,
+    RelinkModel,
+    ExportGlb,
+}
+
+/// 選択画面が不要な操作と、Session が自分で断る操作は、そのまま Session に渡す。
+fn resolve_dialog(
+    session: &Session,
+    command: &Command,
+    automated: bool,
+) -> Result<Option<FileDialog>, &'static str> {
+    if session.is_exporting() {
+        return Ok(None);
+    }
+    let dialog = match command {
+        Command::OpenModelDialog => FileDialog::OpenModel,
+        // 新規の文書は書き出すまで保存できず、読み込みの間は前のレビューで置き換えないように、
+        // どちらも保存先を聞かずに Session が断る。
         Command::SaveReviewDialog
-            if session.doc_unsaved() || session.edits_locked() || session.is_new_document() =>
+            if !session.doc_unsaved() && !session.is_new_document() && !session.edits_locked() =>
         {
-            Some(Command::SaveReviewDialog)
+            FileDialog::SaveReview
         }
-        Command::SaveReviewDialog => rfd::FileDialog::new()
-            .add_filter("JSON", &["json"])
-            .save_file()
-            .map(Command::SaveReview),
-        Command::LoadReviewDialog if session.is_exporting() => Some(Command::LoadReviewDialog),
-        Command::LoadReviewDialog => rfd::FileDialog::new()
-            .add_filter("JSON", &["json"])
-            .pick_file()
-            .map(Command::LoadReview),
-        Command::RelinkModelDialog if session.is_exporting() => Some(Command::RelinkModelDialog),
-        Command::RelinkModelDialog => rfd::FileDialog::new()
-            .add_filter("GLB・STL", &["glb", "stl", "STL"])
-            .pick_file()
-            .map(Command::RelinkModel),
-        // 部品の無い新規の文書も、保存先を聞かずに `Session` が断る（要件2.2）。
+        Command::LoadReviewDialog => FileDialog::LoadReview,
+        Command::RelinkModelDialog => FileDialog::RelinkModel,
         Command::ExportGlbDialog
-            if session.model.is_none()
-                || session.edits_locked()
-                || crate::session::nothing_to_export(session) =>
+            if session.model.is_some()
+                && !session.edits_locked()
+                && !crate::session::nothing_to_export(session) =>
         {
-            Some(Command::ExportGlbDialog)
+            FileDialog::ExportGlb
         }
-        Command::ExportGlbDialog => {
-            let mut dialog = rfd::FileDialog::new().add_filter("GLB", &["glb"]);
-            if let Some(name) = export_file_name(session) {
-                dialog = dialog.set_file_name(name);
+        _ => return Ok(None),
+    };
+    if automated {
+        Err(
+            "自動操作ではファイル選択の画面を開きません。open_model や export_glb でパスを指定してください",
+        )
+    } else {
+        Ok(Some(dialog))
+    }
+}
+
+impl FileDialog {
+    fn pick(self, session: &Session) -> Option<Command> {
+        let dialog = rfd::FileDialog::new();
+        match self {
+            Self::OpenModel => dialog
+                .add_filter("GLB・STL", &["glb", "stl", "STL"])
+                .add_filter("GLB", &["glb"])
+                .add_filter("STL", &["stl", "STL"])
+                .pick_file()
+                .map(Command::OpenModel),
+            Self::SaveReview => dialog
+                .add_filter("JSON", &["json"])
+                .save_file()
+                .map(Command::SaveReview),
+            Self::LoadReview => dialog
+                .add_filter("JSON", &["json"])
+                .pick_file()
+                .map(Command::LoadReview),
+            Self::RelinkModel => dialog
+                .add_filter("GLB・STL", &["glb", "stl", "STL"])
+                .pick_file()
+                .map(Command::RelinkModel),
+            Self::ExportGlb => {
+                let mut dialog = dialog.add_filter("GLB", &["glb"]);
+                if let Some(name) = export_file_name(session) {
+                    dialog = dialog.set_file_name(name);
+                }
+                dialog.save_file().map(Command::ExportGlb)
             }
-            dialog.save_file().map(Command::ExportGlb)
         }
-        other => Some(other),
     }
 }
 
@@ -585,4 +630,98 @@ pub fn export_file_name(session: &Session) -> Option<String> {
     }
     let path = &session.model_ref.as_ref()?.path;
     Some(format!("{}.glb", crate::loader::stl_part_name(path)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::LoadPhase;
+    use model_reviewer_core::scene::Model;
+
+    const FILE_DIALOG_COMMANDS: [(Command, FileDialog); 5] = [
+        (Command::OpenModelDialog, FileDialog::OpenModel),
+        (Command::SaveReviewDialog, FileDialog::SaveReview),
+        (Command::LoadReviewDialog, FileDialog::LoadReview),
+        (Command::RelinkModelDialog, FileDialog::RelinkModel),
+        (Command::ExportGlbDialog, FileDialog::ExportGlb),
+    ];
+
+    #[test]
+    fn scripts_refuse_every_native_file_dialog_but_accept_paths() {
+        let mut session = Session::default();
+        session.set_model(Model::empty().into());
+        for (command, dialog) in FILE_DIALOG_COMMANDS {
+            assert_eq!(resolve_dialog(&session, &command, false), Ok(Some(dialog)));
+            assert_eq!(
+                resolve_dialog(&session, &command, true),
+                Err(
+                    "自動操作ではファイル選択の画面を開きません。open_model や export_glb でパスを指定してください"
+                )
+            );
+        }
+        for command in [
+            Command::OpenModel("model.glb".into()),
+            Command::SaveReview("review.json".into()),
+            Command::LoadReview("review.json".into()),
+            Command::RelinkModel("model.stl".into()),
+            Command::ExportGlb("export.glb".into()),
+        ] {
+            assert_eq!(resolve_dialog(&session, &command, true), Ok(None));
+        }
+    }
+
+    #[test]
+    fn unavailable_save_and_export_stay_with_the_session() {
+        let mut session = Session::default();
+        let export = Command::ExportGlbDialog;
+        let save = Command::SaveReviewDialog;
+        assert_eq!(resolve_dialog(&session, &export, true), Ok(None));
+
+        session.apply(Command::NewDocument);
+        assert_eq!(resolve_dialog(&session, &save, true), Ok(None));
+        assert_eq!(resolve_dialog(&session, &export, true), Ok(None));
+
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        session.source_kind = crate::session::SourceKind::Glb;
+        assert!(session.doc_unsaved());
+        assert_eq!(resolve_dialog(&session, &save, true), Ok(None));
+        session.load = LoadPhase::Reading;
+        assert_eq!(resolve_dialog(&session, &export, true), Ok(None));
+    }
+
+    #[test]
+    fn saving_during_a_replacement_load_stays_with_the_session() {
+        let mut session = Session::default();
+        session.set_model(Model::empty().into());
+        session.load = LoadPhase::Reading;
+        assert!(session.edits_locked() && !session.doc_unsaved());
+        for automated in [false, true] {
+            assert_eq!(
+                resolve_dialog(&session, &Command::SaveReviewDialog, automated),
+                Ok(None)
+            );
+        }
+    }
+
+    #[test]
+    fn exporting_leaves_all_file_dialog_commands_to_the_session() {
+        let mut session = Session::default();
+        session.apply(Command::NewDocument);
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        let out =
+            std::env::temp_dir().join(format!("model-reviewer-dialog-{}.glb", std::process::id()));
+        session.apply(Command::ExportGlb(out.clone()));
+        assert!(session.is_exporting());
+        for (command, _) in FILE_DIALOG_COMMANDS {
+            assert_eq!(resolve_dialog(&session, &command, true), Ok(None));
+            assert_eq!(resolve_dialog(&session, &command, false), Ok(None));
+        }
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while session.is_exporting() {
+            session.poll_exporter();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        std::fs::remove_file(out).unwrap();
+    }
 }

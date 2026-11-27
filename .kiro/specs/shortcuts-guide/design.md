@@ -6,7 +6,8 @@
 3つを足す。①操作とキーの対応を1つの表（`Keymap`）にし、キーの振り分けと画面のキーの文字を、どちらもこの表から作る。②表を画面から変えられるようにし、既定との差だけを利用者ごとのファイルに保存する。③使い方の手順書を `docs/guide/` に置き、画像は自動操作で撮り直せるようにする。新しい外部の依存は無い（JSON の読み書きは、すでに使っている `serde_json`。場所は環境変数から決める）。
 
 ### Goals
-- 既定のままなら、第3段階とキーの働きが同じ（変わる所は要件2.7 の1つと、足した4つのキー）。既存の自動操作の手順が、手順を変えずに通る。
+- 既定のままなら、第3段階とキーの働きが同じ。変わる所は4つ: 要件2.7（Shift+Home）、足した4つのキー、ポインタの場所によらず働くこと（要件2.5）、移動・回転・拡大の道具で部品を選んでいる間の X・Z と矢印（要件11・12）。既存の自動操作の手順が、手順を変えずに通る（通らない手順があれば、理由を報告する）。
+- 部品を、マウスに触れずに、決めた向きへ決めた量だけ動かせる。
 - 画面に出るキーの文字が、どこでも今の割り当てと一致する。
 - 設定ファイルがどんな内容でも起動でき、利用者の割り当てを黙って失わない。
 - キーの表・ファイルの読み書き・設定の画面を、GPUと実機の画面なしで、3つのOSで試験できる。試験は利用者の本物の設定に触れない。
@@ -18,13 +19,14 @@
 | 文書 | 内容 |
 |---|---|
 | [design-keymap.md](design-keymap.md) | 操作の一覧と既定、型の約束、キーの照合、割り当てられないキー、画面のキーの文字 |
+| [design-keymove.md](design-keymove.md) | キーで動かす: 向きの固定、数値の入力、矢印、振り分け、変わる振る舞い（2026-11-27 に足した） |
 | [design-settings.md](design-settings.md) | 設定の画面の状態と `Command`、設定ファイルの場所・形式・壊れた内容の扱い・書き込み |
 | [design-guide.md](design-guide.md) | 手順書のページ構成、画像の撮り直し、入口、アプリの文との照合 |
 | [design-testing.md](design-testing.md) | 試験の置き場所、自動操作に足すもの、利用者の設定に触れない仕組み |
 | [design-decisions.md](design-decisions.md) | 判断の一覧、捨てた案、落とし穴、確かめた事実と要確認、保留、依頼者に聞く分かれ道 |
 
 ## Boundary Commitments
-- **この仕様が持つもの**: `app::keymap` の公開の型（`Action`・`Chord`・`Keymap`・`KeyLabels`・`Refusal`）、操作の名前（ファイルに書く文字列。**一度出したら変えない**）、設定ファイルの形式と版、`LaunchArgs.keymap` と引数 `--keymap`、`Command` の追加分、自動操作の状態に足す `keys`、`docs/guide/` の構成。
+- **この仕様が持つもの**: `app::keymap` の公開の型（`Action`・`Chord`・`Keymap`・`KeyLabels`・`Refusal`）、操作の名前（ファイルに書く文字列。**一度出したら変えない**）、設定ファイルの形式と版、`LaunchArgs.keymap` と引数 `--keymap`、`Command` の追加分、自動操作の状態に足す `keys`、`docs/guide/` の構成、`core::gizmo::key_delta` と `TransformSource::Keys`。
 - **持たないもの**: 各操作の中身（積む `Command` は既存のもの）、Esc の振り分けの順、入力欄の中の編集キー（egui の持ち物）、OSのメニュー。
 - **依存の向き**: 変えない。`keymap` は `app` の中に置き、`core` には入れない（egui のキーの型を使うため）。`keymap` は `Session` を読まない。`keymap::store` は画面も `Session` も読まない。
 - **見直しが必要になる変更**: 操作の名前の付け替え、ファイルの版、修飾の持ち方（Alt を足すなど）、「自動操作は既定を使う」という約束。
@@ -50,12 +52,13 @@
 
 ## File Structure Plan（足すファイルと、変えるファイル）
 ```
-crates/app/src/     keymap.rs  keymap/{actions,chord,store}.rs  ui/keys.rs（新規）
+crates/core/src/    gizmo.rs（key_delta を足す）
+crates/app/src/     keymap.rs  keymap/{actions,chord,store}.rs  ui/keys.rs  session/{keys,keymove}.rs（新規）
                     command.rs app.rs main.rs lib.rs session/mod.rs automation.rs automation/{state,script}.rs
                     ui/{mod,ids,help,toolrail,viewbar,toolbar,status,empty}.rs（変更）
-crates/app/tests/   keymap.rs  keys_window.rs  keys_flow.rs  guide.rs（新規）  既存の試験（LaunchArgs と入力用の構造体の組み立てだけ）
-crates/app/e2e/     keys-1.json  keys-2.json  guide-*.json（新規）
-docs/guide/         README.md  01-start.md … 10-troubleshooting.md  images/（新規）
+crates/app/tests/   keymap.rs  keys_window.rs  keys_flow.rs  keymove.rs  guide.rs（新規）  既存の試験（LaunchArgs と入力用の構造体の組み立てだけ）
+crates/app/e2e/     keys-1.json  keys-2.json  keymove-1.json  guide-*.json（新規）
+docs/guide/         README.md  01-start.md … 11-create.md  images/（新規）
 docs/verify.md  README.ja.md  README.md（変更）
 ```
 
@@ -71,6 +74,8 @@ docs/verify.md  README.ja.md  README.md（変更）
 | 8 日本語配列と入力 | keymap::chord、app::shortcut_commands、手順書 | design-keymap.md、design-decisions.md |
 | 9 手順書 | docs/guide、e2e/guide-*.json、tests/guide.rs | design-guide.md |
 | 10 検証と体裁 | 各試験、docs/verify.md | design-testing.md |
+| 11 向きを固定して数値 ／ 12 矢印 | core::gizmo（`key_delta`）、session::{edit,keymove}、app::shortcut_commands | design-keymove.md |
+| 13 表示と設定 ／ 14 未確認 | ui::{keys,help,status}、automation、verification | design-keymove.md、design-testing.md |
 
 ## 実装者への注意
 - 第1段階の落とし穴13件、第2・第3段階の「確かめたAPI」「落とし穴」は、そのまま当てはまる。先に読むこと。

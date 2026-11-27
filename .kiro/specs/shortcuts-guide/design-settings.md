@@ -33,12 +33,14 @@ pub struct KeyConflict { pub action: Action, pub chord: Chord, pub holder: Actio
 ```rust
 pub struct KeysInput { pub rows: Vec<KeyRow>, pub capture: Option<Action>, pub conflict: Option<KeyConflict>,
                        pub refusal: Option<(Action, Refusal)>, pub reset_all_armed: bool, pub store_note: Option<String>, pub platform: Platform }
-pub struct KeyRow { pub action: Action, pub key: Option<String>, pub changed: bool, pub default_key: Option<String> }
+pub struct KeyRow { pub action: Action, pub key: Option<String>, pub changed: bool, pub default_key: Option<String>,
+                    pub note: Option<&'static str> }   // 修飾なしの X・Y・Z を持つ行の注意（要件13.2）
 pub fn show(ui: &mut egui::Ui, input: &KeysInput, out: &mut Vec<Command>);
 pub fn matches(row: &KeyRow, filter: &str) -> bool;   // 名前かキーに含む。英字は大文字小文字を区別しない
 ```
 - 自動操作の名前（`ui/ids.rs`）: `keys.filter`、`keys.row.<操作の名前>`（キーの部品）、`keys.clear.<…>`、`keys.reset.<…>`、`keys.conflict.replace`、`keys.conflict.cancel`、`keys.reset_all`、`keys.close`、`help.keys`、`help.guide_copy`。見えている行だけ登録する（既存の一覧と同じ）。
 - 取り込みを始めるとき、検索の欄の入力の位置を手放す（入力中のままだと、振り分けが「入力中」で止まり、キーが取り込みに届かない）。
+- 「変えられないキー」の欄に、場面つきの固定のキー（X・Y・Z の向きの固定、矢印、数値の途中の数字・小数点・負号）を、Esc・Enter・Delete と並べて出す（要件13.1）。
 - `store_note` は、保存されない事情があるときだけ出す（「設定の場所が決められないため、変更は保存されません」「新しい版の設定のため、変更は保存されません」「自動操作のため、変更は保存されません」）。
 
 ## 取り込みの振り分け（`app::shortcut_commands` の中。設定の画面が開いているとき）

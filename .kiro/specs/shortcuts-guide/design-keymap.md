@@ -1,35 +1,34 @@
 # 操作とキーの表
 
-## 操作の一覧（41個）と既定
-「名前」はファイルに書く文字列で、一度出したら変えない。「場所」は、ポインタが3Dビューの上のときだけ働く（V）か、どこでも働く（A）か。**太字は、この段階で足す既定。** ほかは第3段階と同じである。
-| まとまり | 名前 | 画面の言葉 | 既定 | 場所 | 積む `Command`（既存のボタンと同じ） |
-|---|---|---|---|---|---|
-| ファイル | `file.open` ／ `file.save_review` ／ `file.load_review` ／ `file.export` | 開く／レビュー保存／レビュー読込／書き出し | **Cmd+O**／**Cmd+S**／なし／**Cmd+E** | A | `OpenModelDialog`／`SaveReviewDialog`／`LoadReviewDialog`／`ExportGlbDialog` |
-| 編集 | `edit.undo` ／ `edit.redo` ／ `edit.duplicate` | 戻す／やり直す／複製 | Cmd+Z／Shift+Cmd+Z／Cmd+D | V | `Undo`／`Redo`／`DuplicateSelected`（選択があるとき） |
-| 道具 | `tool.select` `tool.move` `tool.rotate` `tool.scale` `tool.shape` `tool.measure` | 選択・移動・回転・拡大・図形・計測 | V・G・R・S・なし・M | V | `SetTool(..)`（いまの道具と違うとき） |
-| 道具 | `tool.annotate` | 注釈（切り替え） | N | V | `SetAnnotateMode(!今)` |
-| 道具 | `shape.cube` `shape.sphere` `shape.cylinder` `shape.plane` | 立方体・球・円柱・平面を置く | なし | V | `AddShape(..)` |
-| 道具 | `measure.snap` ／ `measure.clear` | 吸着／計測を消す | X／なし | V | `ToggleSnap`／`ClearMeasure` |
-| 見る | `view.fit_all` ／ `view.fit_selection` ／ `view.home` | 全体表示／選択を表示／初期視点 | A／F／Home | V | `FitAll`／`FitSelection`／`Home` |
-| 見る | `view.front` `view.right` `view.top` ／ `view.back` `view.left` `view.bottom` | 前・右・上／後・左・下から見る | 1・3・7／なし | V | `SnapView(..)` |
-| 見る | `view.projection` | 透視と平行 | 5 | V | `ToggleProjection` |
-| 表示 | `display.faces_lines` ／ `display.xray` | 面と線／透かし（どちらも切り替え。外すと面） | Z／Shift+Z | V | `SetDisplay(..)`（今の `toggled_display`） |
-| 表示 | `display.faces` ／ `display.lines` ／ `display.grid` ／ `display.section` | 面／線／格子／断面 | なし／なし／なし／C | V | `SetDisplay(..)`／同（線に対応するGPUのとき）／`SetGrid(!今)`／`ToggleSection`（モデルがあるとき） |
-| 表示 | `parts.hide_selected` ／ `parts.show_all` ／ `units.display_next` | 選択を非表示／すべて表示／表示の単位 | H／Shift+H／なし | V | `HideSelected`／`ShowAll`／`SetDisplayUnit(次)` |
-| その他 | `app.help` ／ `app.keys` | ヘルプ／ショートカットの設定 | **F1**／なし | A | ヘルプの開閉／`SetKeysOpen(true)` |
+## 操作の一覧（42個）と既定
+「名前」はファイルに書く文字列で、一度出したら変えない。どの操作も、ポインタの場所によらず働く（要件2.5。2026-11-27 に「働く場所」の区別をやめた）。**太字は、この段階で足す既定。** 新規作成の Cmd+N は creation-basics が先に足している。ほかは第3段階と同じである。
+| まとまり | 名前 | 画面の言葉 | 既定 | 積む `Command`（既存のボタンと同じ） |
+|---|---|---|---|---|
+| ファイル | `file.new` ／ `file.open` ／ `file.save_review` ／ `file.load_review` ／ `file.export` | 新規作成／開く／レビュー保存／レビュー読込／書き出し | Cmd+N／**Cmd+O**／**Cmd+S**／なし／**Cmd+E** | `NewDocument`／`OpenModelDialog`／`SaveReviewDialog`／`LoadReviewDialog`／`ExportGlbDialog` |
+| 編集 | `edit.undo` ／ `edit.redo` ／ `edit.duplicate` | 戻す／やり直す／複製 | Cmd+Z／Shift+Cmd+Z／Cmd+D | `Undo`／`Redo`／`DuplicateSelected`（選択があるとき） |
+| 道具 | `tool.select` `tool.move` `tool.rotate` `tool.scale` `tool.shape` `tool.measure` | 選択・移動・回転・拡大・図形・計測 | V・G・R・S・なし・M | `SetTool(..)`（いまの道具と違うとき） |
+| 道具 | `tool.annotate` | 注釈（切り替え） | N | `SetAnnotateMode(!今)` |
+| 道具 | `shape.cube` `shape.sphere` `shape.cylinder` `shape.plane` | 立方体・球・円柱・平面を置く | なし | `AddShape(..)` |
+| 道具 | `measure.snap` ／ `measure.clear` | 吸着／計測を消す | X／なし | `ToggleSnap`／`ClearMeasure` |
+| 見る | `view.fit_all` ／ `view.fit_selection` ／ `view.home` | 全体表示／選択を表示／初期視点 | A／F／Home | `FitAll`／`FitSelection`／`Home` |
+| 見る | `view.front` `view.right` `view.top` ／ `view.back` `view.left` `view.bottom` | 前・右・上／後・左・下から見る | 1・3・7／なし | `SnapView(..)` |
+| 見る | `view.projection` | 透視と平行 | 5 | `ToggleProjection` |
+| 表示 | `display.faces_lines` ／ `display.xray` | 面と線／透かし（どちらも切り替え。外すと面） | Z／Shift+Z | `SetDisplay(..)`（今の `toggled_display`） |
+| 表示 | `display.faces` ／ `display.lines` ／ `display.grid` ／ `display.section` | 面／線／格子／断面 | なし／なし／なし／C | `SetDisplay(..)`／同（線に対応するGPUのとき）／`SetGrid(!今)`／`ToggleSection`（モデルがあるとき） |
+| 表示 | `parts.hide_selected` ／ `parts.show_all` ／ `units.display_next` | 選択を非表示／すべて表示／表示の単位 | H／Shift+H／なし | `HideSelected`／`ShowAll`／`SetDisplayUnit(次)` |
+| その他 | `app.help` ／ `app.keys` | ヘルプ／ショートカットの設定 | **F1**／なし | ヘルプの開閉／`SetKeysOpen(true)` |
 - ボタンが押せない状態（モデルが無い、読み込み中、書き出し中など）では、キーも何もしない。条件は、ボタンの側の条件をそのまま使う（別に書き写さない。使えるなら、ボタンと共有の関数にする）。
-- 固定のキーは表に入れない: Esc（今の振り分けの順のまま）、Enter（欄の確定）、Delete・Backspace（`DeleteSelected`）。
+- 固定のキーは表に入れない: Esc（今の振り分けの順のまま）、Enter（欄の確定）、Delete・Backspace（`DeleteSelected`）、矢印と、場面つきの X・Y・Z・数字（キーで動かす。[design-keymove.md](design-keymove.md)）。
 
 ## 型の約束（`crates/app/src/keymap.rs` と `keymap/`）
 ```rust
-pub enum Action { FileOpen, /* … 41個 */ }
+pub enum Action { FileNew, FileOpen, /* … 42個 */ }
 impl Action {
     pub const ALL: &'static [Action];
     pub fn id(self) -> &'static str;            pub fn from_id(id: &str) -> Option<Action>;
     pub fn label(self) -> &'static str;         pub fn group(self) -> Group;       // 画面の言葉とまとまり
-    pub fn scope(self) -> Scope;                pub fn default_chord(self) -> Option<Chord>;
+    pub fn default_chord(self) -> Option<Chord>;
 }
-pub enum Scope { View, Anywhere }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord { pub key: egui::Key, pub shift: bool, pub command: bool }
 impl Chord {
@@ -59,7 +58,8 @@ impl KeyLabels { pub fn get(&self, action: Action) -> Option<&str>; pub fn with_
 - `command` は `modifiers.command`（macOS は Cmd、ほかは Ctrl）。`alt` が付いていれば `Refusal::Modifier`。`ctrl` が付いて `command` でない（macOS の Control）も同じ。
 - 修飾は完全一致。`Chord { key: Z, shift: false, command: false }` は、Cmd+Z では働かない。
 - 1フレームに複数のキーが届いたら、届いた順に操作を積む（今は、コードに書いた順）。同じフレームで2つのキーを押す場合だけ順が変わりうる。
-- 振り分けの入口の順は今のまま: ダイアログ → ヘルプ → **設定の画面（足す）** → Esc → 入力中なら終わり → 固定のキー（Delete・Backspace）→ 表。「パネルの上」の判定は、`Scope::View` の操作と Delete にだけ掛ける。
+- 振り分けの入口の順: ダイアログ → ヘルプ → **設定の画面（足す）** → Esc → 入力中なら終わり → **数値の入力の途中ならそのキーだけ（足す）** → **向きの固定と矢印（足す。場面つき）** → 固定のキー（Delete・Backspace）→ 表。
+- **「パネルの上」の判定（`over_panel`）は消す。** 代わりに、入力欄でない部品が入力の位置を持っている間だけ、Delete・Backspace・矢印・Enter を捨てる（一覧やボタンを Tab で移っている人の操作を奪わない）。英字・数字・修飾つきの組は、その間も働く。
 - 公開の関数 `shortcut_commands(ctx, session)` の形は変えない（既存の試験が呼んでいる）。表は `session.keymap` から読む。
 
 ## 割り当てられないキー（`Chord::from_event` と `parse` が返す理由）

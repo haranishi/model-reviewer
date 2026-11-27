@@ -202,6 +202,71 @@ mod tests {
     }
 
     #[test]
+    fn push_with_keeps_the_kinds_and_a_third_point_starts_over() {
+        let mut measure = Measurement::default();
+        assert_eq!(measure.kinds, [SnapKind::Face; 2]);
+        measure.push_with(point(1, Vec3::ZERO), SnapKind::Vertex);
+        assert_eq!(measure.kinds, [SnapKind::Vertex, SnapKind::Face]);
+        measure.push_with(point(1, Vec3::X), SnapKind::Edge);
+        assert_eq!(measure.kinds, [SnapKind::Vertex, SnapKind::Edge]);
+        // 有限でない点は受け付けず、種類も変えない。
+        measure.push_with(point(1, Vec3::splat(f32::INFINITY)), SnapKind::Vertex);
+        assert_eq!(measure.kinds, [SnapKind::Vertex, SnapKind::Edge]);
+        assert_eq!(measure.second, Some(point(1, Vec3::X)));
+        // 3点目は新しい1点目。2点目の種類は面に戻る。
+        measure.push_with(point(2, Vec3::Y), SnapKind::Edge);
+        assert_eq!(measure.kinds, [SnapKind::Edge, SnapKind::Face]);
+        assert_eq!(measure.second, None);
+        // `push` は面として足す。
+        measure.push(point(2, Vec3::Z));
+        assert_eq!(measure.kinds, [SnapKind::Edge, SnapKind::Face]);
+        measure.push(point(2, Vec3::ZERO));
+        assert_eq!(measure.kinds, [SnapKind::Face, SnapKind::Face]);
+    }
+
+    #[test]
+    fn delta_is_second_minus_first_and_follows_moved_parts() {
+        let mut table: HashMap<NodeKey, Affine3A> = HashMap::from([
+            (NodeKey(1), Affine3A::IDENTITY),
+            (
+                NodeKey(2),
+                Affine3A::from_translation(Vec3::new(1.0, -2.0, 0.5)),
+            ),
+        ]);
+        let mut measure = Measurement::default();
+        measure.push(point(1, Vec3::new(0.5, 0.5, 0.5)));
+        assert_eq!(measure.delta_with(|key| table.get(&key).copied()), None);
+        measure.push(point(2, Vec3::ZERO));
+        let delta = measure.delta_with(|key| table.get(&key).copied()).unwrap();
+        // (1, −2, 0.5) − (0.5, 0.5, 0.5)。
+        assert!(
+            (delta - Vec3::new(0.5, -2.5, 0.0)).length() < 1.0e-6,
+            "{delta}"
+        );
+        // 順を逆にすると符号が逆になる。
+        let mut reversed = Measurement::default();
+        reversed.push(point(2, Vec3::ZERO));
+        reversed.push(point(1, Vec3::new(0.5, 0.5, 0.5)));
+        let back = reversed.delta_with(|key| table.get(&key).copied()).unwrap();
+        assert!((back + delta).length() < 1.0e-6);
+        // 部品を動かすと差が変わる。
+        table.insert(
+            NodeKey(2),
+            Affine3A::from_translation(Vec3::new(4.0, 0.5, 0.5)),
+        );
+        let moved = measure.delta_with(|key| table.get(&key).copied()).unwrap();
+        assert!(
+            (moved - Vec3::new(3.5, 0.0, 0.0)).length() < 1.0e-6,
+            "{moved}"
+        );
+        // 部品が無ければ差も無い。
+        assert_eq!(
+            measure.delta_with(|key| (key == NodeKey(1)).then_some(Affine3A::IDENTITY)),
+            None
+        );
+    }
+
+    #[test]
     fn removed_parts_clear_the_measurement() {
         let mut measure = Measurement::default();
         measure.push(point(1, Vec3::ZERO));

@@ -4,11 +4,13 @@ use std::time::Instant;
 
 use glam::{Affine3A, Quat, Vec3};
 
+use model_reviewer_core::camera::{OrbitCamera, Projection};
 use model_reviewer_core::math::{Aabb, Ray};
-use model_reviewer_core::pick::{Hit, PickIndex, pick};
+use model_reviewer_core::pick::{Hit, PickIndex, pick, pick_clipped};
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
 };
+use model_reviewer_core::section::{Axis, SectionPlane};
 use model_reviewer_core::visibility::Visibility;
 
 fn vertex(position: [f32; 3]) -> Vertex {
@@ -504,4 +506,165 @@ fn intersect(
     } else {
         None
     }
+}
+
+/// 中心が原点で一辺2の、閉じた箱（各面2つの三角形。面の並びは +X・−X・+Y・−Y・+Z・−Z）。
+fn closed_box() -> Primitive {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for axis in 0..3 {
+        for sign in [1.0f32, -1.0] {
+            let mut n = Vec3::ZERO;
+            n[axis] = sign;
+            let mut u = Vec3::ZERO;
+            let mut v = Vec3::ZERO;
+            u[(axis + 1) % 3] = 1.0;
+            v[(axis + 2) % 3] = 1.0;
+            let base = vertices.len() as u32;
+            for corner in [n - u - v, n + u - v, n + u + v, n - u + v] {
+                vertices.push(vertex(corner.to_array()));
+            }
+            indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    primitive(vertices, indices)
+}
+
+fn front_cameras() -> [OrbitCamera; 2] {
+    [Projection::Perspective, Projection::Orthographic].map(|projection| OrbitCamera {
+        target: Vec3::ZERO,
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: 10.0,
+        projection,
+        ..OrbitCamera::default()
+    })
+}
+
+#[test]
+fn clipped_ray_hits_the_far_wall() {
+    let model = model_of(closed_box(), &[Affine3A::IDENTITY]);
+    let index = PickIndex::build(&model);
+    let vis = Visibility::all_visible(1);
+    let bounds = closed_box().local_aabb;
+    // z > 0 を消す。前の壁（z = 1）は消え、奥の壁（z = −1）の内側に当たる。
+    let clip = SectionPlane {
+        axis: Axis::Z,
+        offset: 0.0,
+        flipped: false,
+    };
+    for camera in front_cameras() {
+        for ndc in [glam::Vec2::ZERO, glam::Vec2::new(0.05, -0.04)] {
+            let ray = camera.screen_ray_in(ndc, 1.0, &bounds);
+            let plain = pick(&model, &index, &vis, &ray).expect("前の壁に当たる");
+            close(plain.world_pos.z, 1.0);
+            let hit = pick_clipped(&model, &index, &vis, &ray, Some(&clip)).expect("奥の壁");
+            close(hit.world_pos.z, -1.0);
+            close3(hit.world_pos, ray.origin + ray.dir * hit.t);
+            close3(hit.local_pos, hit.world_pos);
+            assert!(!clip.cuts(hit.world_pos));
+            assert_eq!(hit.prim, PrimId(0));
+            // 当たった三角形は奥の壁（−Z の面。三角形 10・11）。
+            assert!(matches!(hit.triangle, 10 | 11), "{}", hit.triangle);
+
+            // 反転すると z < 0 を消す。前の壁に当たる。
+            let flipped = SectionPlane {
+                flipped: true,
+                ..clip
+            };
+            let front = pick_clipped(&model, &index, &vis, &ray, Some(&flipped)).unwrap();
+            close(front.t, plain.t);
+            assert_eq!(front.triangle, plain.triangle);
+
+            // 全部が消す側（z > −5 を消す）なら当たりなし。
+            let all = SectionPlane {
+                offset: -5.0,
+                ..clip
+            };
+            assert!(pick_clipped(&model, &index, &vis, &ray, Some(&all)).is_none());
+        }
+    }
+}
+
+#[test]
+fn a_triangle_across_the_plane_is_hit_on_the_kept_side() {
+    // z = 0 の三角形が x = 0.5 をまたぐ。
+    let model = model_of(plate(), &[Affine3A::IDENTITY]);
+    let index = PickIndex::build(&model);
+    let vis = Visibility::all_visible(1);
+    let clip = SectionPlane {
+        axis: Axis::X,
+        offset: 0.5,
+        flipped: false,
+    };
+    let kept = Ray {
+        origin: Vec3::new(0.2, 0.2, 5.0),
+        dir: Vec3::NEG_Z,
+    };
+    let hit = pick_clipped(&model, &index, &vis, &kept, Some(&clip)).expect("残す側の点");
+    close(hit.t, 5.0);
+    close3(hit.world_pos, Vec3::new(0.2, 0.2, 0.0));
+    assert_eq!(hit.triangle, 0);
+    let cut = Ray {
+        origin: Vec3::new(0.7, 0.2, 5.0),
+        dir: Vec3::NEG_Z,
+    };
+    assert!(pick(&model, &index, &vis, &cut).is_some());
+    assert!(pick_clipped(&model, &index, &vis, &cut, Some(&clip)).is_none());
+}
+
+#[test]
+fn clip_none_equals_pick() {
+    let worlds = [
+        Affine3A::IDENTITY,
+        Affine3A::from_scale_rotation_translation(
+            Vec3::new(2.0, 0.5, 3.0),
+            Quat::from_rotation_z(0.2),
+            Vec3::new(3.0, 0.0, 1.0),
+        ),
+    ];
+    let model = model_of(grid(12), &worlds);
+    let index = PickIndex::build(&model);
+    let vis = Visibility::all_visible(model.nodes.len());
+    let far = SectionPlane {
+        axis: Axis::Z,
+        offset: 100.0,
+        flipped: false,
+    };
+    let mut lcg = Lcg(0x5EC7);
+    let mut hits = 0;
+    for _ in 0..300 {
+        let origin = Vec3::new(
+            lcg.range(-2.0, 14.0),
+            lcg.range(-2.0, 14.0),
+            lcg.range(2.0, 9.0),
+        );
+        let dir = Vec3::new(lcg.range(-0.5, 0.5), lcg.range(-0.5, 0.5), -1.0).normalize();
+        let ray = Ray { origin, dir };
+        let a = pick(&model, &index, &vis, &ray);
+        let b = pick_clipped(&model, &index, &vis, &ray, None);
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                hits += 1;
+                assert_eq!(a.node, b.node);
+                assert_eq!(a.t.to_bits(), b.t.to_bits());
+                assert_eq!(a.world_pos, b.world_pos);
+                assert_eq!(a.local_pos, b.local_pos);
+                assert_eq!(a.local_normal, b.local_normal);
+                assert_eq!((a.prim, a.triangle), (b.prim, b.triangle));
+            }
+            other => panic!("{other:?}"),
+        }
+        // 何も消さない位置の平面でも、当たる部品と三角形は同じ。
+        let c = pick_clipped(&model, &index, &vis, &ray, Some(&far));
+        assert_eq!(
+            a.map(|h| (h.node, h.triangle)),
+            c.map(|h| (h.node, h.triangle))
+        );
+        if let (Some(a), Some(c)) = (a, c) {
+            close(a.t, c.t);
+        }
+    }
+    assert!(hits > 50, "{hits}");
 }

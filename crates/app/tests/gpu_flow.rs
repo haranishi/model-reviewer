@@ -526,3 +526,75 @@ fn added_shape_is_drawn_and_undo_removes_it() {
     );
     assert!(harness.state().gpu_notice().is_none());
 }
+
+/// 断面: 入れると描き直し、送るのは定数だけ（形状とインスタンスは0バイト）。全部を消す位置では
+/// 中央が背景になり、外すと元の絵に戻る。何もしないフレームでは描かない。
+#[test]
+#[ignore = "GPUが必要"]
+fn section_redraws_with_constants_only() {
+    use model_reviewer_core::scene::SceneRead;
+    use model_reviewer_core::section::{Axis, SectionPlane};
+    let dir = scratch("section");
+    let glb = dir.join("sample.glb");
+    std::fs::write(&glb, sample_glb()).unwrap();
+    let launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .wgpu()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_max_steps(800)
+        .with_size(egui::vec2(1100.0, 720.0))
+        .with_context_setup(model_reviewer::fonts::install)
+        .build_eframe(|cc| App::new(cc, launch));
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::DroppedFiles(vec![glb]));
+    wait_ready(&mut harness);
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::SetGrid(false));
+    harness.step();
+    harness.step();
+    let whole = center_color(&mut harness);
+    let before = harness.state().gpu_stats().unwrap();
+    // 何もしないフレームでは描かない。
+    harness.step();
+    assert_eq!(
+        harness.state().gpu_stats().unwrap().draw_count,
+        before.draw_count
+    );
+    // 視点の手前の軸で、全体より手前の位置まで消す（反転で、位置より大きい側を残す）。
+    let bounds = harness.state().session().doc.as_ref().unwrap().bounds();
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::SetSection(Some(SectionPlane {
+            axis: Axis::Y,
+            offset: bounds.max.y,
+            flipped: true,
+        })));
+    harness.step();
+    harness.step();
+    let cut = harness.state().gpu_stats().unwrap();
+    assert!(cut.draw_count > before.draw_count, "断面で描き直す");
+    assert_eq!(
+        cut.uploaded_bytes, before.uploaded_bytes,
+        "形状とインスタンスは送らない"
+    );
+    assert_eq!(cut.instance_rebuilds, before.instance_rebuilds);
+    assert!(cut.frame_bytes > before.frame_bytes, "定数だけ送る");
+    let empty = center_color(&mut harness);
+    let diff = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
+    assert!(diff(whole, empty) > 30.0, "消えた: {whole:?} → {empty:?}");
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::SetSection(None));
+    harness.step();
+    harness.step();
+    let back = center_color(&mut harness);
+    assert!(diff(whole, back) < 3.0, "外すと元の絵: {whole:?} {back:?}");
+    assert!(harness.state().gpu_notice().is_none());
+}

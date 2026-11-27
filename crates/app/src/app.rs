@@ -300,6 +300,20 @@ pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session)
             out.push(command);
         }
     }
+    // 吸着（X）と断面（C）。修飾つき（Cmd+X・Cmd+C）は切り取りとコピーなので受けない。
+    if let Some(modifiers) = key_press(ctx, egui::Key::X)
+        && plain(modifiers)
+        && !modifiers.shift
+    {
+        out.push(Command::ToggleSnap);
+    }
+    if let Some(modifiers) = key_press(ctx, egui::Key::C)
+        && plain(modifiers)
+        && !modifiers.shift
+        && session.model.is_some()
+    {
+        out.push(Command::ToggleSection);
+    }
     if let Some(modifiers) = key_press(ctx, egui::Key::Z)
         && plain(modifiers)
     {

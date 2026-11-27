@@ -82,6 +82,15 @@ fn is_ring(handle: Handle) -> bool {
     matches!(handle, Handle::RotX | Handle::RotY | Handle::RotZ)
 }
 
+/// 変化量の文字に、距離の単位を添える（`None` なら添えない。表示の単位が「ファイルと同じ」の
+/// 間は第2段階と同じ文字にするため）。距離の値は呼び出し側が表示の単位へ換算しておく。
+pub fn readout_text_with(readout: Readout, distance_suffix: Option<&str>) -> String {
+    match (readout, distance_suffix) {
+        (Readout::Distance(_), Some(suffix)) => format!("{} {suffix}", readout_text(readout)),
+        _ => readout_text(readout),
+    }
+}
+
 /// 変化量の文字。距離は符号つき有効数字4桁、角度は度、倍率は「×」。
 pub fn readout_text(readout: Readout) -> String {
     match readout {
@@ -229,6 +238,16 @@ fn reg_rect(ctx: &egui::Context, name: &str, rect: egui::Rect) {
 }
 
 pub fn show(ui: &mut egui::Ui, input: &GizmoViewInput, out: &mut Vec<Command>) {
+    show_with(ui, input, None, out);
+}
+
+/// `distance_suffix` は移動の変化量に添える単位（`readout_text_with`）。
+pub fn show_with(
+    ui: &mut egui::Ui,
+    input: &GizmoViewInput,
+    distance_suffix: Option<&str>,
+    out: &mut Vec<Command>,
+) {
     let rect = input.rect;
     if !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -282,6 +301,7 @@ pub fn show(ui: &mut egui::Ui, input: &GizmoViewInput, out: &mut Vec<Command>) {
         &shapes,
         hot,
         state.grabbing.is_some() || input.active.is_some(),
+        distance_suffix,
     );
     for (handle, point) in grab_points(input.tool, &input.frame) {
         let center = to_screen(rect, point);
@@ -354,6 +374,7 @@ fn paint(
     shapes: &[HandleShape],
     hot: Option<Handle>,
     grabbing: bool,
+    distance_suffix: Option<&str>,
 ) {
     let painter = ui.painter_at(rect);
     let pivot = pivot_px(&input.frame).map(|p| to_screen(rect, p));
@@ -417,7 +438,12 @@ fn paint(
             .filter(|p| rect.contains(*p))
             .or(pivot)
             .unwrap_or(rect.center());
-        paint_readout(&painter, rect, anchor, &readout_text(readout));
+        paint_readout(
+            &painter,
+            rect,
+            anchor,
+            &readout_text_with(readout, distance_suffix),
+        );
     }
 }
 

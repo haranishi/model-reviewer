@@ -18,6 +18,8 @@ pub const PANEL_DIGITS: u8 = 6;
 pub const NO_POINTS: &str = "表面を2回クリックすると距離が出ます";
 /// 1点だけのときの1行。
 pub const ONE_POINT: &str = "もう1点をクリックしてください";
+/// 2点がそろったときに添える1行（6桁目は目安）。
+pub const PRECISION_NOTE: &str = "値は単精度の範囲です";
 /// 「消す」を押せないときの理由。
 pub const NOTHING_TO_CLEAR: &str = "消す点がありません";
 
@@ -108,4 +110,11 @@ pub fn show(ui: &mut egui::Ui, input: &MeasurePanelInput, out: &mut Vec<Command>
                 ui.end_row();
             }
         });
+    if input.points >= 2 {
+        ui.label(
+            egui::RichText::new(PRECISION_NOTE)
+                .size(theme::SMALL_SIZE)
+                .color(theme::TEXT_WEAK),
+        );
+    }
 }

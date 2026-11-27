@@ -1,12 +1,16 @@
 //! 下部の状態。高さが限られるので、警告の一覧はポップアップに出す。
+//!
+//! 単位は2つの部品で出す。左が前提（GLB は「1単位 = m」、STL は「STL = mm（仮定）」）、右が表示
+//! （「表示 ファイルと同じ」「表示 mm」）。幅が足りないときは「格子」「表示の単位」「部品の数」の
+//! 順に省く。前提の単位と未保存の印は省かない。
 
 use model_reviewer_core::camera::grid_spacing;
 use model_reviewer_core::gizmo::Tool;
-use model_reviewer_core::units::{UnitLabel, format_distance};
+use model_reviewer_core::units::{UnitLabel, Units};
 
 use crate::command::{Command, PanelKind};
 use crate::loader::LoadPhase;
-use crate::session::Session;
+use crate::session::{Session, SourceKind};
 use crate::theme;
 
 use super::ids;
@@ -32,6 +36,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
         }
         // 右端の「詳細」と統計・格子・選択名を右から先に並べ、残りの幅で状態文を省略する。
         // 幅960で2つの未保存の印と長い知らせが同時に出ても重ならない。
+        let shown = optional_items(ui, session);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = if session.panel_details {
                 "詳細▴"
@@ -47,30 +52,47 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 });
             }
             if let Some(model) = &session.model {
-                ui.label(format!(
-                    "部品 {}・三角形 {}",
-                    // どちらも文書から（追加・複製・削除で変わる）。
-                    grouped(session.doc.as_ref().map_or(0, |doc| doc.nodes().len()) as u64),
-                    grouped(session.placed_triangles()),
-                ));
-                if session.grid_visible {
-                    let spacing = grid_spacing(session.camera.distance);
-                    ui.label(format!("格子 {}", spacing_text(spacing)))
-                        .on_hover_text("床の格子の1マスの長さ（モデルの単位）");
+                if shown.parts {
+                    ui.label(parts_text(session));
                 }
-                // 単位は前提の表示だけ。押すと m → cm → mm と替わり、数値は変えない。
-                let unit = ui
-                    .button(unit_text(session.unit))
-                    .on_hover_text("長さの数値はファイルの値のまま。押すと添える単位を替えます");
+                if shown.grid {
+                    ui.label(grid_text(session))
+                        .on_hover_text("床の格子の1マスの長さ");
+                }
+                if shown.display {
+                    let display = ui
+                        .button(display_unit_text(session.units))
+                        .on_hover_text(
+                            "長さの数値を出す単位。押すと ファイルと同じ → mm → cm → m と替わります",
+                        );
+                    reg(ids::STATUS_DISPLAY_UNIT, &display);
+                    if display.clicked() {
+                        out.push(Command::SetDisplayUnit(session.units.next_display()));
+                    }
+                }
+                // 前提の単位（ファイルの数値1が表す長さ）。数値は換算しない。
+                let (text, hint, command) = match session.source_kind {
+                    SourceKind::Glb => (
+                        unit_text(session.units.source),
+                        "ファイルの数値1が表す長さの前提です。押すと m → cm → mm と替わります（ファイルの数値は変えません）",
+                        Command::SetUnit(session.units.source.next()),
+                    ),
+                    SourceKind::Stl { unit } => (
+                        stl_unit_text(unit),
+                        "STL には単位が無いため、この単位と仮定しています。押すと仮定を替えて開き直します",
+                        Command::SetStlUnit(unit.next()),
+                    ),
+                };
+                let unit = ui.button(text).on_hover_text(hint);
                 reg(ids::STATUS_UNIT, &unit);
                 if unit.clicked() {
-                    out.push(Command::SetUnit(session.unit.next()));
+                    out.push(command);
                 }
                 if let Some(distance) = crate::session::measure_distance(session) {
                     ui.label(
                         egui::RichText::new(format!(
                             "距離 {}",
-                            format_distance(distance, session.unit)
+                            session.units.format(distance, 4)
                         ))
                         .color(theme::WARNING)
                         .strong(),
@@ -126,7 +148,12 @@ fn show_middle(ui: &mut egui::Ui, session: &Session) {
         let error = matches!(session.load, LoadPhase::Failed(_)) || session.export_failed();
         (session.status_text.clone(), error.then_some(theme::ERROR))
     } else if session.model.is_some() {
-        (tool_hint(session.tool).to_owned(), Some(theme::TEXT_WEAK))
+        let hint = if session.section.is_some() && session.tool == Tool::Select {
+            SECTION_HINT
+        } else {
+            tool_hint(session.tool)
+        };
+        (hint.to_owned(), Some(theme::TEXT_WEAK))
     } else {
         (String::new(), None)
     };
@@ -151,6 +178,122 @@ fn show_middle(ui: &mut egui::Ui, session: &Session) {
         .on_hover_text(&full);
 }
 
+/// 幅に合わせて出すか決める部品（省く順は 格子 → 表示の単位 → 部品の数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Optional {
+    pub grid: bool,
+    pub display: bool,
+    pub parts: bool,
+}
+
+/// 状態文に残したい最小の幅。
+const MIDDLE_MIN: f32 = 160.0;
+/// ボタンの左右の余白と部品の間の分。
+const BUTTON_PAD: f32 = 16.0;
+
+/// 使える幅に収まるように、省く部品を決める。ファイル名と未保存の印を並べた後に呼ぶ。
+fn optional_items(ui: &egui::Ui, session: &Session) -> Optional {
+    let mut shown = Optional {
+        grid: session.grid_visible,
+        display: true,
+        parts: true,
+    };
+    if session.model.is_none() {
+        return shown;
+    }
+    let gap = ui.spacing().item_spacing.x;
+    let width = |text: &str, pad: f32| text_width(ui, text) + pad + gap;
+    // ファイル名と未保存の印は、呼ぶ時点で並べ終えている（使える幅から引かれている）。
+    let mut fixed = width("詳細▴", BUTTON_PAD);
+    fixed += width(&unit_button_text(session), BUTTON_PAD);
+    if let Some(distance) = crate::session::measure_distance(session) {
+        fixed += width(&format!("距離 {}", session.units.format(distance, 4)), 0.0);
+    }
+    if session
+        .model
+        .as_ref()
+        .is_some_and(|model| !model.warnings.is_empty())
+    {
+        fixed += width("簡略表示 000 件", BUTTON_PAD);
+    }
+    if let Some(name) = selected_name(session) {
+        fixed += width(&name, 0.0);
+    }
+    let grid = width(&grid_text(session), 0.0);
+    let display = width(&display_unit_text(session.units), BUTTON_PAD);
+    let parts = width(&parts_text(session), 0.0);
+    let available = ui.available_width() - MIDDLE_MIN;
+    let mut total = fixed + if shown.grid { grid } else { 0.0 } + display + parts;
+    if total > available && shown.grid {
+        shown.grid = false;
+        total -= grid;
+    }
+    if total > available {
+        shown.display = false;
+        total -= display;
+    }
+    if total > available {
+        shown.parts = false;
+    }
+    shown
+}
+
+fn text_width(ui: &egui::Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+        .size()
+        .x
+}
+
+fn parts_text(session: &Session) -> String {
+    format!(
+        "部品 {}・三角形 {}",
+        // どちらも文書から（追加・複製・削除で変わる）。
+        grouped(session.doc.as_ref().map_or(0, |doc| doc.nodes().len()) as u64),
+        grouped(session.placed_triangles()),
+    )
+}
+
+/// 格子の文字。表示が「ファイルと同じ」なら今までどおり「格子 0.1」、そうでなければ
+/// 「格子 100 mm」。
+pub fn grid_text(session: &Session) -> String {
+    let spacing = grid_spacing(session.camera.distance);
+    grid_label(spacing, session.units)
+}
+
+/// 格子の間隔（シーンの単位）の文字。
+pub fn grid_label(spacing: f32, units: Units) -> String {
+    match units.display {
+        None => format!("格子 {}", spacing_text(spacing)),
+        Some(_) => format!(
+            "格子 {} {}",
+            spacing_text(units.to_display(spacing)),
+            units.shown().suffix()
+        ),
+    }
+}
+
+/// 表示の単位の文字（「表示 ファイルと同じ」「表示 mm」）。
+pub fn display_unit_text(units: Units) -> String {
+    match units.display {
+        None => "表示 ファイルと同じ".to_owned(),
+        Some(unit) => format!("表示 {}", unit.suffix()),
+    }
+}
+
+/// STL の単位の仮定の文字（「STL = mm（仮定）」）。
+pub fn stl_unit_text(unit: UnitLabel) -> String {
+    format!("STL = {}（仮定）", unit.suffix())
+}
+
+fn unit_button_text(session: &Session) -> String {
+    match session.source_kind {
+        SourceKind::Glb => unit_text(session.units.source),
+        SourceKind::Stl { unit } => stl_unit_text(unit),
+    }
+}
+
 /// 道具の使い方の一文（状態欄に知らせが無いときに出す）。
 pub fn tool_hint(tool: Tool) -> &'static str {
     match tool {
@@ -159,10 +302,13 @@ pub fn tool_hint(tool: Tool) -> &'static str {
         Tool::Rotate => "回転: 輪をドラッグ",
         Tool::Scale => "拡大: 箱をドラッグ",
         Tool::Shape => "図形: 置く形を押す",
-        Tool::Measure => "計測: 表面を2回クリック",
+        Tool::Measure => "計測: 角や辺に近づけてクリック（X で吸着を切り替え）",
         Tool::Annotate => "注釈: 表面をクリック",
     }
 }
+
+/// 断面が入っている間の一文（道具の一文が選択のとき）。
+pub const SECTION_HINT: &str = "断面: 矢印をドラッグ、または位置を入力";
 
 /// 単位の表示（「1単位 = m」）。
 pub fn unit_text(unit: UnitLabel) -> String {

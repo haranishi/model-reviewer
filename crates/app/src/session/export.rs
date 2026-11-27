@@ -230,6 +230,14 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     // STL から書き出すと、次からは新しい GLB が土台になる。シーンは最初からメートルなので、
     // 単位（前提と表示）は変えない（数値が動かない）。
     let mut lines: Vec<String> = done.notes.iter().map(note_ja).collect();
+    if done
+        .notes
+        .iter()
+        .any(|note| matches!(note, ExportNote::Recolored { nodes, .. } if *nodes > 0))
+        && let Some(note) = super::color::model_note(doc.base())
+    {
+        lines.push(note.to_owned());
+    }
     match session.source_kind {
         SourceKind::Stl { unit } => {
             lines.push(stl_export_note(unit));

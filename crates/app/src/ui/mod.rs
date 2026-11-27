@@ -10,6 +10,7 @@ use crate::keymap::Platform;
 use crate::session::Session;
 
 pub mod annotations;
+pub mod color;
 pub mod details;
 pub mod dialogs;
 pub mod dims;
@@ -120,11 +121,16 @@ pub(crate) fn show_scroll_handle(ui: &mut egui::Ui) {
     scroll.bar_outer_margin = -6.0;
 }
 
-/// 右のパネル。上から 部品の一覧 → 変形 → 寸法（部品を選んでいるとき）→ 計測（計測の道具のとき）。
+/// 右のパネル。上から部品の一覧、変形、寸法、色、計測。
 /// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     let dims = crate::session::selection_dims(session);
-    let below = transform_height(session) + dims_height(dims.as_ref()) + measure_height(session);
+    let color = crate::session::selection_color(session);
+    let color_height = color.map_or(0.0, |v| if v.note.is_some() { 220.0 } else { 140.0 });
+    let below = transform_height(session)
+        + dims_height(dims.as_ref())
+        + color_height
+        + measure_height(session);
     let list_h = (ui.available_height() - below).max(80.0);
     let width = ui.available_width();
     ui.allocate_ui(egui::vec2(width, list_h), |ui| {
@@ -145,6 +151,10 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 if let Some(view) = dims.as_ref() {
                     ui.separator();
                     dims::show(ui, view, out);
+                }
+                if let Some(view) = &color {
+                    ui.separator();
+                    ui.push_id(session.review_generation(), |ui| color::show(ui, view, out));
                 }
                 if measuring(session) {
                     ui.separator();

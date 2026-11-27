@@ -602,10 +602,10 @@ fn after_applied(session: &mut Session, applied: &Applied, from_history: bool) {
     if applied.structure || applied.visibility {
         session.scene_dirty.instances = true;
         session.pending_patches.clear();
-    } else if !applied.touched.is_empty() {
+    } else if !applied.touched.is_empty() || !applied.recolored.is_empty() {
         session
             .pending_patches
-            .extend(applied.touched.iter().cloned());
+            .extend(applied.touched.iter().chain(&applied.recolored).cloned());
         // 描き直しの合図。インスタンスは gpu_view が範囲だけ書き直す。
         session.scene_dirty.drag = true;
     }

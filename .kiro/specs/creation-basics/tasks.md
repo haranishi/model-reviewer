@@ -34,7 +34,7 @@
   - 合格: [design-testing.md](design-testing.md) の「新規作成」の行（`new_document_starts_empty`、`new_document_asks_before_discarding`、`new_document_is_refused_while_busy`、`first_shape_is_one_meter_at_origin`、`deleting_everything_keeps_the_document`、`review_save_is_refused_until_export`、`new_document_exports_and_moves_target`、`empty_document_export_is_refused`、`cmd_n_works_over_panels_but_not_while_typing`）。GPUの試験 `empty_model_uploads_and_accepts_shapes`（`#[ignore]`。実行は進行役）。既存の試験が通る
   - _Boundary: `app/src/{command,app,exporter}.rs`、`app/src/session/{mod,open,export,persist,edit}.rs`、`app/src/ui/{empty,help,status,details,ids}.rs`、`app/src/automation/`、`app/tests/{new_doc,gpu_flow}.rs`、`app/e2e/new-1.json`、`docs/{glb,verify,roadmap}.md`_ ／ _Depends: 1.1_ ／ _Requirements: 1.1〜1.10, 2.3, 2.4, 2.6, 2.7, 6.1〜6.4_
 
-- [ ] 2. 色と質感
+- [x] 2. 色と質感
 - [x] 2.1 (P) WP-C1 文書・履歴・部分更新（[design-color.md](design-color.md) の「型の約束」と、`render::update_instances` の直し）
   - `core/src/color.rs`（換算、16進、見本12色）。`Document::subtree_colors`・`set_subtree_colors`。`Edit::SetColors` と `Applied::recolored`（`History` の実行・取り消し・やり直し、`bytes`、版）。`render::SceneRenderer::update_instances` が、行列と一緒に色も文書から読む
   - 合格: design-testing.md の「色の換算」「文書の色」「履歴」「部分更新」の行（`srgb_round_trips_all_256`、`hex_parse_table`、`swatches_are_distinct`、`color_does_not_leak_to_shared_shape`、`wrong_count_changes_nothing`、`duplicate_inherits_color`、`undo_restores_per_draw_colors`、`set_colors_keeps_alpha`、`recolor_bumps_document_rev_only`、`slots_follow_node_then_draw_order`、`patch_rewrites_color_and_keeps_ids`）。変形の部分更新の既存の試験が通る
@@ -44,7 +44,7 @@
   - `ExportNote` に場合が増えるので、`app/src/session/export.rs` の文を1つ足す（design-export.md の「結果の一覧」の1行目。テクスチャの注意の行は C3）
   - 合格: design-testing.md の「色の写し」「照合」の行（`recolor_adds_material_and_mesh_only`、`recolor_shares_material_and_mesh`、`recolor_keeps_texture_refs_and_extensions`、`recolor_without_material`、`recolor_maps_draws_past_skipped_primitives`、`recolor_of_duplicate_only`、`restoring_color_restores_json`、`second_export_adds_nothing`、`verify_rejects_non_copy_material`、`verify_rejects_mesh_copy_with_other_changes`、`verify_rejects_one_bit_color_difference`）。既存の書き出しと照合の試験が通る
   - _Boundary: `gltf/src/build.rs`、`gltf/src/export/{mod,base,patch,append,verify,recolor}.rs`、`gltf/tests/`、`app/src/session/export.rs`（文を1つ）_ ／ _Depends: 1.1_ ／ _Requirements: 4.1〜4.8_
-- [ ] 2.3 WP-C3 色をつなぐ（[design-color.md](design-color.md) の「つなぎ方」「画面の部品」「見た目に出るもの・出ないもの」。C1・C2 と、第4段階の J1 の後）
+- [x] 2.3 WP-C3 色をつなぐ（[design-color.md](design-color.md) の「つなぎ方」「画面の部品」「見た目に出るもの・出ないもの」。C1・C2 と、第4段階の J1 の後）
   - `Command::SetColor`、`session/color.rs`（`set_color`、`selection_color` と控え）、`after_applied` で `recolored` を部分更新へ。`ui/color.rs` と、右のパネルへの配置（寸法の下、計測の上）。部品の名前。注意の文（モデルにテクスチャか頂点の色があるとき）と、結果の一覧の注意の行
   - 自動操作: `dump_state` の `selection.color`。`e2e/color-1.json`・`desk-1.json`（机の一式。第4段階のキーで動かす手順を使う。実行は進行役）。`docs/glb.md` に「色を変えたときに書かれるもの・残るもの・ほかのソフトでの見え方」、ヘルプの「できないこと」に、テクスチャと金属らしさは出ない・変えられないこと
   - 合格: design-testing.md の「色（つなぎ）」「色の部品」の行（`set_color_is_one_history_step`、`same_color_adds_no_history`、`color_marks_document_unexported`、`color_is_refused_while_busy`、`color_change_patches_instances_only`、`color_survives_export_and_reopen`、`texture_note_is_shown_for_textured_model`、`swatch_click_sets_color`、`hex_and_rgb_commit_on_enter`、`bad_hex_is_refused_with_reason`、`mixed_and_no_faces_states`、`color_panel_fits_at_960`）。GPUの試験 `recolor_changes_only_that_part`（`#[ignore]`）。既存の試験が通る

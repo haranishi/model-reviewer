@@ -49,6 +49,74 @@ fn shortcut_and_keymove_scripts_parse() {
 }
 
 #[test]
+fn color_and_desk_scripts_parse() {
+    let out = scratch("color-parse");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("e2e");
+    load_script(&scripts.join("color-1.json"), &out).unwrap();
+    let desk = load_script(&scripts.join("desk-1.json"), &out).unwrap();
+    let parts = desk
+        .steps
+        .iter()
+        .filter(|step| match &step.op {
+            Op::ClickWidget { name } => name.starts_with("shape."),
+            Op::Key {
+                key: egui::Key::D,
+                modifiers,
+            } => modifiers.command,
+            _ => false,
+        })
+        .count();
+    assert_eq!(parts, 29);
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn selection_color_keeps_the_number_and_samples_eight_linear_colors() {
+    use super::state::state_value;
+    use crate::command::Command;
+    use model_reviewer_core::review::ReviewState;
+    use model_reviewer_core::scene::{NodeId, SceneRead};
+    let mut session = Session::default();
+    assert!(state_value(&session)["selection_color"].is_null());
+    let model = model_reviewer_gltf::load_glb(&model_reviewer_testdata::sample_glb()).unwrap();
+    session.review = Some(ReviewState::new(&model));
+    session.set_model(std::sync::Arc::new(model));
+    session.apply(Command::Select(Some(NodeId(0))));
+    let root = state_value(&session);
+    assert_eq!(root["selection"], 0);
+    let linear = session
+        .doc
+        .as_ref()
+        .unwrap()
+        .subtree_colors(model_reviewer_core::doc::NodeKey(0))
+        .unwrap();
+    assert!(linear.len() > 8);
+    assert_eq!(
+        root["selection_color"],
+        json!({ "state": "mixed", "srgb": null, "linear": &linear[..8] })
+    );
+    session.apply(Command::Select(Some(NodeId(3))));
+    session.apply(Command::SetColor([0.0, 1.0, 0.0]));
+    assert_eq!(
+        state_value(&session)["selection_color"],
+        json!({
+            "state": "one", "srgb": "00FF00", "linear": [[0.0, 1.0, 0.0, 1.0]]
+        })
+    );
+
+    let rich = model_reviewer_gltf::load_glb(&model_reviewer_testdata::rich_glb()).unwrap();
+    let empty = rich
+        .find_file_index(model_reviewer_testdata::rich::JOINT)
+        .unwrap();
+    session.set_model(std::sync::Arc::new(rich));
+    session.apply(Command::Select(Some(empty)));
+    assert_eq!(
+        state_value(&session)["selection_color"],
+        json!({ "state": "none", "srgb": null, "linear": [] })
+    );
+}
+
+#[test]
 fn state_includes_bindings_window_and_numeric_entry() {
     use super::state::{comparable, state_value};
     use crate::command::{Axis, Command, KeyInput, ShapeKind};

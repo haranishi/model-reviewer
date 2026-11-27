@@ -1,5 +1,6 @@
 //! 画面が読む状態。書き換えは `apply` だけが行う。
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use crate::metrics::Metrics;
 use crate::ui::ids;
 
 mod camera;
+pub mod color;
 mod dims;
 mod edit;
 mod export;
@@ -44,6 +46,7 @@ mod section;
 mod snap;
 mod view;
 
+pub use color::{ColorState, ColorView, selection_color};
 pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
     GIZMO_SIZE, KeyEntry, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits,
@@ -109,6 +112,7 @@ pub struct Session {
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
     pub selection: Option<NodeId>,
+    color_cache: Cell<Option<ColorView>>,
     /// 2点の計測。保存せず、履歴にも未保存の印にも入れない。部品を消すと消える。
     pub measurement: Measurement,
     /// ファイルの単位（前提）と表示の単位。作業の間だけの設定で、保存しない。
@@ -138,7 +142,7 @@ pub struct Session {
     pub history: History,
     /// 変形中（ハンドルか数値の欄のドラッグ）。文書はまだ書き換えていない。
     pub transform: Option<Transform>,
-    /// 確定した変形で `world` が変わった範囲。`gpu_view` が次のフレームで取り出して部分更新する。
+    /// 行列または基本色が変わった範囲。次のフレームでインスタンスを部分更新する。
     pending_patches: Vec<Range<u32>>,
     /// 最後に書き出した時点の文書の版。いまの版と違えば「形の編集 未書き出し」。
     saved_doc_rev: u64,
@@ -223,6 +227,7 @@ impl Default for Session {
             grid_visible: true,
             lines_supported: false,
             selection: None,
+            color_cache: Cell::new(None),
             measurement: Measurement::default(),
             units: Units::default(),
             source_kind: SourceKind::Glb,
@@ -527,6 +532,7 @@ impl Session {
             Command::CancelTransform => edit::cancel_transform(self),
             Command::PreviewLocal(trs) => edit::preview_local(self, trs),
             Command::CommitLocal(trs) => edit::commit_local(self, trs),
+            Command::SetColor(rgb) => color::set_color(self, rgb),
             Command::Undo => edit::undo(self),
             Command::Redo => edit::redo(self),
             Command::AddShape(kind) => edit::add_shape(self, kind),
@@ -630,6 +636,7 @@ impl Session {
     /// モデルを置き、その文書を作る。読み込み（`commit_pending`）と、読み込みを通さない試験が使う。
     /// レビュー・選択・視点には触れない。
     pub fn set_model(&mut self, model: Arc<Model>) {
+        self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
         self.model = Some(model);
         self.measurement.clear();
@@ -714,7 +721,7 @@ impl Session {
         std::mem::take(&mut self.scene_dirty)
     }
 
-    /// 確定した変形で動いた範囲（部分更新の対象）。取り出すと空になる。
+    /// 確定した変形や色の変更で部分更新する範囲。取り出すと空になる。
     pub fn take_instance_patches(&mut self) -> Vec<Range<u32>> {
         std::mem::take(&mut self.pending_patches)
     }
@@ -772,6 +779,7 @@ impl Session {
 
     /// モデルやレビューを開いた。履歴を空にし、いまの版を保存済みとする。
     pub(super) fn reset_history(&mut self) {
+        self.color_cache.set(None);
         self.history.clear();
         self.transform = None;
         self.pending_patches.clear();

@@ -113,6 +113,13 @@ pub const STATUS_DISPLAY_UNIT: &str = "status.display_unit";
 // ---- 第5段階 ----
 // 何も開いていない画面の［新規作成］（ui::empty）。
 pub const EMPTY_NEW: &str = "empty.new";
+pub const COLOR_CURRENT: &str = "color.current";
+pub const COLOR_HEX: &str = "color.hex";
+pub const COLOR_R: &str = "color.r";
+pub const COLOR_G: &str = "color.g";
+pub const COLOR_B: &str = "color.b";
+pub const COLOR_SWATCH: &str = "color.swatch";
+pub const COLOR_NOTE: &str = "color.note";
 
 // ---- 第4段階 ----
 // ショートカットの設定の画面（ui::keys）。行ごとの名前は `<前置き>.<操作の名前>`

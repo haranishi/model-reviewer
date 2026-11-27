@@ -624,6 +624,36 @@ fn right_panel_dims_and_measure_fit_above_the_status_bar() {
     }
 }
 
+#[test]
+fn color_panel_fits_at_960() {
+    let mut h = harness(egui::vec2(960.0, 600.0));
+    h.state_mut().panel_details = false;
+    h.run_steps(6);
+    let view = widget_rect(&h, ids::VIEWPORT);
+    let bottom = widget_rect(&h, ids::PANEL_STATUS).top();
+    let swatches: Vec<_> = (0..12)
+        .map(|i| widget_rect(&h, &format!("{}.{i}", ids::COLOR_SWATCH)))
+        .collect();
+    let hex = widget_rect(&h, ids::COLOR_HEX);
+    assert!(hex.bottom() < swatches[0].top());
+    for (column, upper) in swatches[..6].iter().enumerate() {
+        let lower = swatches[column + 6];
+        assert_eq!(upper.size(), egui::Vec2::splat(18.0));
+        assert!((upper.left() - lower.left()).abs() < 0.5);
+        assert!((upper.top() - swatches[0].top()).abs() < 0.5);
+        assert!((lower.top() - swatches[6].top()).abs() < 0.5);
+        assert!(
+            upper.bottom() <= lower.top() && lower.bottom() <= bottom,
+            "見本 {upper:?}・{lower:?}、16進 {hex:?}、変形 {:?}、状態欄の上端 {bottom}",
+            widget_rect(&h, ids::INSPECTOR_POS_X)
+        );
+        assert!(upper.left() >= view.right() && lower.right() <= 960.0);
+        if column > 0 {
+            assert!(upper.left() >= swatches[column - 1].right());
+        }
+    }
+}
+
 /// ヘルプの下の [ショートカットの設定] と手順書の場所（第4段階の要件1.6）。幅960×600で表の下に
 /// 収まり、押すとヘルプを閉じて設定の画面を開く。[場所を写す] は手順書の場所を写す。
 #[test]

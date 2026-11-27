@@ -84,6 +84,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
         "doc_unsaved": session.doc_unsaved(),
         "review_unsaved": session.review_unsaved(),
         "selection": session.selection.map(|id| id.0),
+        "selection_color": selection_color_json(session),
         "hidden": hidden.unwrap_or_default(),
         "annotations": annotations.unwrap_or_default(),
         "views": views.unwrap_or_default(),
@@ -136,6 +137,20 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "spacing": f64::from(model_reviewer_core::camera::grid_spacing(session.camera.distance)),
         },
     })
+}
+
+fn selection_color_json(session: &Session) -> Option<Value> {
+    use crate::session::{ColorState, color};
+    let view = color::selection_color(session)?;
+    let (state, srgb) = match view.state {
+        ColorState::NoFaces => ("none", None),
+        ColorState::One(rgb) => ("one", Some(model_reviewer_core::color::to_hex(rgb))),
+        ColorState::Mixed { .. } => ("mixed", None),
+    };
+    let linear: Vec<_> = color::draw_colors(session.doc.as_ref()?, session.selection?)
+        .take(8)
+        .collect();
+    Some(json!({ "state": state, "srgb": srgb, "linear": linear }))
 }
 
 fn keys_json(session: &Session) -> Value {

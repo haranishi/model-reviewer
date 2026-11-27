@@ -500,7 +500,9 @@ fn frame_params(session: &Session, shown: Option<&Arc<Model>>) -> FrameParams {
         display: session.display,
         grid: GridParams {
             spacing: grid_spacing(camera.distance),
-            visible: session.grid_visible,
+            // モデルが無い間は格子を描かない。起動直後の視点は床の面の上にあり、格子を描くと
+            // 画面全体が軸の色の模様になる。
+            visible: session.grid_visible && session.model.is_some(),
         },
         drag: match (session.transform.as_ref(), doc) {
             (Some(transform), Some(doc)) if transform.nodes.end as usize <= doc.node_count() => {
@@ -527,8 +529,21 @@ mod tests {
     use egui_wgpu::wgpu;
     use egui_wgpu::{RenderState, Renderer, RendererOptions};
 
-    use super::{GpuState, GpuView};
+    use super::{GpuState, GpuView, frame_params};
+    use crate::command::Command;
     use crate::session::Session;
+
+    /// 何も開いていない間は床の格子を描かない。新規の文書を作ると描く。
+    #[test]
+    fn grid_is_hidden_until_a_model_exists() {
+        let mut session = Session::default();
+        session.viewport_px = [64, 48];
+        assert!(session.grid_visible);
+        assert!(!frame_params(&session, None).grid.visible);
+        session.apply(Command::NewDocument);
+        assert!(session.model.is_some());
+        assert!(frame_params(&session, None).grid.visible);
+    }
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         let mut future = pin!(future);

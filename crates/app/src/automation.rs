@@ -416,7 +416,7 @@ impl Automation {
         }
     }
 
-    fn running(&self) -> bool {
+    pub(crate) fn running(&self) -> bool {
         self.active && !self.finished && !self.reported
     }
 
@@ -963,7 +963,7 @@ impl Automation {
     }
 
     fn succeed(&mut self, session: &Session) {
-        self.finish(session, false);
+        self.finish(session, cfg!(target_os = "macos"));
     }
 
     fn finish(&mut self, session: &Session, force_close: bool) {
@@ -992,7 +992,7 @@ impl Automation {
         self.write_report(session);
     }
 
-    fn fail(&mut self, session: &Session, message: String) {
+    pub(crate) fn fail(&mut self, session: &Session, message: String) {
         if self.reported {
             return;
         }

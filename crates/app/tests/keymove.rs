@@ -321,6 +321,44 @@ fn typed_amount_previews_without_touching_document() {
 }
 
 #[test]
+fn scale_that_cannot_form_a_local_matrix_stays_editable() {
+    let mut s = selected(Tool::Scale);
+    s.apply(Command::CommitLocal(model_reviewer::command::Trs {
+        scale: Vec3::splat(1.0e-6),
+        ..Default::default()
+    }));
+    let before = local(&s);
+    s.apply(Command::BeginKeyTransform(Axis::X));
+    type_text(&mut s, "0.000000000000001");
+    s.apply(Command::CommitTransform);
+    assert_eq!(local(&s), before);
+    assert!(entry_text(&s).is_some());
+}
+
+#[test]
+fn overflowing_scale_keeps_the_entry_until_corrected() {
+    let mut s = selected(Tool::Scale);
+    s.apply(Command::CommitLocal(model_reviewer::command::Trs {
+        translation: Vec3::X * 1.0e30,
+        ..Default::default()
+    }));
+    let before = local(&s);
+    let rev = s.history.doc_rev();
+    s.apply(Command::BeginKeyTransform(Axis::X));
+    type_text(&mut s, "2000000000");
+    assert!(s.status_text.contains("大きすぎ"));
+    s.apply(Command::CommitTransform);
+    assert_eq!(local(&s), before);
+    assert_eq!(s.history.doc_rev(), rev);
+    assert_eq!(entry_text(&s), Some((Handle::ScaleX, "2000000000".into())));
+    assert!(s.status_text.contains("大きすぎ"));
+    s.apply(Command::KeyTransformInput(KeyInput::Backspace));
+    s.apply(Command::CommitTransform);
+    assert!(entry_text(&s).is_none());
+    assert_eq!(local(&s).matrix3.x_axis.x, 200000000.0);
+}
+
+#[test]
 fn enter_commits_one_history_step() {
     let mut session = selected(Tool::Move);
     let history = session.history.len();

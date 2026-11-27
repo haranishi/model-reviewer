@@ -22,7 +22,7 @@ pub(crate) struct Shape {
 }
 
 pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportError> {
-    let base = base::read(bytes)?;
+    let base = base::read(bytes, scene)?;
     let shape = shape(&base, scene)?;
     let recolored = recolor::plan(&base, scene)?;
     let recolored_materials = recolored.materials.len() as u32;
@@ -208,8 +208,9 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
         container::bin_chunk_len(base.container.bin, &appended_bin),
     )?;
 
-    let detached = (0..base.node_count)
-        .filter(|file| base.loaded[*file] && shape.in_scene[*file].is_none())
+    let detached = base.model.nodes[..base.scene_nodes]
+        .iter()
+        .filter(|node| shape.in_scene[node.gltf_index as usize].is_none())
         .count() as u32;
     let mut notes = Vec::new();
     if recolored.nodes > 0 {

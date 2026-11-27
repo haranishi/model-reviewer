@@ -236,6 +236,18 @@ fn broken_file_is_kept_as_broken_on_first_save() {
         std::fs::write(&path, sample).unwrap();
         // 前の回の .broken が残っていれば置き換える。
         let opened = Store::open(path.clone());
+        if sample.len() as u64 > MAX_BYTES || serde_json::from_slice::<Value>(sample).is_err() {
+            let previous_backup = std::fs::read(&broken_path).ok();
+            assert_eq!(opened.store.source(), StoreSource::Default);
+            assert_eq!(opened.keymap, Keymap::default());
+            assert!(opened.notice.unwrap().contains("保存"));
+            let mut store = opened.store;
+            assert!(!store.saves());
+            store.save(&opened.keymap).unwrap();
+            assert_eq!(&std::fs::read(&path).unwrap(), sample, "見本 {i}");
+            assert_eq!(std::fs::read(&broken_path).ok(), previous_backup);
+            continue;
+        }
         assert_eq!(opened.store.state(), &StoreState::Broken, "見本 {i}");
         assert_eq!(opened.store.source(), StoreSource::Default);
         assert_eq!(opened.keymap, Keymap::default());
@@ -276,6 +288,106 @@ fn broken_file_is_kept_as_broken_on_first_save() {
         Some(chord(Key::T, false, false))
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn data_files_never_become_keymaps() {
+    let dir = scratch("data");
+    let path = dir.join("model");
+    let large = vec![b' '; MAX_BYTES as usize + 1];
+    for bytes in [
+        &b"glTF content"[..],
+        &[0xff, 0],
+        b"solid example",
+        b"{",
+        &large,
+        br#"{"format":"model-reviewer.review","version":1}"#,
+    ] {
+        std::fs::write(&path, bytes).unwrap();
+        let mut opened = Store::open(path.clone());
+        let _ = opened.store.save(&opened.keymap);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(names(&dir), ["model"]);
+        assert!(!opened.store.saves());
+        assert!(opened.notice.unwrap().contains("保存"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn protect_data_that_appears_at_the_destination_or_backup() {
+    let dir = scratch("late-data");
+    let path = dir.join("keymap.json");
+    let backup = dir.join("keymap.json.broken");
+    for candidate in [&path, &backup] {
+        std::fs::write(&path, b"{}").unwrap();
+        let mut opened = Store::open(path.clone());
+        std::fs::write(candidate, b"glTF").unwrap();
+        let reason = opened.store.save(&opened.keymap).unwrap_err();
+        assert!(!reason.is_empty());
+        assert_eq!(std::fs::read(candidate).unwrap(), b"glTF");
+        if candidate == &backup {
+            assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        } else {
+            assert!(!backup.exists());
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn save_rechecks_the_destination_version() {
+    let dir = scratch("version-changed");
+    let path = dir.join("keymap.json");
+    let newer = br#"{"format":"model-reviewer-keymap","version":2,"bindings":{}}"#;
+    for old in [
+        None,
+        Some(&b"{}"[..]),
+        Some(&br#"{"format":"model-reviewer-keymap","version":1,"bindings":{}}"#[..]),
+    ] {
+        if let Some(old) = old {
+            std::fs::write(&path, old).unwrap();
+        }
+        let mut opened = Store::open(path.clone());
+        std::fs::write(&path, newer).unwrap();
+        let reason = opened.store.save(&opened.keymap).unwrap_err();
+        assert!(reason.contains("新しい版"));
+        assert!(!opened.store.saves());
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+        assert_eq!(names(&dir), ["keymap.json"]);
+        std::fs::remove_file(&path).unwrap();
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn large_unknown_values_stay_readable_after_save() {
+    let dir = scratch("large-unknown");
+    let path = dir.join("keymap.json");
+    let mut json =
+        json!({"format":"model-reviewer-keymap","version":1,"bindings":{},"future":vec![0;12000]});
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    let mut opened = Store::open(path.clone());
+    opened.keymap.clear(Action::ToolMove);
+    opened.store.save(&opened.keymap).unwrap();
+    let reopened = Store::open(path.clone());
+    assert_eq!(reopened.store.source(), StoreSource::File);
+    assert_eq!(reopened.keymap.chord(Action::ToolMove), None);
+    assert_eq!(read_json(&path)["future"], json["future"]);
+
+    json["future"] = "".into();
+    let room = MAX_BYTES as usize - serde_json::to_vec(&json).unwrap().len();
+    json["future"] = "x".repeat(room).into();
+    let original = serde_json::to_vec(&json).unwrap();
+    assert_eq!(original.len() as u64, MAX_BYTES);
+    std::fs::write(&path, &original).unwrap();
+    let mut opened = Store::open(path.clone());
+    opened.keymap.clear(Action::ToolMove);
+    let reason = opened.store.save(&opened.keymap).unwrap_err();
+    assert!(reason.contains("64 KiB"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(names(&dir), ["keymap.json"]);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

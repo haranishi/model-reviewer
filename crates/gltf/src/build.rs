@@ -17,7 +17,7 @@ use crate::error::LoadError;
 use crate::inspect::{self, Opened};
 
 pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
-    assemble_with_sources(opened).map(|assembled| assembled.model)
+    assemble_with_sources(opened, std::iter::empty()).map(|assembled| assembled.model)
 }
 
 /// 組み立ての内部の結果。`sources[i]` は `model.draws[i]` が、どのメッシュの何番目の
@@ -26,6 +26,8 @@ pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
 pub(crate) struct Assembled {
     pub model: Model,
     pub sources: Vec<DrawSource>,
+    /// モデルの先頭からここまでが土台のシーン。後ろは書き出しで参照する復元部品。
+    pub scene_nodes: usize,
 }
 
 /// 描画の出どころ（メッシュの番号、その中のプリミティブの番号）。
@@ -35,7 +37,10 @@ pub(crate) struct DrawSource {
     pub primitive: u32,
 }
 
-fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
+fn assemble_with_sources(
+    opened: Opened<'_>,
+    referenced: impl Iterator<Item = u32>,
+) -> Result<Assembled, LoadError> {
     let root = opened.document.as_json();
     let mut assembly = Assembly::new(root, opened.bin);
     let mut warnings = assembly.file_warnings()?;
@@ -44,12 +49,7 @@ fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
     let mut emitted = vec![false; root.nodes.len()];
     let mut stack = Vec::new();
     for index in inspect::scene_roots(root)?.into_iter().rev() {
-        stack.push(Frame {
-            index,
-            parent_world: Affine3A::IDENTITY,
-            parent: None,
-            depth: 0,
-        });
+        stack.push(Frame::root(index));
     }
     while let Some(frame) = stack.pop() {
         if frame.index >= root.nodes.len()
@@ -61,30 +61,10 @@ fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
         emitted[frame.index] = true;
         close_open(&mut nodes, &mut open, frame.depth)?;
         let source = &root.nodes[frame.index];
-        let local = local_transform(source)?;
-        let world = frame.parent_world * local;
-        if !affine_finite(world) {
-            return Err(bad("変換"));
-        }
-        let gltf_index = inspect::fit_u32(frame.index as u64, "インスタンス数")?;
         let id = inspect::fit_u32(nodes.len() as u64, "インスタンス数")?;
-        let draw_start = inspect::fit_u32(assembly.draws.len() as u64, "インスタンス数")?;
-        let world_aabb = match source.mesh.as_ref().map(gltf::json::Index::value) {
-            Some(mesh) => assembly.add_mesh(mesh, &world)?,
-            None => Aabb::empty(),
-        };
-        let draw_end = inspect::fit_u32(assembly.draws.len() as u64, "インスタンス数")?;
-        nodes.push(Node {
-            name: node_name(source, gltf_index),
-            gltf_index,
-            parent: frame.parent,
-            subtree_end: 0,
-            depth: frame.depth,
-            local,
-            world,
-            draws: draw_start..draw_end,
-            world_aabb,
-        });
+        let node = assembly.node(&frame)?;
+        let world = node.world;
+        nodes.push(node);
         open.push(nodes.len() - 1);
         let mut children = Vec::new();
         if let Some(list) = &source.children {
@@ -110,6 +90,20 @@ fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
     close_open(&mut nodes, &mut open, 0)?;
     if assembly.draws.is_empty() {
         return Err(LoadError::NoMesh);
+    }
+    let scene_nodes = nodes.len();
+    // 削除を書き出してから取り消した部品はノード配列にだけ残る。文書が参照するものだけ
+    // 個別に読み、元のプリミティブの番号・色・形状を通常の読み込みと同じ経路で得る。
+    for file in referenced {
+        let index = file as usize;
+        if let Some(seen) = emitted.get_mut(index)
+            && !*seen
+        {
+            *seen = true;
+            let mut node = assembly.node(&Frame::root(index))?;
+            node.subtree_end = inspect::fit_u32(nodes.len() as u64 + 1, "インスタンス数")?;
+            nodes.push(node);
+        }
     }
     let mut bounds = Aabb::empty();
     for node in &nodes {
@@ -139,18 +133,23 @@ fn assemble_with_sources(opened: Opened<'_>) -> Result<Assembled, LoadError> {
     Ok(Assembled {
         model,
         sources: assembly.sources,
+        scene_nodes,
     })
 }
 
 /// 書き出しの土台を組み立てる入口。ノードが0個のファイルで `NoMesh` になったときだけ、
 /// 空のモデルを返す（新規の文書の土台 `export::empty_base`）。ほかは `assemble` と同じ。
 /// `load_glb` はこれを使わない（メッシュの無いファイルを開く操作は、今までどおり断る）。
-pub(crate) fn assemble_base(opened: Opened<'_>) -> Result<Assembled, LoadError> {
+pub(crate) fn assemble_base(
+    opened: Opened<'_>,
+    referenced: impl Iterator<Item = u32>,
+) -> Result<Assembled, LoadError> {
     let no_nodes = opened.document.as_json().nodes.is_empty();
-    match assemble_with_sources(opened) {
+    match assemble_with_sources(opened, referenced) {
         Err(LoadError::NoMesh) if no_nodes => Ok(Assembled {
             model: Model::empty(),
             sources: Vec::new(),
+            scene_nodes: 0,
         }),
         other => other,
     }
@@ -161,6 +160,17 @@ struct Frame {
     parent_world: Affine3A,
     parent: Option<NodeId>,
     depth: u32,
+}
+
+impl Frame {
+    fn root(index: usize) -> Self {
+        Self {
+            index,
+            parent_world: Affine3A::IDENTITY,
+            parent: None,
+            depth: 0,
+        }
+    }
 }
 
 fn close_open(nodes: &mut [Node], open: &mut Vec<usize>, depth: u32) -> Result<(), LoadError> {
@@ -208,6 +218,33 @@ struct PrimInfo {
 }
 
 impl<'a> Assembly<'a> {
+    fn node(&mut self, frame: &Frame) -> Result<Node, LoadError> {
+        let source = &self.root.nodes[frame.index];
+        let local = local_transform(source)?;
+        let world = frame.parent_world * local;
+        if !affine_finite(world) {
+            return Err(bad("変換"));
+        }
+        let gltf_index = inspect::fit_u32(frame.index as u64, "インスタンス数")?;
+        let start = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
+        let world_aabb = match source.mesh {
+            Some(mesh) => self.add_mesh(mesh.value(), &world)?,
+            None => Aabb::empty(),
+        };
+        let end = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
+        Ok(Node {
+            name: node_name(source, gltf_index),
+            gltf_index,
+            parent: frame.parent,
+            subtree_end: 0,
+            depth: frame.depth,
+            local,
+            world,
+            draws: start..end,
+            world_aabb,
+        })
+    }
+
     fn new(root: &'a Root, bin: &'a [u8]) -> Self {
         Self {
             root,

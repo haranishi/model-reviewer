@@ -12,6 +12,7 @@ pub(super) fn open_guarded(session: &mut Session, path: PathBuf, options: LoadOp
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
+    session.protect_document(&path);
     if session.hold(Pending::OpenModel(path.clone(), options)) {
         return;
     }
@@ -23,6 +24,7 @@ pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
+    session.protect_document(&path);
     if session.hold(Pending::LoadReview(path.clone())) {
         return;
     }

@@ -205,6 +205,67 @@ fn leaving_the_field_for_another_part_paints_the_original_selection() {
     assert_eq!(h.state().history.len(), 1);
 }
 
+fn editing_number(field: &str) -> Harness<'static, model_reviewer::Session> {
+    use model_reviewer_core::scene::NodeId;
+    let mut session = support::session();
+    session.apply(Command::Select(Some(NodeId(0))));
+    let (mut h, _) = support::harness(session, egui::vec2(1100.0, 720.0));
+    h.run_steps(3);
+    let rect = support::widget_rect(&h, field).unwrap();
+    support::click(&mut h, rect.center());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run();
+    h.event(egui::Event::Text("25".into()));
+    h.run();
+    assert!(h.ctx.text_edit_focused(), "{field}");
+    h
+}
+
+#[test]
+fn close_treats_uncommitted_color_and_transform_fields_alike() {
+    use model_reviewer::ui::ids;
+    for field in [ids::INSPECTOR_POS_X, ids::COLOR_R] {
+        let mut h = editing_number(field);
+        assert!(!h.state_mut().on_close_requested(), "{field}");
+        assert!(h.state().history.is_empty());
+    }
+}
+
+#[test]
+fn numeric_input_keeps_all_keys_in_its_commit_frame() {
+    use egui::Key;
+    use model_reviewer::ui::ids;
+    use model_reviewer_core::scene::{NodeId, SceneRead};
+    for field in [ids::COLOR_R, ids::INSPECTOR_POS_X] {
+        let mut h = editing_number(field);
+        for key in [Key::Backspace, Key::G, Key::Enter] {
+            h.input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.step();
+        let doc = h.state().doc.as_ref().unwrap();
+        assert_eq!(doc.node_count(), 2, "{field}");
+        assert_eq!(
+            h.state().tool,
+            model_reviewer::command::Tool::Select,
+            "{field}"
+        );
+        if field == ids::COLOR_R {
+            assert_eq!(
+                linear_to_srgb8(doc.draws(NodeId(0))[0].base_color[..3].try_into().unwrap())[0],
+                2
+            );
+        } else {
+            assert_eq!(doc.node(NodeId(0)).unwrap().local.translation.x, 2.0);
+        }
+    }
+}
+
 #[test]
 fn color_fields_show_whole_values() {
     let view = ColorView {

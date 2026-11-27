@@ -3,7 +3,7 @@
 //!
 //! 約束: 打った文字は `KeyEntry.text` に持ち、文書は確定（`CommitTransform`）まで書き換えない。
 //! 移動の量は表示の単位で打ち、シーンの値に直してから `key_delta` へ渡す。読めない量や 0 以下の
-//! 倍率では差分を変えず、理由を状態欄に出す（確定も断る。`commit_refusal`）。キーの振り分けは
+//! 倍率では差分を変えず、理由を状態欄に出す。確定の直前にも同じ計算をする。キーの振り分けは
 //! `app::shortcut_commands` が行い、ここは `Command` を受けるだけ。
 
 use glam::{Affine3A, Vec3};
@@ -142,19 +142,6 @@ fn scene_amount(session: &Session, entry: &KeyEntry) -> Result<f32, &'static str
     }
 }
 
-/// 確定を断る理由（`CommitTransform` から呼ぶ）。確定してよければ `None`。
-pub(super) fn commit_refusal(entry: &KeyEntry) -> Option<&'static str> {
-    let has_digit = entry.text.chars().any(|c| c.is_ascii_digit());
-    let typed = match parse_amount(&entry.text) {
-        Some(value) => value,
-        None => return Some(BAD_AMOUNT),
-    };
-    if is_scale(entry.handle) && has_digit && typed <= 0.0 {
-        return Some(BAD_FACTOR);
-    }
-    (!(typed as f32).is_finite()).then_some(NOT_FINITE)
-}
-
 /// 距離に添える単位（表示が「ファイルと同じ」なら付けない。変化量の文字と同じ決まり）。
 fn unit_suffix(session: &Session) -> String {
     session
@@ -238,13 +225,13 @@ fn pivot_and_axes(session: &Session) -> Option<(Vec3, [Vec3; 3])> {
 }
 
 /// 打った文字から差分の行列と変化量を作り直し、状態欄を書く。読めなければ差分を変えない。
-fn rebuild(session: &mut Session) {
+pub(super) fn rebuild(session: &mut Session) -> bool {
     let Some(Transform {
         source: TransformSource::Keys(entry),
         ..
     }) = session.transform.as_ref()
     else {
-        return;
+        return false;
     };
     let entry = entry.clone();
     let made = scene_amount(session, &entry).and_then(|value| {
@@ -265,6 +252,7 @@ fn rebuild(session: &mut Session) {
         Err(reason) => reason,
     };
     session.status_text = status_with(session, &entry, reason);
+    reason.is_empty()
 }
 
 /// `Command::BeginKeyTransform`。いまの道具と軸からハンドルを決め、数値の入力を始める。

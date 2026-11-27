@@ -291,7 +291,7 @@ mod tests {
         assert!(root.buffers.is_empty());
         assert_eq!(root.scenes.len(), 1);
 
-        let base = base::read(&bytes).expect("土台");
+        let base = base::read(&bytes, &Default::default()).expect("土台");
         assert_eq!(base.node_count, 0);
         assert!(base.has_scenes);
         assert_eq!(base.scene_index, 0);
@@ -316,7 +316,7 @@ mod tests {
         bytes.extend_from_slice(b"JSON");
         bytes.extend_from_slice(json);
         bytes.resize(total, b' ');
-        assert!(base::read(&bytes).is_err());
+        assert!(base::read(&bytes, &Default::default()).is_err());
         assert_eq!(load_glb(&bytes), Err(LoadError::NoMesh));
     }
 }

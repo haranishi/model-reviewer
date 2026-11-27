@@ -196,12 +196,8 @@ pub(super) fn set_tool(session: &mut Session, tool: Tool) {
         return;
     }
     cancel_transform(session);
-    let was_annotate = session.tool == Tool::Annotate;
     session.tool = tool;
-    session.annotate_mode = tool == Tool::Annotate;
-    if was_annotate && tool != Tool::Annotate {
-        super::notes::cancel(session);
-    }
+    super::notes::set_mode(session, tool == Tool::Annotate);
     // ハンドルの出し入れは egui の描画だけ。3Dは描き直さない。
 }
 
@@ -272,13 +268,8 @@ fn readout_status(readout: Readout, units: Units) -> String {
 pub(super) fn commit_transform(session: &mut Session) {
     // キーで打った量が確定できない（拡大の倍率が 0 以下など）なら、理由を出して入力を続ける
     // （要件11.10）。差分の行列は前に読めた量のままなので、そのまま入れてはいけない。
-    if let Some(Transform {
-        source: TransformSource::Keys(entry),
-        ..
-    }) = session.transform.as_ref()
-        && let Some(reason) = super::keymove::commit_refusal(entry)
-    {
-        session.status_text = super::keymove::status_with(session, entry, reason);
+    let keyed = session.key_entry().is_some();
+    if keyed && !super::keymove::rebuild(session) {
         return;
     }
     let Some(transform) = session.transform.take() else {
@@ -286,7 +277,7 @@ pub(super) fn commit_transform(session: &mut Session) {
     };
     session.scene_dirty.drag = true;
     if transform.delta == Affine3A::IDENTITY {
-        if matches!(transform.source, TransformSource::Keys(_)) {
+        if keyed {
             session.status_text.clear();
         }
         return;
@@ -306,12 +297,21 @@ pub(super) fn commit_transform(session: &mut Session) {
         .and_then(|parent| doc.node(parent))
         .map_or(Affine3A::IDENTITY, |parent| parent.world);
     let before = node.local;
-    let Some(after) = apply_world_delta(&parent_world, &node.world, &transform.delta) else {
-        session.status_text = NOT_FINITE.to_owned();
-        return;
+    let accepted = match apply_world_delta(&parent_world, &node.world, &transform.delta) {
+        Some(after) => {
+            let changed =
+                commit_local_matrix(session, transform.key, before, after, label_of(&transform));
+            session.metrics.edit_commit = Some(started.elapsed());
+            changed || after == before
+        }
+        None => {
+            session.status_text = NOT_FINITE.to_owned();
+            false
+        }
     };
-    let _ = commit_local_matrix(session, transform.key, before, after, label_of(&transform));
-    session.metrics.edit_commit = Some(started.elapsed());
+    if keyed && !accepted {
+        session.transform = Some(transform);
+    }
 }
 
 fn label_of(transform: &Transform) -> &'static str {

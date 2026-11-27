@@ -18,7 +18,7 @@ use super::{Action, Chord, Keymap};
 pub const FORMAT: &str = "model-reviewer-keymap";
 /// このアプリが読み書きする版。
 pub const VERSION: u64 = 1;
-/// これより大きいファイルは読まない（壊れた内容として扱う）。
+/// 設定として読み書きするバイト数の上限。
 pub const MAX_BYTES: u64 = 64 * 1024;
 
 const APP_DIR: &str = "model-reviewer";
@@ -26,6 +26,11 @@ const FILE_NAME: &str = "keymap.json";
 
 const BROKEN_NOTICE: &str = "設定を読めなかったため、初期値で起動しました";
 const NEWER_NOTICE: &str = "新しい版の設定です。このアプリでは変更を保存しません";
+const DOCUMENT_NOTICE: &str =
+    "モデル・レビュー・自動操作の手順と同じファイルには設定を保存しません";
+const LARGE_NOTICE: &str = "ファイルが 64 KiB を超えるため、設定を保存しません";
+const NON_JSON_NOTICE: &str =
+    "JSON 形式ではないため、初期値を使います。このファイルには設定を保存しません";
 
 /// 設定の場所の決まりを分けるOS。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +115,8 @@ pub enum StoreState {
     Broken,
     /// このアプリより新しい版。保存しない。
     Newer,
+    /// 設定で置き換えられない利用者のファイル。
+    Protected(&'static str),
     /// 読めなかった（権限など）。保存しない。理由を持つ。
     Unreadable(String),
 }
@@ -125,6 +132,7 @@ pub enum StoreSource {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Store {
     path: Option<PathBuf>,
+    documents: Vec<PathBuf>,
     state: StoreState,
     source: StoreSource,
     /// 知らない最上位の項目（読んだ値のまま書き戻す）。
@@ -146,11 +154,14 @@ impl Default for Store {
     }
 }
 
-/// 読んだ結果（`open` の中だけで使う）。
-enum ReadOutcome {
+/// 壊れた設定の控えには、検査したバイト列をそのまま使う。
+enum Contents {
     Missing,
-    Unreadable(String),
-    Bytes(Vec<u8>),
+    Broken(Vec<u8>),
+    Settings {
+        bindings: Map<String, Value>,
+        extra: Map<String, Value>,
+    },
 }
 
 impl Store {
@@ -158,6 +169,7 @@ impl Store {
     pub fn none() -> Store {
         Store {
             path: None,
+            documents: Vec::new(),
             state: StoreState::NoPath,
             source: StoreSource::Default,
             extra: serde_json::Map::new(),
@@ -166,56 +178,53 @@ impl Store {
 
     /// 場所のファイルを読む。どんな中身でも落ちない。起動しただけでは何も書かない。
     pub fn open(path: PathBuf) -> Opened {
-        let bytes = match read_limited(&path) {
-            ReadOutcome::Missing => return Self::fallback(path, StoreState::Ready, None),
-            ReadOutcome::Unreadable(reason) => {
-                let notice = format!(
-                    "設定ファイルを読めませんでした（{reason}）。初期値で起動し、変更は保存しません"
-                );
-                return Self::fallback(path, StoreState::Unreadable(reason), Some(notice));
-            }
-            ReadOutcome::Bytes(bytes) => bytes,
+        let (bindings, extra) = match read_settings(&path) {
+            Ok(Contents::Settings { bindings, extra }) => (bindings, extra),
+            Ok(Contents::Missing) => return Self::fallback(path, StoreState::Ready),
+            Ok(Contents::Broken(_)) => return Self::fallback(path, StoreState::Broken),
+            Err(state) => return Self::fallback(path, state),
         };
-        let broken = |path| Self::fallback(path, StoreState::Broken, Some(BROKEN_NOTICE.into()));
-        if bytes.len() as u64 > MAX_BYTES {
-            return broken(path);
-        }
-        let Ok(Value::Object(mut top)) = serde_json::from_slice::<Value>(&bytes) else {
-            return broken(path);
-        };
-        if top.get("format").and_then(Value::as_str) != Some(FORMAT) {
-            return broken(path);
-        }
-        match top.get("version").and_then(Value::as_u64) {
-            Some(VERSION) => {}
-            Some(version) if version > VERSION => {
-                return Self::fallback(path, StoreState::Newer, Some(NEWER_NOTICE.into()));
-            }
-            _ => return broken(path),
-        }
-        let Some(Value::Object(bindings)) = top.remove("bindings") else {
-            return broken(path);
-        };
-        top.remove("format");
-        top.remove("version");
         let (keymap, dropped) = build_keymap(bindings);
         let notice = (dropped > 0).then(|| format!("割り当て {dropped} 件を読めませんでした"));
         Opened {
             store: Store {
                 path: Some(path),
+                documents: Vec::new(),
                 state: StoreState::Ready,
                 source: StoreSource::File,
-                extra: top,
+                extra,
             },
             keymap,
             notice,
         }
     }
 
-    fn fallback(path: PathBuf, state: StoreState, notice: Option<String>) -> Opened {
+    pub(crate) fn open_for(path: PathBuf, documents: Vec<PathBuf>) -> Opened {
+        if documents
+            .iter()
+            .any(|doc| crate::exporter::same_file(doc, &path))
+        {
+            return Self::fallback(path, StoreState::Protected(DOCUMENT_NOTICE));
+        }
+        let mut opened = Self::open(path);
+        opened.store.documents = documents;
+        opened
+    }
+
+    fn fallback(path: PathBuf, state: StoreState) -> Opened {
+        let notice = match &state {
+            StoreState::Broken => Some(BROKEN_NOTICE.into()),
+            StoreState::Newer => Some(NEWER_NOTICE.into()),
+            StoreState::Protected(reason) => Some((*reason).into()),
+            StoreState::Unreadable(reason) => Some(format!(
+                "設定ファイルを読めませんでした（{reason}）。初期値で起動し、変更は保存しません"
+            )),
+            _ => None,
+        };
         Opened {
             store: Store {
                 path: Some(path),
+                documents: Vec::new(),
                 state,
                 source: StoreSource::Default,
                 extra: Map::new(),
@@ -223,6 +232,24 @@ impl Store {
             keymap: Keymap::default(),
             notice,
         }
+    }
+
+    /// 開こうとしたパスを保存直前にも照合する（後から同じファイルへのリンクになり得る）。
+    pub(crate) fn protect_document(&mut self, document: &Path) -> Option<&'static str> {
+        if !self.saves() {
+            return None;
+        }
+        if self
+            .path()
+            .is_some_and(|path| crate::exporter::same_file(document, path))
+        {
+            self.state = StoreState::Protected(DOCUMENT_NOTICE);
+            return Some(DOCUMENT_NOTICE);
+        }
+        if !self.documents.iter().any(|path| path == document) {
+            self.documents.push(document.to_owned());
+        }
+        None
     }
 
     /// 既定と違う割り当てだけを書く。保存しない様子なら何もせず `Ok`。失敗の理由は日本語の文。
@@ -236,42 +263,77 @@ impl Store {
         let Some(path) = self.path.clone() else {
             return Ok(());
         };
-        let bytes = file_bytes(keymap, &self.extra);
+        let bytes = file_bytes(keymap, &self.extra)?;
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let Some(name) = path.file_name() else {
+        if path.file_name().is_none() {
             return Err("設定の保存先にファイル名がありません".to_owned());
-        };
+        }
         std::fs::create_dir_all(parent).map_err(|err| {
             format!(
                 "設定を保存するフォルダを作れませんでした（{}）",
                 io_reason(&err)
             )
         })?;
-        let tmp = write_temp(&path, |file| file.write_all(&bytes))
+        let tmp = write_temp(&path, &bytes)
             .map_err(|err| format!("設定を書けませんでした（{}）", io_reason(&err)))?;
-        if self.state == StoreState::Broken {
-            let mut broken = name.to_os_string();
-            broken.push(".broken");
-            if let Err(err) = keep_broken(&path, &parent.join(broken)) {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(format!(
-                    "読めなかった設定ファイルを残せないため、保存しませんでした（{}）",
+        let result = self.replace(&tmp, &path);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    }
+
+    fn replace(&mut self, tmp: &Path, path: &Path) -> Result<(), String> {
+        if let Contents::Broken(original) = self.check_destination(path)? {
+            let mut name = path.as_os_str().to_owned();
+            name.push(".broken");
+            let backup = PathBuf::from(name);
+            let copy = write_temp(&backup, &original).map_err(|err| {
+                format!(
+                    "読めなかった設定の控えを書けませんでした（{}）",
                     io_reason(&err)
-                ));
+                )
+            })?;
+            let result = self
+                .check_destination(&backup)
+                .and_then(|_| rename(&copy, &backup));
+            if let Err(reason) = result {
+                let _ = std::fs::remove_file(copy);
+                return Err(reason);
+            }
+            if let Contents::Broken(current) = self.check_destination(path)?
+                && current != original
+            {
+                return Err("控えを作る間に設定が変更されたため、保存しませんでした".to_owned());
             }
         }
-        if let Err(err) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!(
-                "設定ファイルを置き換えられませんでした（{}）",
-                io_reason(&err)
-            ));
-        }
+        rename(tmp, path)?;
         self.state = StoreState::Ready;
         Ok(())
+    }
+
+    fn check_destination(&mut self, path: &Path) -> Result<Contents, String> {
+        let contents = if self
+            .documents
+            .iter()
+            .any(|doc| crate::exporter::same_file(doc, path))
+        {
+            Err(StoreState::Protected(DOCUMENT_NOTICE))
+        } else {
+            read_settings(path)
+        };
+        contents.map_err(|state| {
+            if let StoreState::Unreadable(reason) = state {
+                return format!("設定ファイルを置き換えられませんでした（{reason}）");
+            }
+            self.state = state;
+            self.note(false)
+                .unwrap_or("設定を保存できませんでした")
+                .to_owned()
+        })
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -303,6 +365,7 @@ impl Store {
             StoreState::NoPath if scripted => Some("自動操作のため、変更は保存されません"),
             StoreState::NoPath => Some("設定の場所が決められないため、変更は保存されません"),
             StoreState::Newer => Some("新しい版の設定のため、変更は保存されません"),
+            StoreState::Protected(reason) => Some(reason),
             StoreState::Unreadable(_) => Some("設定ファイルを読めないため、変更は保存されません"),
             StoreState::Ready | StoreState::Broken => None,
         }
@@ -310,25 +373,54 @@ impl Store {
 }
 
 /// 読む。無い・読めない・通常のファイルでないを分ける。上限より1バイト多くまでしか読まない。
-fn read_limited(path: &Path) -> ReadOutcome {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return ReadOutcome::Missing,
-        Err(err) => return ReadOutcome::Unreadable(io_reason(&err)),
+fn read_settings(path: &Path) -> Result<Contents, StoreState> {
+    let read = || -> io::Result<Vec<u8>> {
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(io::Error::other("通常のファイルではありません"));
+        }
+        let mut bytes = Vec::new();
+        File::open(path)?
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
     };
-    if !meta.is_file() {
-        return ReadOutcome::Unreadable("通常のファイルではありません".to_owned());
-    }
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return ReadOutcome::Missing,
-        Err(err) => return ReadOutcome::Unreadable(io_reason(&err)),
+    let bytes = match read() {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Contents::Missing),
+        Err(err) => return Err(StoreState::Unreadable(io_reason(&err))),
     };
-    let mut bytes = Vec::new();
-    match file.take(MAX_BYTES + 1).read_to_end(&mut bytes) {
-        Ok(_) => ReadOutcome::Bytes(bytes),
-        Err(err) => ReadOutcome::Unreadable(io_reason(&err)),
+    if bytes.starts_with(b"glTF") {
+        return Err(StoreState::Protected("GLB ファイルには設定を保存しません"));
     }
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(StoreState::Protected(LARGE_NOTICE));
+    }
+    let value =
+        serde_json::from_slice(&bytes).map_err(|_| StoreState::Protected(NON_JSON_NOTICE))?;
+    let Value::Object(mut top) = value else {
+        return Ok(Contents::Broken(bytes));
+    };
+    match top.get("format").and_then(Value::as_str) {
+        Some(FORMAT) => {}
+        Some(model_reviewer_core::review_file::FORMAT) => {
+            return Err(StoreState::Protected(DOCUMENT_NOTICE));
+        }
+        _ => return Ok(Contents::Broken(bytes)),
+    }
+    match top.get("version").and_then(Value::as_u64) {
+        Some(VERSION) => {}
+        Some(version) if version > VERSION => return Err(StoreState::Newer),
+        _ => return Ok(Contents::Broken(bytes)),
+    }
+    let Some(Value::Object(bindings)) = top.remove("bindings") else {
+        return Ok(Contents::Broken(bytes));
+    };
+    top.remove("format");
+    top.remove("version");
+    Ok(Contents::Settings {
+        bindings,
+        extra: top,
+    })
 }
 
 /// 版1の `bindings` から表を作る。返すのは表と、捨てた件数。
@@ -390,7 +482,7 @@ fn build_keymap(bindings: Map<String, Value>) -> (Keymap, usize) {
 }
 
 /// ファイルの中身。並びは名前の順、改行は `\n`、末尾に改行を1つ。同じ割り当てなら同じバイト列。
-fn file_bytes(keymap: &Keymap, extra: &Map<String, Value>) -> Vec<u8> {
+fn file_bytes(keymap: &Keymap, extra: &Map<String, Value>) -> Result<Vec<u8>, String> {
     let mut bindings = Map::new();
     for &action in Action::ALL {
         if keymap.is_changed(action) {
@@ -408,17 +500,19 @@ fn file_bytes(keymap: &Keymap, extra: &Map<String, Value>) -> Vec<u8> {
     top.insert("format".to_owned(), Value::String(FORMAT.to_owned()));
     top.insert("version".to_owned(), Value::from(VERSION));
     top.insert("bindings".to_owned(), Value::Object(bindings));
-    let mut bytes =
-        serde_json::to_vec_pretty(&Value::Object(top)).expect("JSON の値は必ず文字にできる");
+    let mut bytes = serde_json::to_vec_pretty(&top).expect("JSON の値は必ず文字にできる");
+    if bytes.len() as u64 >= MAX_BYTES {
+        bytes = serde_json::to_vec(&top).expect("JSON の値は必ず文字にできる");
+        if bytes.len() as u64 >= MAX_BYTES {
+            return Err("保存する設定が 64 KiB を超えるため、変更を保存しませんでした".to_owned());
+        }
+    }
     bytes.push(b'\n');
-    bytes
+    Ok(bytes)
 }
 
 /// 同じフォルダに、新規作成できた一時名を取る。同時に保存中の別の窓のファイルには触れない。
-fn create_temp<T>(
-    path: &Path,
-    mut create: impl FnMut(&Path) -> io::Result<T>,
-) -> io::Result<(PathBuf, T)> {
+fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut base = OsString::from(".");
@@ -431,16 +525,16 @@ fn create_temp<T>(
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         name.push(format!(".{}.{id}.tmp", std::process::id()));
         let candidate = path.with_file_name(name);
-        match create(&candidate) {
+        match File::create_new(&candidate) {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             result => return result.map(|file| (candidate, file)),
         }
     }
 }
 
-fn write_temp(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<PathBuf> {
-    let (tmp, mut file) = create_temp(path, |tmp| File::create_new(tmp))?;
-    let result = write(&mut file).and_then(|()| file.sync_all());
+fn write_temp(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    let (tmp, mut file) = create_temp(path)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
     if let Err(err) = result {
         let _ = std::fs::remove_file(&tmp);
@@ -449,25 +543,13 @@ fn write_temp(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> i
     Ok(tmp)
 }
 
-/// 2つの窓が同じ壊れた設定から起動しても、先の窓が直した設定で元の控えを上書きしない。
-fn keep_broken(path: &Path, backup: &Path) -> io::Result<()> {
-    let snapshot = match create_temp(backup, |tmp| std::fs::hard_link(path, tmp)) {
-        Ok((tmp, ())) => tmp,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        // ハードリンクを使えないファイルシステムでは、同じ内容の控えを作る。
-        Err(_) => {
-            let mut source = File::open(path)?;
-            write_temp(backup, |file| io::copy(&mut source, file).map(|_| ()))?
-        }
-    };
-    let result = match Store::open(snapshot.clone()).store.state {
-        StoreState::Broken => std::fs::rename(&snapshot, backup),
-        StoreState::Newer => Err(io::Error::other(NEWER_NOTICE)),
-        StoreState::Unreadable(reason) => Err(io::Error::other(reason)),
-        _ => Ok(()),
-    };
-    let _ = std::fs::remove_file(snapshot);
-    result
+fn rename(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::rename(from, to).map_err(|err| {
+        format!(
+            "設定ファイルを置き換えられませんでした（{}）",
+            io_reason(&err)
+        )
+    })
 }
 
 fn io_reason(err: &std::io::Error) -> String {

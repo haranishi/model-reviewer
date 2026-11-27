@@ -55,10 +55,11 @@ impl KeyLabels { pub fn get(&self, action: Action) -> Option<&str>; pub fn with_
 
 ## キーの照合
 - 見るのは `egui::Event::Key { pressed: true, repeat: false, .. }` だけ（今と同じ）。`key` と `modifiers` から `Chord::from_event` を作り、`Keymap::action_for` を引く。**取り込みと照合は同じ関数を通す**（取り込めた組は必ず働く）。
-- `command` は `modifiers.command`（macOS は Cmd、ほかは Ctrl）。`alt` が付いていれば `Refusal::Modifier`。`ctrl` が付いて `command` でない（macOS の Control）も同じ。
+- `command` は macOS の Cmd、ほかの OS の Ctrl を表す。Alt と macOS の Control は断る。macOS で Control と Cmd を一緒に押しても同じ扱いになる。
 - 修飾は完全一致。`Chord { key: Z, shift: false, command: false }` は、Cmd+Z では働かない。
 - 1フレームに複数のキーが届いたら、届いた順に操作を積む（今は、コードに書いた順）。同じフレームで2つのキーを押す場合だけ順が変わりうる。
 - 振り分けの入口の順: ダイアログ → ヘルプ → **設定の画面（足す）** → Esc → 入力中なら終わり → **数値の入力の途中ならそのキーだけ（足す）** → **向きの固定と矢印（足す。場面つき）** → 固定のキー（Delete・Backspace）→ 表。
+- Enter で入力を確定したフレームは、入力欄を離れた後も削除や割り当てた操作へキーを渡さない。道具を替えたときは本文のある注釈の下書きを残し、そのまま登録できる。
 - **「パネルの上」の判定（`over_panel`）は消す。** 代わりに、入力欄でない部品が入力の位置を持っている間だけ、Delete・Backspace・矢印・Enter を捨てる（一覧やボタンを Tab で移っている人の操作を奪わない）。英字・数字・修飾つきの組は、その間も働く。
 - 公開の関数 `shortcut_commands(ctx, session)` の形は変えない（既存の試験が呼んでいる）。表は `session.keymap` から読む。
 

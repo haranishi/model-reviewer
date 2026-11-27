@@ -957,6 +957,9 @@ impl Session {
         forbid_on_commit: bool,
         options: LoadOptions,
     ) {
+        if expected_identity.is_some() {
+            self.protect_document(&path);
+        }
         self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
         if let Some(active) = self.loader.take() {

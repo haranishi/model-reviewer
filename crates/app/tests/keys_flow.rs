@@ -243,6 +243,64 @@ fn rebound_key_works_immediately() {
 }
 
 #[test]
+fn opened_document_paths_are_protected_from_keymap_saves() {
+    let dir = scratch("document-path");
+    let path = dir.join("keymap.json");
+    let alias = dir.join("document.json");
+    let bytes = br#"{"format":"model-reviewer-keymap","version":1,"bindings":{}}"#;
+    fs::write(&path, bytes).unwrap();
+    fs::hard_link(&path, &alias).unwrap();
+    for when in ["launch", "review", "model"] {
+        let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+        launch.keymap = Some(path.clone());
+        if when == "launch" {
+            launch.positional = Some(alias.clone());
+        }
+        let mut app = headless(launch);
+        let s = app.session_mut();
+        match when {
+            "review" => s.apply(Command::LoadReview(alias.clone())),
+            "model" => s.apply(Command::OpenModel(alias.clone())),
+            _ => {}
+        }
+        s.apply(Command::ClearKey(Action::ToolMove));
+        assert_eq!(fs::read(&path).unwrap(), bytes, "{when}");
+        assert!(!s.store.saves(), "{when}");
+        assert!(s.store.note(false).is_some());
+        assert!(!dir.join("keymap.json.broken").exists());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn launch_script_is_protected_at_the_settings_and_backup_paths() {
+    let dir = scratch("script-path");
+    let settings = dir.join("keymap.json");
+    let backup = dir.join("keymap.json.broken");
+    let steps = br#"{"steps":[]}"#;
+    for script in [&settings, &backup] {
+        fs::write(&settings, b"{}").unwrap();
+        fs::write(script, steps).unwrap();
+        let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+        launch.keymap = Some(settings.clone());
+        launch.script = Some(script.clone());
+        launch.out = Some(dir.join("out"));
+        let mut app = headless(launch);
+        let session = app.session_mut();
+        session.apply(Command::ClearKey(Action::ToolMove));
+        assert_eq!(fs::read(script).unwrap(), steps);
+        assert!(!session.store.saves());
+        assert!(session.store.note(true).is_some());
+        if script == &settings {
+            assert!(!backup.exists());
+        } else {
+            assert_eq!(fs::read(&settings).unwrap(), b"{}");
+        }
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn change_is_saved_and_restored() {
     let dir = scratch("restore");
     let path = dir.join("keymap.json");
@@ -419,7 +477,7 @@ fn failed_save_keeps_binding_and_notifies() {
 fn two_sessions_keep_the_original_backup_and_each_others_temp() {
     let dir = scratch("two-sessions");
     let path = dir.join("keymap.json");
-    fs::write(&path, b"{").unwrap();
+    fs::write(&path, b"{}").unwrap();
     let mut launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
     launch.keymap = Some(path.clone());
     let mut first = headless(launch.clone());
@@ -430,7 +488,7 @@ fn two_sessions_keep_the_original_backup_and_each_others_temp() {
     bind(first.session_mut(), Action::ToolMove, Key::T);
     bind(second.session_mut(), Action::ToolMove, Key::F7);
     assert_eq!(fs::read(&in_use).unwrap(), b"writing");
-    assert_eq!(fs::read(dir.join("keymap.json.broken")).unwrap(), b"{");
+    assert_eq!(fs::read(dir.join("keymap.json.broken")).unwrap(), b"{}");
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved["bindings"]["tool.move"], "F7");
     fs::remove_dir_all(dir).unwrap();

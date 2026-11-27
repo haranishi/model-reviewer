@@ -208,6 +208,28 @@ fn same_document_same_bytes_from_empty_base() {
 }
 
 #[test]
+fn verify_returns_error_for_missing_shape_arrays() {
+    let base = empty_base();
+    let scene = one_shape();
+    let built = build(&base, &scene).unwrap();
+    for field in ["meshes", "materials", "accessors", "bufferViews", "buffers"] {
+        let mut json: gltf::json::Value = gltf::json::deserialize::from_slice(&built.json).unwrap();
+        json.as_object_mut().unwrap().remove(field);
+        let broken = Built {
+            json: gltf::json::serialize::to_vec(&json).unwrap(),
+            ..built.clone()
+        };
+        assert!(
+            matches!(
+                verify(&write(&base, &broken), &base, &scene, &broken),
+                Err(ExportError::Verify(_))
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
 fn empty_scene_on_empty_base_is_refused() {
     let base = empty_base();
     let nothing = ExportScene::default();

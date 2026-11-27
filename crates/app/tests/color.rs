@@ -189,6 +189,31 @@ fn color_change_patches_instances_only() {
 }
 
 #[test]
+fn restored_wheel_can_be_recolored_after_exporting_its_deletion() {
+    let dir = scratch("restored-wheel");
+    let source = dir.join("source.glb");
+    std::fs::write(&source, sample_glb()).unwrap();
+    let mut session = Session::default();
+    open(&mut session, &source);
+    session.apply(Command::Select(Some(WHEEL)));
+    let other = colors(&session, NodeId(4));
+    session.apply(Command::DeleteSelected);
+    session.apply(Command::ExportGlb(dir.join("deleted.glb")));
+    finish_export(&mut session);
+    session.apply(Command::DismissDialog);
+    session.apply(Command::Undo);
+    session.apply(Command::Select(Some(WHEEL)));
+    session.apply(paint(4));
+    let output = dir.join("restored.glb");
+    session.apply(Command::ExportGlb(output.clone()));
+    finish_export(&mut session);
+    let model = load_glb(&std::fs::read(output).unwrap()).unwrap();
+    let [r, g, b] = srgb8_to_linear(SWATCHES[4].1);
+    assert_eq!(model.draws(WHEEL)[0].base_color, [r, g, b, 1.0]);
+    assert_eq!(model.draws(NodeId(4))[0].base_color, other[0]);
+}
+
+#[test]
 fn color_survives_export_and_reopen() {
     let dir = scratch("roundtrip");
     let original = sample_glb();

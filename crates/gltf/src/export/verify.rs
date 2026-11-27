@@ -50,7 +50,7 @@ pub(crate) fn verify(
     scene: &ExportScene,
     built: &Built,
 ) -> Result<Model, ExportError> {
-    let base = base::read(base_bytes)?;
+    let base = base::read(base_bytes, scene)?;
     let shape = patch::shape(&base, scene)?;
     check_container(written, &base, built)?;
     let new_value: Value = gltf::json::deserialize::from_slice(&built.json)
@@ -68,7 +68,7 @@ pub(crate) fn verify(
     check_appended(&old_value, &new_value, &base, built, &uses)?;
     let model = crate::load_glb(written)
         .map_err(|error| fail(format!("開けません: {}", error.message_ja())))?;
-    check_model(&model, &base.model, scene, built)?;
+    check_model(&model, &base, scene, built)?;
     Ok(model)
 }
 
@@ -195,7 +195,6 @@ fn check_nodes(
     built: &Built,
 ) -> Result<MeshUses, ExportError> {
     let mut uses = MeshUses::default();
-    let loaded = base.loaded_nodes();
     let old_nodes = nodes_of(old);
     let new_nodes = nodes_of(new);
     let added = scene
@@ -221,7 +220,7 @@ fn check_nodes(
                 if without(old_node, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} の変えていない項目が元と違います")));
                 }
-                let recolored = colors_changed(base, &loaded, file as u32, node);
+                let recolored = colors_changed(base, file as u32, node);
                 check_mesh_change(old, new, old_node, new_node, recolored, &what, &mut uses)?;
                 let untouched = base.locals[file].is_some_and(|local| same_bits(local, node.local));
                 if untouched && !same_keys(old_node, new_node, &TRANSFORM) {
@@ -294,7 +293,7 @@ fn check_nodes(
                 if without(source, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} が複製の元の写しになっていません")));
                 }
-                let recolored = colors_changed(base, &loaded, template, node);
+                let recolored = colors_changed(base, template, node);
                 check_mesh_change(old, new, source, new_node, recolored, &what, &mut uses)?;
             }
             None => {
@@ -316,6 +315,9 @@ fn check_nodes(
                         return Err(fail(format!(
                             "{what}（足した図形）が元のファイルのメッシュを指しています"
                         )));
+                    }
+                    if mesh >= array_of(new, "meshes").len() {
+                        return Err(fail(format!("{what} の mesh が範囲の外です")));
                     }
                     uses.fresh.insert(mesh);
                 }
@@ -350,21 +352,8 @@ fn index_of(value: &Value, key: &str) -> Option<Option<u64>> {
 
 /// 部品の描画の色が、土台のモデルの同じノードの色とビット単位で違うか。比べる相手が無ければ偽
 /// （そのときはメッシュを替えてはいけない）。
-fn colors_changed(
-    base: &Base<'_>,
-    loaded: &[Option<usize>],
-    file: u32,
-    node: &super::ExportNode,
-) -> bool {
-    let Some(at) = loaded.get(file as usize).copied().flatten() else {
-        return false;
-    };
-    let source = &base.model.nodes[at];
-    let Some(draws) = base
-        .model
-        .draws
-        .get(source.draws.start as usize..source.draws.end as usize)
-    else {
+fn colors_changed(base: &Base<'_>, file: u32, node: &super::ExportNode) -> bool {
+    let Some(draws) = base.draw_range(file).and_then(|r| base.model.draws.get(r)) else {
         return false;
     };
     draws.len() != node.draws.len()
@@ -424,7 +413,10 @@ fn check_mesh_change(
         ok = without(a, &["material"]) == without(b, &["material"])
             && match (index_of(a, "material"), index_of(b, "material")) {
                 (Some(x), Some(y)) if x == y => true,
-                (Some(_), Some(Some(y))) => y >= old_materials,
+                (Some(_), Some(Some(y))) => {
+                    // mode の省略は三角形。点・線の材質は写しにも元のまま残す。
+                    matches!(index_of(a, "mode"), Some(None | Some(4..=6))) && y >= old_materials
+                }
                 _ => false,
             };
     }
@@ -766,7 +758,7 @@ fn is_shape_material(material: &Value) -> bool {
 /// 3. 本アプリの読み込みで開いた結果が `scene` と一致する。
 fn check_model(
     model: &Model,
-    base_model: &Model,
+    base: &Base<'_>,
     scene: &ExportScene,
     built: &Built,
 ) -> Result<(), ExportError> {
@@ -776,11 +768,6 @@ fn check_model(
             model.nodes.len(),
             scene.nodes.len()
         )));
-    }
-    // 元のファイルのノード番号から、元のファイルを読み込んだ部品へ。
-    let mut base_nodes = vec![None; base_node_count(base_model)];
-    for (index, node) in base_model.nodes.iter().enumerate() {
-        base_nodes[node.gltf_index as usize] = Some(index);
     }
     let mut worlds: Vec<Affine3A> = Vec::with_capacity(scene.nodes.len());
     let mut compared: HashSet<(u32, u64)> = HashSet::new();
@@ -819,16 +806,14 @@ fn check_model(
         if draws.len() != node.draws.len() {
             return Err(fail(format!("{what} の描画の数が違います")));
         }
-        // 形状の出どころ。ファイルにある部品と複製は元のファイルの同じノード（読み込まれていれば）、
-        // 足した部品は `scene.added`。
-        let source = node
-            .file_index
-            .or(node.template)
-            .and_then(|file| base_nodes.get(file as usize).copied().flatten())
-            .map(|at| &base_model.nodes[at]);
-        let source_draws = source.map(|source| {
-            &base_model.draws[source.draws.start as usize..source.draws.end as usize]
-        });
+        let source_draws = match node.file_index.or(node.template) {
+            Some(file) => Some(
+                base.draw_range(file)
+                    .and_then(|r| base.model.draws.get(r))
+                    .ok_or_else(|| fail(format!("{what} の元の描画がありません")))?,
+            ),
+            None => None,
+        };
         if source_draws.is_some_and(|source| source.len() != draws.len()) {
             return Err(fail(format!("{what} の描画の数が元のファイルと違います")));
         }
@@ -840,12 +825,12 @@ fn check_model(
                 .primitives
                 .get(got.prim.0 as usize)
                 .ok_or_else(|| fail(format!("{what} の形状がありません")))?;
-            let expected = match source_draws {
+            let (key, expected) = match source_draws {
                 Some(source) => {
                     let prim = source[slot].prim.0;
-                    Some((u64::from(prim), &base_model.primitives[prim as usize]))
+                    (u64::from(prim), &base.model.primitives[prim as usize])
                 }
-                None if node.file_index.is_none() && node.template.is_none() => {
+                None => {
                     let slot = want
                         .prim
                         .0
@@ -855,16 +840,10 @@ fn check_model(
                         .added
                         .get(slot as usize)
                         .ok_or_else(|| fail(format!("{what} の形状の番号が範囲の外です")))?;
-                    Some(((1u64 << 32) | u64::from(slot), prim.as_ref()))
+                    ((1u64 << 32) | u64::from(slot), prim.as_ref())
                 }
-                // 元のファイルで読み込まれていないノード：JSONの照合で `mesh` が元のままなことを
-                // 確かめてあるので、形状の中身はここでは比べない。
-                None => None,
             };
-            if let Some((key, expected)) = expected
-                && compared.insert((got.prim.0, key))
-                && !same_primitive(actual, expected)
-            {
+            if compared.insert((got.prim.0, key)) && !same_primitive(actual, expected) {
                 return Err(fail(format!("{what} の形状が違います")));
             }
             placed += (actual.indices.len() / 3) as u64;
@@ -874,15 +853,6 @@ fn check_model(
         return Err(fail("配置後の三角形数が違います".to_owned()));
     }
     Ok(())
-}
-
-fn base_node_count(model: &Model) -> usize {
-    model
-        .nodes
-        .iter()
-        .map(|node| node.gltf_index as usize + 1)
-        .max()
-        .unwrap_or(0)
 }
 
 /// 位置とインデックスはビット単位、法線は元に法線があるときだけ比べる

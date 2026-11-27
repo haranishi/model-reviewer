@@ -32,7 +32,6 @@ pub(crate) struct Recolored {
 pub(crate) fn plan(base: &Base<'_>, scene: &ExportScene) -> Result<Recolored, ExportError> {
     let first_material = array(&base.value, "materials").len() as u64;
     let first_mesh = array(&base.value, "meshes").len() as u64;
-    let loaded = base.loaded_nodes();
     let mut out = Recolored {
         mesh_of: vec![None; scene.nodes.len()],
         materials: Vec::new(),
@@ -45,12 +44,9 @@ pub(crate) fn plan(base: &Base<'_>, scene: &ExportScene) -> Result<Recolored, Ex
         let Some(file) = node.file_index.or(node.template) else {
             continue;
         };
-        // 読み込まれていないノード（土台のモデルに無い）は比べる相手が無い。照合も形状を比べない。
-        let Some(at) = loaded.get(file as usize).copied().flatten() else {
-            continue;
-        };
-        let source = &base.model.nodes[at];
-        let range = source.draws.start as usize..source.draws.end as usize;
+        let range = base
+            .draw_range(file)
+            .ok_or_else(|| invalid_base("部品の元のノードがありません"))?;
         let base_draws = base
             .model
             .draws

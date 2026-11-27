@@ -522,6 +522,32 @@ fn typing_right_after_placing_a_draft_goes_into_the_note() {
     assert_eq!(notes[0].text, "hn 直す\n次");
 }
 
+#[test]
+fn tool_shortcut_preserves_unregistered_annotation_text() {
+    let mut h = open_harness();
+    load_harness(&mut h, "draft-tool");
+    h.state_mut().apply(Command::SetAnnotateMode(true));
+    let ndc = point_ndc(h.state(), Vec3::new(0.2, 0.2, 0.0));
+    h.state_mut().apply(Command::ViewClick { ndc });
+    h.run_steps(3);
+    h.event(egui::Event::Text("面を確認".into()));
+    h.step();
+    assert!(h.state().draft_pending());
+    let viewport = widget_rect(&h, ids::VIEWPORT);
+    click_at(&mut h, viewport.right_top() + egui::vec2(15.0, 8.0));
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(egui::Key::G);
+    h.step();
+    assert_eq!(h.state().tool, model_reviewer::command::Tool::Move);
+    assert!(h.state().draft_pending());
+    let button = widget_rect(&h, ids::DRAFT_COMMIT);
+    click_same(&mut h, button.center());
+    assert_eq!(
+        h.state().review.as_ref().unwrap().annotations[0].text,
+        "面を確認"
+    );
+}
+
 /// ウィンドウが前面に無くても（自動操作など）、Enter で登録できる。
 #[test]
 fn enter_commits_a_draft_when_the_window_is_not_focused() {

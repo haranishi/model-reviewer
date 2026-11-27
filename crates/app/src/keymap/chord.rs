@@ -129,7 +129,7 @@ fn is_allowed(key: Key) -> bool {
 impl Chord {
     /// 押されたキーから組を作る。取り込みと照合の両方がここを通る（取り込めた組は必ず働く）。
     pub fn from_event(key: Key, modifiers: egui::Modifiers) -> Result<Chord, Refusal> {
-        if modifiers.alt || (modifiers.ctrl && !modifiers.command) {
+        if modifiers.alt || (modifiers.ctrl && (!modifiers.command || modifiers.mac_cmd)) {
             return Err(Refusal::Modifier);
         }
         Chord {
@@ -359,6 +359,17 @@ mod tests {
         ] {
             assert!(!refusal.message().is_empty());
         }
+    }
+
+    #[test]
+    fn mac_control_and_command_cannot_trigger_undo() {
+        let both = Modifiers {
+            ctrl: true,
+            mac_cmd: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(Chord::from_event(Key::Z, both), Err(Refusal::Modifier));
     }
 
     #[test]

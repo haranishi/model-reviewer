@@ -162,17 +162,27 @@ fn model_counts(session: &Session) -> Option<Counts> {
 pub const NEW_FILE_NAME: &str = "無題.glb";
 
 const TEXT_ESCAPE_FRAME_ID: &str = "app.text_escape_frame";
+const TEXT_INPUT_FRAME_ID: &str = "app.text_input_frame";
 
 pub(crate) fn mark_text_escape(ctx: &egui::Context) {
-    let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|data| {
-        data.insert_temp(egui::Id::unique(TEXT_ESCAPE_FRAME_ID), frame);
-    });
+    mark_frame(ctx, TEXT_ESCAPE_FRAME_ID);
 }
 
-fn text_escape_consumed(ctx: &egui::Context) -> bool {
+/// Enter で入力欄がフォーカスを手放しても、そのフレームのキーは入力欄のもの。
+pub(crate) fn remember_text_focus(ctx: &egui::Context) {
+    if ctx.text_edit_focused() {
+        mark_frame(ctx, TEXT_INPUT_FRAME_ID);
+    }
+}
+
+fn mark_frame(ctx: &egui::Context, id: &str) {
     let frame = ctx.cumulative_frame_nr();
-    ctx.data(|data| data.get_temp::<u64>(egui::Id::unique(TEXT_ESCAPE_FRAME_ID))) == Some(frame)
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(id), frame));
+}
+
+fn marked_this_frame(ctx: &egui::Context, id: &str) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data(|data| data.get_temp::<u64>(egui::Id::unique(id))) == Some(frame)
 }
 
 pub(crate) fn help_open(ctx: &egui::Context) -> bool {
@@ -218,7 +228,7 @@ impl FrameShortcuts {
             return Self::Exclusive(settings_key(ctx, session, escape));
         }
         if escape {
-            if text_escape_consumed(ctx) {
+            if marked_this_frame(ctx, TEXT_ESCAPE_FRAME_ID) {
                 return Self::Exclusive(None);
             }
             if ctx.text_edit_focused() {
@@ -227,7 +237,7 @@ impl FrameShortcuts {
             }
             return Self::Exclusive(escape_command(session));
         }
-        if ctx.text_edit_focused() {
+        if ctx.text_edit_focused() || marked_this_frame(ctx, TEXT_INPUT_FRAME_ID) {
             return Self::Exclusive(None);
         }
         Self::Keys {

@@ -43,6 +43,7 @@ pub(crate) fn surrender_focus(ctx: &egui::Context) {
 }
 
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u32; 2] {
+    crate::app::remember_text_focus(ui.ctx());
     begin_widgets(ui.ctx());
     let mut parts_open = session.panel_parts;
     let mut notes_open = session.panel_notes;

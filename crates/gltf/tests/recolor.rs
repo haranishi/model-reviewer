@@ -546,6 +546,57 @@ fn glb(json: &[u8], bin: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn restored_mesh_with_no_other_users_keeps_its_primitive_mapping() {
+    let mixed = mixed_glb();
+    let mut json = json_of(&mixed);
+    let mut other_mesh = json["meshes"][0].clone();
+    other_mesh["primitives"].as_array_mut().unwrap().truncate(1);
+    json["meshes"].as_array_mut().unwrap().push(other_mesh);
+    let mut other = json["nodes"][0].clone();
+    other["mesh"] = 1.into();
+    json["nodes"].as_array_mut().unwrap().push(other);
+    json["scenes"][0]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(1.into());
+    let base = glb(
+        &gltf::json::serialize::to_vec(&json).unwrap(),
+        &bin_of(&mixed),
+    );
+    let mut restored = scene_of(&load_glb(&base).unwrap());
+    let mut deleted = restored.clone();
+    deleted.nodes.remove(0);
+    let (_, first) = export(&base, &deleted);
+    paint(&mut restored, 0, BLUE);
+    let (_, second) = export(&first, &restored);
+    let model = load_glb(&second).unwrap();
+    assert_eq!(model.draws[0].base_color, BLUE);
+    assert_eq!(model.draws[1].base_color, [BLUE[0], BLUE[1], BLUE[2], 0.5]);
+    assert_eq!(
+        model.draws[2].base_color,
+        deleted.nodes[0].draws[0].base_color
+    );
+}
+
+#[test]
+fn verify_keeps_point_and_line_materials_on_mesh_copy() {
+    let base = mixed_glb();
+    let mut scene = scene_of(&load_glb(&base).unwrap());
+    paint(&mut scene, 0, RED);
+    let (built, _) = export(&base, &scene);
+    for slot in [1, 2] {
+        assert_rejected(
+            "描画しないプリミティブの材質",
+            broken_json(&base, &scene, &built, |json| {
+                let mesh = mesh_of(json, 0) as usize;
+                let primitives = &mut json["meshes"][mesh]["primitives"];
+                primitives[slot]["material"] = primitives[3]["material"].clone();
+            }),
+        );
+    }
+}
+
+#[test]
 fn recolor_maps_draws_past_skipped_primitives() {
     let base = mixed_glb();
     let model = load_glb(&base).expect("mixed loads");

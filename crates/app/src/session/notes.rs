@@ -22,7 +22,7 @@ pub fn set_mode(session: &mut Session, on: bool) {
         return;
     }
     session.annotate_mode = on;
-    if !on {
+    if !on && !session.draft_pending() {
         cancel(session);
     }
 }

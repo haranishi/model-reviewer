@@ -46,13 +46,25 @@ impl Session {
             ..Self::default()
         };
         if let Some(path) = &launch.keymap {
-            let opened = Store::open(path.clone());
+            let documents = launch
+                .positional
+                .iter()
+                .chain(&launch.script)
+                .cloned()
+                .collect();
+            let opened = Store::open_for(path.clone(), documents);
             session.key_labels = opened.keymap.labels(Platform::current());
             session.keymap = opened.keymap;
             session.store = opened.store;
             session.notice = opened.notice.unwrap_or_default();
         }
         session
+    }
+
+    pub(super) fn protect_document(&mut self, path: &std::path::Path) {
+        if let Some(reason) = self.store.protect_document(path) {
+            self.notice = reason.to_owned();
+        }
     }
 }
 

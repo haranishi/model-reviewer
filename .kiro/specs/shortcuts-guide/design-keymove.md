@@ -37,7 +37,7 @@ pub enum KeyInput { Char(char), Backspace, Step { up: bool, fine: bool } }   // 
 - 移動の量は表示の単位で打つ。`Units::from_display` でシーンの値に直してから `key_delta` へ渡す。状態欄には `Units::format` と同じ文字で出す（表示が「ファイルと同じ」なら、単位の文字は今までどおり付かない）。
 - 矢印の1歩（移動）は `grid_spacing(camera.distance)`（状態欄と描画が使っている関数）。`Step` は「今の量 ± 1歩」を `format_amount` で `text` に書き戻す（表示の単位で足す。格子が 0.1 m で表示が mm なら 100）。
 - 拡大の量は倍率で、空のときの `Step` は 1 から始める。確定のときに 0 以下なら断る（今の「大きさが0になるため」の確かめも残る）。
-- 確定は `CommitTransform`。量が空・0（拡大は 1）なら D は単位行列で、今の実装どおり何も積まずに終わる。
+- 確定時にも入力値から差分の行列を作る。差分や部品に適用する行列が作れなければ、理由を表示して入力を続ける。量が空・0（拡大は 1）なら、何も積まずに終わる。
 
 ## キーの振り分け（`app::shortcut_commands`。順は design-keymap.md の「キーの照合」に入れた）
 1. 数値の入力の途中（`session.transform` が `Keys`）: Esc → `CancelTransform`（今の `escape_command` の先頭がそのまま働く）。Enter → `CommitTransform`。数字・`Minus`・`Period`・Backspace → `KeyTransformInput`。矢印 → `Step`。X・Y・Z → `BeginKeyTransform`。**ほかのキーは捨てる**（表も、Delete も引かない）。

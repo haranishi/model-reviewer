@@ -21,7 +21,8 @@ use crate::scene::{NodeId, SceneRead};
 use crate::units::UnitLabel;
 use crate::visibility::Visibility;
 
-const FORMAT: &str = "model-reviewer.review";
+/// レビュー JSON の形式識別子。
+pub const FORMAT: &str = "model-reviewer.review";
 /// 書ける・読める最も新しい版。
 const VERSION: u32 = 2;
 /// 平行投影の視点が無いときに書く版。

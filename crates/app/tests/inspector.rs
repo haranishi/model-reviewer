@@ -114,6 +114,14 @@ fn close(a: Vec3, b: Vec3) -> bool {
     (a - b).abs().max_element() < 1.0e-4
 }
 
+/// 2つの回転が同じ向きか。軸を回した結果で比べる。`angle_between` は差がほぼ0のとき f32 の丸め1つで
+/// 約0.0007になり、CPUや数学ライブラリによって落ちる。
+fn same_rotation(a: Quat, b: Quat, tolerance: f32) -> bool {
+    [Vec3::X, Vec3::Y, Vec3::Z]
+        .iter()
+        .all(|&axis| (a * axis - b * axis).length() < tolerance)
+}
+
 #[test]
 fn fields_round_trip_through_degrees() {
     let trs = Trs {
@@ -127,7 +135,7 @@ fn fields_round_trip_through_degrees() {
     let back = from_fields(&fields);
     assert!(close(back.translation, trs.translation));
     assert!(close(back.scale, trs.scale));
-    assert!(back.rotation.angle_between(trs.rotation) < 1.0e-4);
+    assert!(same_rotation(back.rotation, trs.rotation, 1.0e-4));
 }
 
 #[test]
@@ -256,7 +264,7 @@ fn typing_commits_when_the_field_is_left() {
         panic!("{out:?}");
     };
     let want = from_euler_deg(Vec3::new(0.0, 90.0, 0.0));
-    assert!(rotated.rotation.angle_between(want) < 1.0e-3, "{rotated:?}");
+    assert!(same_rotation(rotated.rotation, want, 1.0e-3), "{rotated:?}");
     assert!(close(rotated.translation, Vec3::new(12.5, 2.0, 3.0)));
 }
 

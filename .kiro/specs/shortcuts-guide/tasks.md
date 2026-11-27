@@ -31,17 +31,17 @@ WP-M1 表と振り分け（単独・最初）
   - _Boundary: `core/src/gizmo.rs`（置くだけ）、`app/src/{keymap.rs,keymap/,command.rs,app.rs,lib.rs}`、`app/src/session/{mod,keys,keymove,edit}.rs`（`edit.rs` は型だけ）、`app/src/ui/{ids,keys}.rs`、`ui/{toolrail,viewbar}.rs`（項目を足すだけ）、既存の試験（構造体の組み立てだけ）、`app/tests/keys_flow.rs`（振り分けの分）_ ／ _Requirements: 2.1〜2.8, 4.1〜4.4, 7.3, 7.5, 8.1_
   - 注意: 置くだけにした `Command` は、`apply` で何もしない。X・Y・Z と矢印の振り分けは J1 で入れる（M1 の時点では、X は吸着、Z は面と線のまま）
 
-- [ ] 2. 並行して進める部品（M1 の後）
-- [ ] 2.1 (P) WP-S1 保存（[design-settings.md](design-settings.md) の「設定ファイルの場所」以降）
+- [x] 2. 並行して進める部品（M1 の後）
+- [x] 2.1 (P) WP-S1 保存（[design-settings.md](design-settings.md) の「設定ファイルの場所」以降）
   - `default_path`、`resolve_path`（引数と自動操作の有無から場所を決める。環境は引数で受ける）、`Store::open`（読むときの決まりの表）、`Store::save`（一時ファイルからの付け替え、`.broken` を残す）、知らない項目の書き戻し、日本語の知らせの文
   - 合格: design-testing.md の「場所」「読み書き」の行（`default_path_per_os`、`resolve_path_prefers_flag_then_script_then_os`、`round_trips_changes_only`、`same_keymap_same_bytes`、`unknown_entries_survive`、`broken_file_is_kept_as_broken_on_first_save`、`newer_version_is_never_overwritten`、`unreadable_file_is_not_overwritten`、`user_binding_beats_default_of_another_action`、`duplicate_user_bindings_keep_the_first`、`random_bytes_never_panic`、`failed_save_leaves_no_temp_file`、`opening_writes_nothing`）
   - _Boundary: `app/src/keymap/store.rs`、`app/tests/keymap.rs`_ ／ _Requirements: 5.1〜5.7, 6.1〜6.6_
-- [ ] 2.2 (P) WP-V1 画面（[design-settings.md](design-settings.md) の「画面の部品」、[design-keymap.md](design-keymap.md) の「画面のキーの文字」、[ux.md](ux.md)）
+- [x] 2.2 (P) WP-V1 画面（[design-settings.md](design-settings.md) の「画面の部品」、[design-keymap.md](design-keymap.md) の「画面のキーの文字」、[ux.md](ux.md)）
   - `ui/keys.rs`（設定の小窓。入力用の構造体だけで動く。「変えられないキー」の欄に場面つきの固定のキーを並べ、`KeyRow.note` を行の下に出す）。説明の文・道具の列の1文字・上端と上部のボタンの説明・ヘルプと「何も開いていない画面」の表を、`KeyLabels` から作る。ヘルプに [ショートカットの設定] と手順書の場所・[場所を写す]
   - 直す前に、今の説明の文とヘルプのキーの列を試験に固定し、既定のままなら同じ文字になることを確かめる（つなぎの「＋」→「+」だけが変わる）
   - 合格: design-testing.md の「設定の画面」「キーの文字」の行（`row_click_begins_capture`、`conflict_offers_replace_and_cancel`、`only_changed_rows_show_reset`、`filter_matches_name_and_key`、`reset_all_needs_two_clicks`、`store_note_is_shown`、`key_names_render_without_missing_glyphs`、`rows_do_not_overlap_at_960`、`default_labels_keep_existing_text`、`rebinding_changes_hint_badge_and_help`、`unassigned_shows_no_parentheses`）
   - _Boundary: `app/src/ui/{keys,toolrail,viewbar,toolbar,help,empty}.rs`、`app/tests/{keys_window,toolrail,viewbar,layout}.rs`_ ／ _Requirements: 1.1〜1.6, 3.1, 3.2, 3.7〜3.9, 13.1, 13.2_
-- [ ] 2.3 (P) WP-K1 キーで動かす: 量と状態（[design-keymove.md](design-keymove.md) の「型の約束」。振り分けは J1）
+- [x] 2.3 (P) WP-K1 キーで動かす: 量と状態（[design-keymove.md](design-keymove.md) の「型の約束」。振り分けは J1）
   - `core::gizmo::key_delta` の中身。`session/keymove.rs`: `parse_amount`・`format_amount`・`step_of` と、`BeginKeyTransform`・`KeyTransformInput`・`Nudge` の中身（`Session` を受ける関数。`apply` からの呼び出しは M1 が置いた形のまま）。`session/edit.rs`: `Keys` のときの `handle()` と、確定の名前。`ui/gizmo_view.rs`: `Keys` のときも固定した軸を掴んだ色にする
   - 試験は `Session::apply` に `Command` を直接渡して書く（キーの振り分けを通さない）
   - 合格: `key_delta_matches_drag_result`、`key_delta_works_when_view_is_parallel`、`key_delta_refuses_bad_amounts`、`amount_parse_and_format_table`、`step_follows_grid_and_fine`、`typed_amount_previews_without_touching_document`、`enter_commits_one_history_step`、`axis_switch_keeps_amount`、`move_amount_is_read_in_display_unit`、`zero_or_empty_amount_changes_nothing`、`nudge_moves_one_grid_step`、`nudge_does_not_snap_to_grid`

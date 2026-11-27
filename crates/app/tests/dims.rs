@@ -507,6 +507,32 @@ mod joined {
     }
 
     #[test]
+    fn editing_a_thin_plate_in_mm_is_one_undo_step() {
+        let mut session = support::session();
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        session.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
+        let (mut harness, _) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        type_into(&mut harness, ids::DIMS_X, "2000", true);
+        type_into(&mut harness, ids::DIMS_Y, "0.002", true);
+        let before = cube_dims(harness.state());
+        assert!(support::near(before[0], 2.0));
+        assert!((before[1] - 2.0e-6).abs() < 1.0e-11);
+        let steps = harness.state().history.len();
+
+        type_into(&mut harness, ids::DIMS_Y, "0.003", true);
+        assert_eq!(harness.state().history.len(), steps + 1);
+        assert!((cube_dims(harness.state())[1] - 3.0e-6).abs() < 1.0e-11);
+        let mut roundoff = selection_dims(harness.state()).unwrap().shape.unwrap().trs;
+        roundoff.scale.y = roundoff.scale.y.next_up();
+        harness.state_mut().apply(Command::CommitLocal(roundoff));
+        assert_eq!(harness.state().history.len(), steps + 1);
+        harness.state_mut().apply(Command::Undo);
+        assert_eq!(cube_dims(harness.state()), before);
+    }
+
+    #[test]
     fn dims_of_loaded_part_are_read_only() {
         let mut session = support::session();
         session.apply(Command::Select(Some(NodeId(0))));

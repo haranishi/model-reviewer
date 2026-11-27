@@ -25,7 +25,7 @@ fn sample_session() -> Session {
     session.review = Some(ReviewState::new(&model));
     session.model_ref = Some(ModelRef {
         file_name: "sample.glb".to_owned(),
-        path: "sample.glb".to_owned(),
+        path: "sample.glb".into(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
         stl_unit: None,
@@ -132,6 +132,29 @@ fn transform_commits_once_and_undo_redo_restore_bits() {
     assert!(session.unsaved());
     assert_eq!(session.history.len(), 1);
     assert!(session.status_text.contains("やり直しました"));
+}
+
+#[test]
+fn move_status_uses_the_display_unit() {
+    use model_reviewer::ui::gizmo_view::readout_text_with;
+    use model_reviewer_core::gizmo::Readout;
+    use model_reviewer_core::units::UnitLabel;
+
+    for (unit, factor, suffix) in [
+        (None, 1.0, None),
+        (Some(UnitLabel::Mm), 1000.0, Some("mm")),
+        (Some(UnitLabel::Cm), 100.0, Some("cm")),
+        (Some(UnitLabel::M), 1.0, Some("m")),
+    ] {
+        let mut session = sample_session();
+        session.apply(Command::SetDisplayUnit(unit));
+        drag_arm_right(&mut session);
+        let Some(Readout::Distance(distance)) = session.transform.unwrap().readout else {
+            panic!("移動の変化量がありません");
+        };
+        let expected = readout_text_with(Readout::Distance(distance * factor), suffix);
+        assert_eq!(session.status_text, format!("移動 {expected}"));
+    }
 }
 
 #[test]

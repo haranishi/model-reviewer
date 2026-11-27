@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use model_reviewer_core::doc::Document;
-use model_reviewer_core::identity::{ModelIdentity, ModelRef};
+use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{NodeId, SceneRead};
 use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene, empty_base};
 
@@ -112,7 +112,7 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     }
     // 新規の文書には土台のファイルが無い。土台の場所と識別は使わない（`ExportBase::Empty`）。
     let base = match (session.model_ref.as_ref(), session.source_kind) {
-        (Some(model_ref), _) => Some((PathBuf::from(&model_ref.path), model_ref.identity.clone())),
+        (Some(model_ref), _) => Some((model_ref.path.clone(), model_ref.identity.clone())),
         (None, SourceKind::New) => Some((PathBuf::new(), ModelIdentity::from_bytes(&empty_base()))),
         (None, _) => None,
     };
@@ -203,17 +203,9 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     }
 
     let canonical = std::fs::canonicalize(&done.path).unwrap_or_else(|_| done.path.clone());
-    let file_name = canonical
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "モデル".to_owned());
-    session.model_ref = Some(ModelRef {
-        file_name: file_name.clone(),
-        path: canonical.display().to_string(),
-        relative_path: None,
-        identity: done.identity,
-        stl_unit: None,
-    });
+    let model_ref = crate::loader::model_ref_for(canonical, done.identity, None);
+    let file_name = model_ref.file_name.clone();
+    session.model_ref = Some(model_ref);
     session.exported_since_load = true;
     session.export_error = None;
     session.export_failed = false;

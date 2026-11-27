@@ -12,8 +12,9 @@
 use crate::command::Command;
 use crate::session::Session;
 use model_reviewer_core::camera::ZOOM_EXP_PER_PX;
-use model_reviewer_core::gizmo::{Readout, Tool};
+use model_reviewer_core::gizmo::Tool;
 use model_reviewer_core::snap::SnapKind;
+use model_reviewer_core::units::UnitLabel;
 
 use super::empty;
 use super::gizmo_view::{self, GizmoViewInput};
@@ -58,7 +59,16 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     if session.model.is_some() {
         let (input, marks) = measure_input(session, rect);
         measure_view::show_with(ui, &input, &marks);
-        let on_arrow = section_handle(ui, session, rect, out);
+        let section = session.section.and_then(|plane| {
+            Some(SectionBarInput {
+                plane,
+                bounds: crate::session::section_bounds(session)?,
+                units: session.units,
+            })
+        });
+        let on_arrow = section
+            .as_ref()
+            .is_some_and(|section| section_handle(ui, session, rect, section, out));
         let on_handle = gizmo(ui, session, rect, out);
         if (on_arrow || on_handle) && !on_view {
             // 断面の矢印と変形のハンドルは3Dビューの一部。上にポインタがあってもキーを働かせる。
@@ -66,7 +76,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 data.insert_temp(egui::Id::unique(POINTER_ON_VIEWPORT), true);
             });
         }
-        view_controls(ui, session, rect, out);
+        view_controls(ui, session, rect, section.as_ref(), out);
     }
 }
 
@@ -201,18 +211,15 @@ fn section_handle(
     ui: &mut egui::Ui,
     session: &Session,
     rect: egui::Rect,
+    section: &SectionBarInput,
     out: &mut Vec<Command>,
 ) -> bool {
-    let (Some(plane), Some(bounds)) = (session.section, crate::session::section_bounds(session))
-    else {
-        return false;
-    };
     if session.is_loading_replacement() {
         return false;
     }
     let input = SectionViewInput {
-        plane,
-        bounds,
+        plane: section.plane,
+        bounds: section.bounds,
         camera: session.camera,
         rect,
         grabbing: false,
@@ -237,13 +244,9 @@ fn gizmo(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Vec<C
     };
     let transform = session.transform.as_ref();
     let units = session.units;
-    // 移動の変化量は長さなので、表示の単位へ換算する（ファイルと同じなら値はそのまま）。
     let readout = transform
         .and_then(|t| t.readout)
-        .map(|readout| match readout {
-            Readout::Distance(value) => Readout::Distance(units.to_display(value)),
-            other => other,
-        });
+        .map(|readout| gizmo_view::shown_readout(readout, units));
     let input = GizmoViewInput {
         tool: session.tool,
         frame: crate::session::moved_frame(frame, transform),
@@ -251,7 +254,7 @@ fn gizmo(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Vec<C
         active: transform.and_then(|t| t.handle()),
         readout,
     };
-    let suffix = units.display.map(|_| units.shown().suffix());
+    let suffix = units.display.map(UnitLabel::suffix);
     gizmo_view::show_with(ui, &input, suffix, out);
     let shapes = model_reviewer_core::gizmo::layout(input.tool, &input.frame);
     ui.input(|i| i.pointer.hover_pos())
@@ -263,7 +266,13 @@ fn gizmo(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Vec<C
 }
 
 /// 上端のボタンと右上の立方体。ボタンが立方体まで届く狭い幅では、立方体をボタンの下へ下げる。
-fn view_controls(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Vec<Command>) {
+fn view_controls(
+    ui: &mut egui::Ui,
+    session: &Session,
+    rect: egui::Rect,
+    section: Option<&SectionBarInput>,
+    out: &mut Vec<Command>,
+) {
     let input = ViewBarInput {
         display: session.display,
         projection: session.camera.projection,
@@ -308,8 +317,7 @@ fn view_controls(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &m
     );
     // 断面の帯は上端のボタンのすぐ下。右は立方体の分を空ける（立方体と重ならない）。
     let mut below = bar.bottom();
-    if let (Some(plane), Some(bounds)) = (session.section, crate::session::section_bounds(session))
-    {
+    if let Some(section) = section {
         let band_area = egui::Rect::from_min_max(
             egui::pos2(bar_area.left(), bar.bottom() + 4.0),
             egui::pos2(
@@ -322,17 +330,7 @@ fn view_controls(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &m
                 egui::UiBuilder::new()
                     .max_rect(band_area)
                     .layout(egui::Layout::left_to_right(egui::Align::Min)),
-                |ui| {
-                    section_bar::show(
-                        ui,
-                        &SectionBarInput {
-                            plane,
-                            bounds,
-                            units: session.units,
-                        },
-                        out,
-                    );
-                },
+                |ui| section_bar::show(ui, section, out),
             )
             .response
             .rect;

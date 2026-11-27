@@ -28,8 +28,8 @@ const VERSION: u32 = 2;
 const VERSION_PERSPECTIVE_ONLY: u32 = 1;
 const PROJECTION_PERSPECTIVE: &str = "perspective";
 const PROJECTION_ORTHOGRAPHIC: &str = "orthographic";
-/// 手書き JSON の `u64::MAX` 近くの番号は拒み、読み込み後の新規採番に余裕を残す。
-const MAX_PARSED_ID: u64 = u64::MAX - 1024;
+/// レビューJSONが受け付ける注釈・視点の番号の上限。
+pub(crate) const MAX_PARSED_ID: u64 = u64::MAX - 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReviewFile {
@@ -152,7 +152,7 @@ pub fn to_json(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         model: ReviewModelRecord {
             file_name: model_ref.file_name.clone(),
-            path: model_ref.path.clone(),
+            path: model_ref.path.display().to_string(),
             relative_path: model_ref.relative_path.clone(),
             size_bytes: model_ref.identity.size_bytes,
             hash: ReviewHashRecord {
@@ -217,14 +217,21 @@ pub fn restore(
             actual: identity.clone(),
         });
     }
+    // STL の部品名はファイル名から付く。同じファイルを改名しても部品番号は 0 のまま。
+    let single_stl = file.model.stl_unit.is_some() && model.node_count() == 1;
+    let resolve_node = |record: &ReviewNodeRecord| require_node(model, record, single_stl);
     let mut visibility = Visibility::all_visible(model.node_count());
-    for record in &file.hidden_nodes {
-        let id = require_node(model, record)?;
-        visibility.set(model, id, false);
+    if !file.hidden_nodes.is_empty() {
+        let hidden = file
+            .hidden_nodes
+            .iter()
+            .map(resolve_node)
+            .collect::<Result<Vec<_>, _>>()?;
+        visibility.set_many(model, hidden, false);
     }
     let mut annotations = Vec::with_capacity(file.annotations.len());
     for record in &file.annotations {
-        let node = require_node(model, &record.node)?;
+        let node = resolve_node(&record.node)?;
         annotations.push(Annotation {
             id: record.id,
             node,
@@ -321,18 +328,17 @@ fn camera_from_record(
     })
 }
 
-fn require_node(model: &impl SceneRead, record: &ReviewNodeRecord) -> Result<NodeId, ReviewError> {
-    let Some(id) = model.find_file_index(record.gltf_index) else {
-        return Err(ReviewError::UnknownNode {
+fn require_node(
+    model: &impl SceneRead,
+    record: &ReviewNodeRecord,
+    single_stl: bool,
+) -> Result<NodeId, ReviewError> {
+    model
+        .find_file_index(record.gltf_index)
+        .filter(|&id| (single_stl && record.gltf_index == 0) || model.name(id) == record.name)
+        .ok_or(ReviewError::UnknownNode {
             gltf_index: record.gltf_index,
-        });
-    };
-    if model.name(id) != record.name {
-        return Err(ReviewError::UnknownNode {
-            gltf_index: record.gltf_index,
-        });
-    }
-    Ok(id)
+        })
 }
 
 fn validate_file(file: &ReviewFile) -> Result<(), ReviewError> {
@@ -363,7 +369,7 @@ fn validate_file(file: &ReviewFile) -> Result<(), ReviewError> {
     Ok(())
 }
 
-/// 注釈と視点は一つの番号。重複と、次の番号を作れない端は拒む。
+/// 注釈と視点は一つの番号。重複と上限を超える番号は拒む。
 fn validate_ids(file: &ReviewFile) -> Result<(), ReviewError> {
     let mut seen = HashSet::with_capacity(file.annotations.len() + file.views.len());
     for id in file

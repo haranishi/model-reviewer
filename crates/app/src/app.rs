@@ -573,6 +573,6 @@ pub fn export_file_name(session: &Session) -> Option<String> {
     if !matches!(session.source_kind, crate::session::SourceKind::Stl { .. }) {
         return None;
     }
-    let path = std::path::Path::new(&session.model_ref.as_ref()?.path);
+    let path = &session.model_ref.as_ref()?.path;
     Some(format!("{}.glb", crate::loader::stl_part_name(path)))
 }

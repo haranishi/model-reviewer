@@ -14,6 +14,7 @@
 
 use glam::Vec2;
 use model_reviewer_core::gizmo::{GizmoFrame, Handle, HandleShape, Readout, Tool, hit, layout};
+use model_reviewer_core::units::Units;
 
 use crate::automation::{WidgetEntry, WidgetFrame};
 use crate::command::Command;
@@ -80,6 +81,14 @@ fn axis_of(handle: Handle) -> Option<usize> {
 
 fn is_ring(handle: Handle) -> bool {
     matches!(handle, Handle::RotX | Handle::RotY | Handle::RotZ)
+}
+
+/// ハンドルの変化量のうち、移動距離を表示の単位へ換算する。
+pub(crate) fn shown_readout(readout: Readout, units: Units) -> Readout {
+    match readout {
+        Readout::Distance(value) => Readout::Distance(units.to_display(value)),
+        other => other,
+    }
 }
 
 /// 変化量の文字に、距離の単位を添える（`None` なら添えない。表示の単位が「ファイルと同じ」の

@@ -225,7 +225,8 @@ fn load_thread(
         return;
     }
     let started = Instant::now();
-    let bytes = match std::fs::read(&path) {
+    let resolved_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let bytes = match std::fs::read(&resolved_path) {
         Ok(bytes) => bytes,
         Err(err) => {
             log::error!("failed to read model: {err}");
@@ -332,7 +333,7 @@ fn load_thread(
         SourceKind::Glb | SourceKind::New => None,
         SourceKind::Stl { unit } => Some(unit),
     };
-    let model_ref = model_ref_for(&path, identity, stl_unit);
+    let model_ref = model_ref_for(resolved_path, identity, stl_unit);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
@@ -416,15 +417,18 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
     }
 }
 
-fn model_ref_for(path: &Path, identity: ModelIdentity, stl_unit: Option<UnitLabel>) -> ModelRef {
-    let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let file_name = absolute
+pub(crate) fn model_ref_for(
+    path: PathBuf,
+    identity: ModelIdentity,
+    stl_unit: Option<UnitLabel>,
+) -> ModelRef {
+    let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "モデル".to_owned());
     ModelRef {
         file_name,
-        path: absolute.display().to_string(),
+        path,
         relative_path: None,
         identity,
         stl_unit,
@@ -438,5 +442,33 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
         message.clone()
     } else {
         "unknown panic".to_owned()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use model_reviewer_core::{review::ReviewState, review_file};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn model_reference_keeps_the_native_reopen_path() {
+        let model = load_glb(&model_reviewer_testdata::inputs::triangle()).unwrap();
+        let review = ReviewState::new(&model);
+        for (bytes, unit) in [
+            (b"part-\xff.stl".as_slice(), Some(UnitLabel::Mm)),
+            (b"part-\xfe.glb".as_slice(), None),
+        ] {
+            let path = Path::new(OsStr::from_bytes(bytes));
+            let reference =
+                model_ref_for(path.to_owned(), ModelIdentity::from_bytes(b"model"), unit);
+            assert_eq!(reference.path, path);
+            assert_eq!(reference.file_name, path.to_string_lossy());
+            let json = review_file::to_json(&review, &model, &reference).unwrap();
+            let saved = review_file::parse(&json).unwrap().model;
+            assert_eq!(saved.path, path.to_string_lossy());
+            assert_eq!(saved.file_name, reference.file_name);
+        }
     }
 }

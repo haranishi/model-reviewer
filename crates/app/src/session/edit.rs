@@ -18,9 +18,11 @@ use model_reviewer_core::history::{Applied, Edit, Pushed, Step};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{Draw, NodeId, SceneRead};
 use model_reviewer_core::shapes::{self, SHAPE_COLOR, ShapeKind};
+use model_reviewer_core::units::{UnitLabel, Units};
 
 use super::Session;
 use crate::keymap::Action;
+use crate::ui::gizmo_view;
 use crate::ui::status::grouped;
 
 /// ハンドルの画面上の長さ（ポイント。ux.md の約90ポイント）。
@@ -254,11 +256,12 @@ pub(super) fn drag_transform(session: &mut Session, ndc: Vec2) {
         session.scene_dirty.drag = true;
     }
     transform.readout = Some(state.readout);
-    session.status_text = readout_status(state.readout);
+    session.status_text = readout_status(state.readout, session.units);
 }
 
-fn readout_status(readout: Readout) -> String {
-    let text = crate::ui::gizmo_view::readout_text(readout);
+fn readout_status(readout: Readout, units: Units) -> String {
+    let shown = gizmo_view::shown_readout(readout, units);
+    let text = gizmo_view::readout_text_with(shown, units.display.map(UnitLabel::suffix));
     match readout {
         Readout::Distance(_) => format!("移動 {text}"),
         Readout::AngleDeg(_) => format!("回転 {text}"),
@@ -443,8 +446,10 @@ pub(super) fn commit_local(session: &mut Session, trs: Trs) {
 }
 
 fn same_trs(a: &Trs, b: &Trs) -> bool {
-    let close =
-        |x: Vec3, y: Vec3| (x - y).abs().max_element() <= 1.0e-6 * x.abs().max_element().max(1.0);
+    let close = |x: Vec3, y: Vec3| {
+        let relative = x.abs().max(y.abs()) * 1.0e-6;
+        (x - y).abs().cmple(relative.max(Vec3::splat(1.0e-9))).all()
+    };
     close(a.translation, b.translation)
         && close(a.scale, b.scale)
         && a.rotation.dot(b.rotation).abs() >= 1.0 - 1.0e-7

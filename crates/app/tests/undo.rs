@@ -597,7 +597,10 @@ fn shapes_need_a_model_and_structure_edits_wait_for_loading() {
         model_reviewer_core::shapes::ShapeKind::Sphere,
     ));
     assert!(empty.doc.is_none());
-    assert_eq!(empty.status_text, "モデルを開くと図形を置けます");
+    assert_eq!(
+        empty.status_text,
+        "［新規作成］（Cmd+N）か、モデルを開くと図形を置けます"
+    );
     empty.apply(Command::DuplicateSelected);
     empty.apply(Command::DeleteSelected);
     assert!(empty.history.is_empty());

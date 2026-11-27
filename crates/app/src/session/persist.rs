@@ -38,6 +38,10 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         session.status_text = "先にGLBを書き出してください".to_owned();
         return;
     }
+    if session.is_new_document() {
+        refuse_new_review(session);
+        return;
+    }
     let Some(review) = session.review.clone() else {
         fail(
             session,
@@ -114,6 +118,16 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
     session.status_text = "レビューを保存しました".to_owned();
 }
 
+/// 新規の文書（まだ書き出していない）のレビュー保存を断る（要件2.6）。レビューはモデルの
+/// ファイルの識別を持つので、書き出すまで保存できない。注釈と視点は残る。
+pub(super) fn refuse_new_review(session: &mut Session) {
+    fail(
+        session,
+        "レビューを保存できません",
+        super::REVIEW_NEEDS_EXPORT,
+    );
+}
+
 pub fn relink(session: &mut Session, path: PathBuf) {
     if session.is_exporting() {
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
@@ -178,6 +192,8 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
     // 開いている単位が違うときは、その場で当てはめず、レビューの単位で開き直す（要件8.5）。
     let same_unit = match session.source_kind {
         super::SourceKind::Glb => true,
+        // 新規の文書には識別が無く、レビューが指すモデルではない（開き直す）。
+        super::SourceKind::New => false,
         super::SourceKind::Stl { unit } => {
             file.model
                 .stl_unit

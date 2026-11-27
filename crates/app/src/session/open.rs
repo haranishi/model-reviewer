@@ -39,6 +39,40 @@ pub fn open_model(session: &mut Session, path: PathBuf, options: LoadOptions) {
     session.start_model_load(path, options);
 }
 
+/// 新規作成（要件1.1・1.3・1.4）。書き出し中・読み込み中は断る。未保存があれば確認を出し、
+/// 選ばれるまで今の文書を残す（確認の後は `confirm_discard` が `new_document` へ続ける）。
+pub(super) fn new_guarded(session: &mut Session) {
+    if refuse_new(session) {
+        return;
+    }
+    if session.hold(Pending::New) {
+        return;
+    }
+    new_document(session);
+}
+
+/// 未保存の確認を済ませた後の新規作成。復元の途中と進行中の読み込みを消し、空のモデルを置く。
+pub fn new_document(session: &mut Session) {
+    if refuse_new(session) {
+        session.end_discard_bypass();
+        return;
+    }
+    session.restore = None;
+    session.start_new_document();
+}
+
+fn refuse_new(session: &mut Session) -> bool {
+    let reason = if session.is_exporting() {
+        "書き出し中は新規作成できません"
+    } else if session.is_loading() {
+        "読み込み中は新規作成できません"
+    } else {
+        return false;
+    };
+    session.status_text = reason.to_owned();
+    true
+}
+
 pub fn load_review(session: &mut Session, path: PathBuf) {
     super::persist::load_review(session, path);
 }

@@ -29,7 +29,7 @@ pub const GIZMO_SIZE: f32 = 90.0;
 const CLEARED_TOO_LARGE: &str = "操作が大きいため、これより前へは戻せません";
 const NOT_FINITE: &str = "変形の結果が有限でないため、確定しませんでした";
 const ZERO_SIZE: &str = "大きさが0になるため、確定しませんでした";
-const NO_MODEL: &str = "モデルを開くと図形を置けます";
+const NO_MODEL: &str = "［新規作成］（Cmd+N）か、モデルを開くと図形を置けます";
 
 /// 変形の出どころ。
 #[derive(Clone, Debug, PartialEq)]

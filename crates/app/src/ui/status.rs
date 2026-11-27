@@ -72,7 +72,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 }
                 // 前提の単位（ファイルの数値1が表す長さ）。数値は換算しない。
                 let (text, hint, command) = match session.source_kind {
-                    SourceKind::Glb => (
+                    SourceKind::Glb | SourceKind::New => (
                         unit_text(session.units.source),
                         "ファイルの数値1が表す長さの前提です。押すと m → cm → mm と替わります（ファイルの数値は変えません）",
                         Command::SetUnit(session.units.source.next()),
@@ -289,7 +289,7 @@ pub fn stl_unit_text(unit: UnitLabel) -> String {
 
 fn unit_button_text(session: &Session) -> String {
     match session.source_kind {
-        SourceKind::Glb => unit_text(session.units.source),
+        SourceKind::Glb | SourceKind::New => unit_text(session.units.source),
         SourceKind::Stl { unit } => stl_unit_text(unit),
     }
 }
@@ -338,12 +338,16 @@ fn selected_name(session: &Session) -> Option<String> {
     })
 }
 
+/// 新規の文書（まだ書き出していない）の名前（要件1.9）。
+pub const NEW_DOCUMENT_NAME: &str = "新規（未書き出し）";
+
 fn file_name(session: &Session) -> &str {
     session
         .model_ref
         .as_ref()
         .map(|model| model.file_name.as_str())
         .or(session.loading_file_name.as_deref())
+        .or(session.is_new_document().then_some(NEW_DOCUMENT_NAME))
         .unwrap_or("ファイルなし")
 }
 

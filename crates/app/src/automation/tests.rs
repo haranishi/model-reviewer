@@ -499,3 +499,27 @@ fn scroll_view_waits_until_the_smoothed_scroll_is_delivered() {
     assert!(automation.finished, "quit まで進む");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// 新規の文書の状態（第5段階の要件6.2）。画面なしの試験台は `raw_input_hook` を呼ばず、手順の
+/// クリックが届かないので、状態の値を直接作って確かめる（手順は `e2e/new-1.json`）。
+#[test]
+fn new_document_is_dumped_as_new() {
+    use crate::command::{Command, ShapeKind};
+    let mut session = Session::default();
+    session.apply(Command::NewDocument);
+    let new = super::state::state_value(&session);
+    assert_eq!(new["source_kind"], "new");
+    assert!(new["nodes"].as_array().unwrap().is_empty());
+    assert!(new["units"]["stl"].is_null());
+    assert_eq!(new["unit"], "m");
+    assert_eq!(new["grid"]["spacing"].as_f64(), Some(f64::from(0.1_f32)));
+    assert_eq!(new["unsaved"], false);
+    assert_eq!(new["triangles"], 0);
+    session.apply(Command::AddShape(ShapeKind::Cube));
+    let cube = super::state::state_value(&session);
+    assert_eq!(cube["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(cube["doc_unsaved"], true);
+    assert_eq!(cube["source_kind"], "new");
+    let dims = &cube["selection_dims"];
+    assert!(!dims.is_null(), "{cube}");
+}

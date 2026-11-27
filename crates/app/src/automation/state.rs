@@ -94,7 +94,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "source": session.units.source.suffix(),
             "display": session.units.display.map(|unit| unit.suffix()),
             "stl": match session.source_kind {
-                crate::session::SourceKind::Glb => None,
+                crate::session::SourceKind::Glb | crate::session::SourceKind::New => None,
                 crate::session::SourceKind::Stl { unit } => Some(unit.suffix()),
             },
         },
@@ -114,10 +114,11 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "offset": f64::from(plane.offset),
             "flipped": plane.flipped,
         })),
-        // 開いているモデルの元の形式（`glb` か `stl`。STL から書き出した後は `glb`）。
+        // 開いているモデルの元の形式（`glb`・`stl`・`new`。STL と新規から書き出した後は `glb`）。
         "source_kind": match session.source_kind {
             crate::session::SourceKind::Glb => "glb",
             crate::session::SourceKind::Stl { .. } => "stl",
+            crate::session::SourceKind::New => "new",
         },
         // 選んだ部品の外形と寸法（シーンの単位）。`selection` は第2段階からの番号の項目なので、
         // 意味を変えずに別の項目にした。

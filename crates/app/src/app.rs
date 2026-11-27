@@ -150,6 +150,9 @@ fn model_counts(session: &Session) -> Option<Counts> {
         .map(|model| Counts::from_stats(model.stats))
 }
 
+/// 新規の文書を書き出すときの、保存先の既定の名前。
+pub const NEW_FILE_NAME: &str = "無題.glb";
+
 const TEXT_ESCAPE_FRAME_ID: &str = "app.text_escape_frame";
 
 pub(crate) fn mark_text_escape(ctx: &egui::Context) {
@@ -206,10 +209,22 @@ pub fn shortcut_commands(ctx: &egui::Context, session: &crate::session::Session)
         return escape_command(session).into_iter().collect();
     }
     let over_panel = ctx.is_pointer_over_egui() && !ui::viewport::pointer_on_viewport(ctx);
-    if typing || over_panel {
+    if typing {
         return Vec::new();
     }
     let mut out = Vec::new();
+    // 新規作成（Windows と Linux では Ctrl+N）。ポインタの場所によらず働かせる（要件1.2）ので、
+    // 「パネルの上」の確かめの前に置く。N だけの注釈の切り替えとは修飾で分かれる。
+    if let Some(modifiers) = key_press(ctx, egui::Key::N)
+        && modifiers.command
+        && !modifiers.alt
+        && !modifiers.shift
+    {
+        out.push(Command::NewDocument);
+    }
+    if over_panel {
+        return out;
+    }
     // 取り消しとやり直し（Windows と Linux では Ctrl）。入力欄の中の Cmd+Z は文字の取り消しなので、
     // 上の「入力中」で先に返している。
     if let Some(modifiers) = key_press(ctx, egui::Key::Z)
@@ -406,7 +421,10 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .add_filter("STL", &["stl", "STL"])
             .pick_file()
             .map(Command::OpenModel),
-        Command::SaveReviewDialog if session.doc_unsaved() || session.is_exporting() => {
+        // 新規の文書は書き出すまで保存できない。保存先を聞かずに `Session` が断る（要件2.6）。
+        Command::SaveReviewDialog
+            if session.doc_unsaved() || session.is_exporting() || session.is_new_document() =>
+        {
             Some(Command::SaveReviewDialog)
         }
         Command::SaveReviewDialog => rfd::FileDialog::new()
@@ -423,7 +441,12 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .add_filter("GLB・STL", &["glb", "stl", "STL"])
             .pick_file()
             .map(Command::RelinkModel),
-        Command::ExportGlbDialog if session.model.is_none() || session.edits_locked() => {
+        // 部品の無い新規の文書も、保存先を聞かずに `Session` が断る（要件2.2）。
+        Command::ExportGlbDialog
+            if session.model.is_none()
+                || session.edits_locked()
+                || crate::session::nothing_to_export(session) =>
+        {
             Some(Command::ExportGlbDialog)
         }
         Command::ExportGlbDialog => {
@@ -437,9 +460,13 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
     }
 }
 
-/// 書き出しの保存先の既定の名前。STL を開いているときは「<元の名前>.glb」。GLB は既定の名前を
-/// 付けない（開いたファイルと同じ名前になり、そこへは書き出せないため）。
+/// 書き出しの保存先の既定の名前。STL を開いているときは「<元の名前>.glb」、新規の文書は
+/// 「無題.glb」（要件2.4）。GLB は既定の名前を付けない（開いたファイルと同じ名前になり、そこへは
+/// 書き出せないため）。
 pub fn export_file_name(session: &Session) -> Option<String> {
+    if session.is_new_document() {
+        return Some(NEW_FILE_NAME.to_owned());
+    }
     if !matches!(session.source_kind, crate::session::SourceKind::Stl { .. }) {
         return None;
     }

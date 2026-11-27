@@ -44,7 +44,7 @@ pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
     GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
 };
-pub use export::{export_scene, note_ja, stl_export_note};
+pub use export::{NEW_EXPORT_NOTE, export_scene, note_ja, nothing_to_export, stl_export_note};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
 pub use pick::ray_hit;
@@ -65,13 +65,26 @@ pub enum SourceKind {
     Glb,
     /// STL。`unit` は座標の単位の仮定。
     Stl { unit: UnitLabel },
+    /// 新規作成した文書（まだ書き出していない）。書き出すと `Glb` へ移る。
+    New,
 }
+
+/// 新規の文書の初期視点の距離。格子の間隔が 0.1 になる（要件1.6）。
+pub const NEW_DISTANCE: f32 = 4.0;
+
+/// 部品の無い新規の文書を書き出そうとしたときの文（要件2.2）。
+pub const NOTHING_TO_EXPORT: &str = "書き出す部品がありません。図形を置いてから書き出してください";
+
+/// 新規の文書でレビューを保存しようとしたときの文（要件2.6）。
+pub const REVIEW_NEEDS_EXPORT: &str = "先に GLB を書き出すと、レビューを保存できます";
 
 #[derive(Clone, Debug, PartialEq)]
 enum Pending {
     OpenModel(PathBuf, LoadOptions),
     LoadReview(PathBuf),
     Quit,
+    /// 新規作成（未保存の確認の後に続ける）。
+    New,
 }
 
 pub struct Session {
@@ -283,7 +296,8 @@ pub(super) struct ExportJob {
 struct Incoming {
     generation: u64,
     model: Arc<Model>,
-    model_ref: ModelRef,
+    /// 新規作成では `None`（ファイルが無い）。そのときファイルの大きさと時間の項目は 0。
+    model_ref: Option<ModelRef>,
     source_kind: SourceKind,
     source_path: Option<PathBuf>,
     forbid_on_commit: bool,
@@ -334,6 +348,8 @@ impl Session {
                 } else if self.doc_unsaved() {
                     self.dialog = Some(export::export_first_dialog());
                     self.status_text = "先にGLBを書き出してください".to_owned();
+                } else if self.is_new_document() {
+                    persist::refuse_new_review(self);
                 }
             }
             Command::ExportGlbDialog => {
@@ -341,10 +357,15 @@ impl Session {
                     self.status_text = "すでに書き出し中です".to_owned();
                 } else if self.is_loading_replacement() {
                     self.block_edit_if_locked();
-                } else if self.doc.is_none() || self.model_ref.is_none() {
+                } else if self.doc.is_none()
+                    || (self.model_ref.is_none() && !self.is_new_document())
+                {
                     self.status_text = "モデルを開くと書き出せます".to_owned();
+                } else if export::nothing_to_export(self) {
+                    export::refuse_empty(self);
                 }
             }
+            Command::NewDocument => open::new_guarded(self),
             Command::OpenModel(path) => open::open_guarded(self, path, LoadOptions::default()),
             Command::LoadReview(path) => open::review_guarded(self, path),
             Command::DroppedFiles(paths) => open::dropped(self, paths),
@@ -355,7 +376,21 @@ impl Session {
             Command::Zoom { factor, cursor_ndc } => camera::zoom(self, factor, cursor_ndc),
             Command::FitAll => camera::fit_all(self),
             Command::FitSelection => camera::fit_selection(self),
-            Command::Home => camera::home(self),
+            Command::Home => {
+                // 範囲が空（新規の直後や全部消した後）なら、新規の文書の初期視点へ戻す。
+                // `OrbitCamera::home` は空の範囲で距離 1 にするため、ここで分ける。
+                if self.doc.as_ref().is_some_and(|doc| doc.bounds().is_empty()) {
+                    let before = self.camera;
+                    self.camera = initial_camera(
+                        &model_reviewer_core::math::Aabb::empty(),
+                        aspect_of(self.viewport_px),
+                        self.camera.projection,
+                    );
+                    camera::mark_camera(self, before);
+                } else {
+                    camera::home(self);
+                }
+            }
             Command::ViewClick { ndc } => {
                 if self.model.is_some() && self.pick_index.is_none() {
                     self.status_text = "選択の準備中です".to_owned();
@@ -611,9 +646,8 @@ impl Session {
                 self.home_on_resize = false;
                 if let Some(doc) = &self.doc {
                     let bounds = doc.bounds();
-                    let projection = self.camera.projection;
-                    self.camera = OrbitCamera::home(&bounds, aspect_of(size_px));
-                    self.camera.projection = projection;
+                    self.camera =
+                        initial_camera(&bounds, aspect_of(size_px), self.camera.projection);
                     self.scene_dirty.camera = true;
                 }
             }
@@ -755,6 +789,7 @@ impl Session {
         match self.pending.take() {
             Some(Pending::OpenModel(path, options)) => open::open_model(self, path, options),
             Some(Pending::LoadReview(path)) => open::load_review(self, path),
+            Some(Pending::New) => open::new_document(self),
             Some(Pending::Quit) => {
                 self.discard_bypass = false;
                 self.mark_saved();
@@ -784,6 +819,20 @@ impl Session {
 
     pub(super) fn advance_review_generation(&mut self) {
         self.review_generation = self.review_generation.wrapping_add(1);
+    }
+
+    /// 新規作成した文書を、まだ書き出していない（`source_kind` が `New`）。
+    pub fn is_new_document(&self) -> bool {
+        self.doc.is_some() && self.source_kind == SourceKind::New
+    }
+
+    /// 読み込み（またはGPUへの転送）の途中。表示中のモデルの有無によらない。
+    pub fn is_loading(&self) -> bool {
+        self.incoming.is_some()
+            || matches!(
+                self.load,
+                LoadPhase::Reading | LoadPhase::Parsing | LoadPhase::Uploading { .. }
+            )
     }
 
     /// 表示中のモデルを置き換える読み込みの途中。
@@ -895,6 +944,48 @@ impl Session {
         ));
     }
 
+    /// 空のモデルを、読み込んだモデルと同じ受け渡し（`Incoming` → 転送 → `commit_pending`）へ流す。
+    /// ファイルは読まず、何も書かない（要件1.10）。
+    pub(super) fn start_new_document(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if let Some(active) = self.loader.take() {
+            active.cancel();
+        }
+        edit::cancel_transform(self);
+        self.staged_pick = None;
+        self.load_meta = None;
+        self.cancel_upload = true;
+        self.upload_cpu = Duration::ZERO;
+        self.upload_frames = 0;
+        self.awaiting_present = false;
+        self.open_started = Some(Instant::now());
+        self.export_error = None;
+        self.export_failed = false;
+        self.loading_file_name = None;
+        self.dialog = None;
+        self.incoming = Some(Incoming {
+            generation: self.generation,
+            model: Arc::new(Model::empty()),
+            model_ref: None,
+            source_kind: SourceKind::New,
+            source_path: None,
+            forbid_on_commit: false,
+            file_bytes: 0,
+            read: Duration::ZERO,
+            identity: Duration::ZERO,
+            parse: Duration::ZERO,
+        });
+        if self.gpu_upload {
+            // 送るものは0バイトで、次の転送の1回で終わる。
+            self.load = LoadPhase::Uploading {
+                uploaded_bytes: 0,
+                total_bytes: 0,
+            };
+        } else {
+            self.commit_pending(false);
+        }
+    }
+
     pub(super) fn cancel_pending_load(&mut self) {
         if self.shown_generation != self.generation {
             self.generation = self.generation.wrapping_add(1);
@@ -993,7 +1084,7 @@ impl Session {
         self.incoming = Some(Incoming {
             generation: loaded.generation,
             model: loaded.model,
-            model_ref: loaded.model_ref,
+            model_ref: Some(loaded.model_ref),
             source_kind: loaded.source_kind,
             source_path,
             forbid_on_commit,
@@ -1136,7 +1227,12 @@ impl Session {
         }
         // 文書はここで1回だけ作る。復元・表示状態・視点は、はじめから文書を読む。
         let doc = Document::new(Arc::clone(&incoming.model));
-        let restored = persist::take_restored(self, &doc, &incoming.model_ref.identity);
+        // 新規の文書には識別が無いので、レビューの復元は呼ばない（復元の途中は新規作成の入口で消している）。
+        let restored = match incoming.model_ref.as_ref() {
+            Some(model_ref) => persist::take_restored(self, &doc, &model_ref.identity),
+            None => persist::Restored::Absent,
+        };
+        let is_new = incoming.source_kind == SourceKind::New;
         let review = match restored {
             persist::Restored::Absent => None,
             persist::Restored::State(state) => Some(state),
@@ -1161,20 +1257,20 @@ impl Session {
         let aspect = aspect_of(self.viewport_px);
         let viewport_known = self.viewport_px[0] > 0 && self.viewport_px[1] > 0;
         // 投影は利用者が選んだ見方なので、モデルを開き直しても保つ。
-        let projection = self.camera.projection;
-        self.camera = OrbitCamera::home(&doc.bounds(), aspect);
-        self.camera.projection = projection;
+        self.camera = initial_camera(&doc.bounds(), aspect, self.camera.projection);
         self.home_on_resize = !viewport_known;
         if incoming.forbid_on_commit {
             if let Some(source) = incoming.source_path.as_deref() {
                 self.remember_opened_file(source);
             }
-            self.remember_opened_file(Path::new(&incoming.model_ref.path));
+            if let Some(model_ref) = incoming.model_ref.as_ref() {
+                self.remember_opened_file(Path::new(&model_ref.path));
+            }
         }
         self.exported_since_load = false;
         self.export_error = None;
         self.export_failed = false;
-        self.model_ref = Some(incoming.model_ref);
+        self.model_ref = incoming.model_ref;
         self.review = Some(review.unwrap_or_else(|| ReviewState::new(&doc)));
         self.selection = None;
         self.selected_annotation = None;
@@ -1193,8 +1289,9 @@ impl Session {
         // GLB を開くと、ファイルの単位は m、表示は「ファイルと同じ」（要件7.5）。STL は部品の大きさで
         // メートルに合わせてあるので、シーンの単位は m、表示は STL の単位の仮定（要件7.6）。
         self.source_kind = incoming.source_kind;
+        // 新規の文書も GLB と同じ（シーンはメートル、表示は「ファイルと同じ」。要件1.5）。
         self.units = match incoming.source_kind {
-            SourceKind::Glb => Units::default(),
+            SourceKind::Glb | SourceKind::New => Units::default(),
             SourceKind::Stl { unit } => Units {
                 source: UnitLabel::M,
                 display: Some(unit),
@@ -1205,7 +1302,9 @@ impl Session {
         self.discard_bypass = false;
         self.loading_file_name = None;
         self.load = LoadPhase::Idle;
-        self.status_text = if restored_review {
+        self.status_text = if is_new {
+            "新規の文書を作りました".to_owned()
+        } else if restored_review {
             "レビューを復元しました".to_owned()
         } else {
             "読み込み完了".to_owned()
@@ -1215,10 +1314,12 @@ impl Session {
         self.scene_dirty.instances = true;
         self.scene_dirty.selection = true;
         self.scene_dirty.camera = true;
-        self.metrics.file_bytes = Some(incoming.file_bytes);
-        self.metrics.read = Some(incoming.read);
-        self.metrics.identity = Some(incoming.identity);
-        self.metrics.parse = Some(incoming.parse);
+        // 新規の文書はファイルを読んでいないので、ファイルの大きさと読み取り・識別・解析は測らない。
+        let measured = !is_new;
+        self.metrics.file_bytes = measured.then_some(incoming.file_bytes);
+        self.metrics.read = measured.then_some(incoming.read);
+        self.metrics.identity = measured.then_some(incoming.identity);
+        self.metrics.parse = measured.then_some(incoming.parse);
         self.metrics.pick = None;
         self.metrics.first_present = None;
         self.metrics.upload_cpu = None;
@@ -1240,6 +1341,13 @@ impl Session {
         {
             self.pick_index = Some(pick.index);
             self.metrics.pick = Some(pick.elapsed);
+        }
+        // 新規の文書には読み込みのスレッドが無い。形状0個の索引はすぐ作れるので、ここで作る
+        // （無いと、クリックが「選択の準備中」になり、自動操作の `wait_idle` が終わらない）。
+        if is_new && self.pick_index.is_none() {
+            let started = Instant::now();
+            self.pick_index = self.doc.as_ref().map(PickIndex::build);
+            self.metrics.pick = Some(started.elapsed());
         }
     }
 
@@ -1343,6 +1451,7 @@ fn interrupts_transform(cmd: &Command, transform: Option<&Transform>) -> bool {
         | Command::DuplicateSelected
         | Command::DeleteSelected
         | Command::ExportGlb(_)
+        | Command::NewDocument
         | Command::SetTool(_) => true,
         _ => false,
     }
@@ -1356,6 +1465,22 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     } else {
         "不明".to_owned()
     }
+}
+
+/// 開いた直後の視点。範囲が空（新規の文書）なら、原点を `NEW_DISTANCE` から見る（格子 0.1）。
+/// 投影は利用者が選んだ見方なので、引き継ぐ。
+fn initial_camera(
+    bounds: &model_reviewer_core::math::Aabb,
+    aspect: f32,
+    projection: model_reviewer_core::camera::Projection,
+) -> OrbitCamera {
+    let mut camera = OrbitCamera::home(bounds, aspect);
+    if bounds.is_empty() {
+        camera.target = glam::Vec3::ZERO;
+        camera.distance = NEW_DISTANCE;
+    }
+    camera.projection = projection;
+    camera
 }
 
 fn aspect_of(px: [u32; 2]) -> f32 {

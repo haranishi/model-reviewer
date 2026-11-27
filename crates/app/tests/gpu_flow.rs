@@ -598,3 +598,78 @@ fn section_redraws_with_constants_only() {
     assert!(diff(whole, back) < 3.0, "外すと元の絵: {whole:?} {back:?}");
     assert!(harness.state().gpu_notice().is_none());
 }
+
+/// 新規作成（第5段階）: 部品0個の空のモデルの転送が終わり、図形を足して描ける。全部消しても、
+/// もう一度置いても落ちない。開いていたモデルの形状は解放される。
+#[test]
+#[ignore = "GPUが必要"]
+fn empty_model_uploads_and_accepts_shapes() {
+    let dir = scratch("new-doc");
+    let glb = dir.join("sample.glb");
+    std::fs::write(&glb, sample_glb()).unwrap();
+    let launch = model_reviewer::parse_args(["model-reviewer"]).unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .wgpu()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_max_steps(800)
+        .with_size(egui::vec2(1100.0, 720.0))
+        .with_context_setup(model_reviewer::fonts::install)
+        .build_eframe(|cc| App::new(cc, launch));
+    // 先にモデルを開いておき、新規作成で入れ替わることも確かめる。
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::DroppedFiles(vec![glb]));
+    wait_ready(&mut harness);
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::NewDocument);
+    wait_ready(&mut harness);
+    {
+        let session = harness.state().session();
+        assert!(session.is_new_document(), "status={}", session.status_text);
+        assert!(session.doc.as_ref().unwrap().nodes().is_empty());
+        assert_eq!(session.status_text, "新規の文書を作りました");
+    }
+    assert!(harness.state().gpu_notice().is_none());
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::SetGrid(false));
+    harness.step();
+    harness.step();
+    let empty = center_color(&mut harness);
+    let sent = harness.state().gpu_stats().unwrap().uploaded_bytes;
+    // 視点は原点を見ている。1つ目の図形は原点に大きさ 1 で置かれ、画面の中央に映る。
+    harness.state_mut().session_mut().apply(Command::AddShape(
+        model_reviewer_core::shapes::ShapeKind::Cube,
+    ));
+    harness.step();
+    harness.step();
+    let with_cube = center_color(&mut harness);
+    let diff = |a: [f32; 3], b: [f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
+    assert!(
+        diff(empty, with_cube) > 30.0,
+        "図形が描かれていない: 空 {empty:?} 図形 {with_cube:?}"
+    );
+    assert!(harness.state().gpu_stats().unwrap().uploaded_bytes > sent);
+    // 全部消すと空の画面に戻り、もう一度置ける。
+    harness
+        .state_mut()
+        .session_mut()
+        .apply(Command::DeleteSelected);
+    harness.step();
+    harness.step();
+    let cleared = center_color(&mut harness);
+    assert!(diff(empty, cleared) < 3.0, "消すと空 {empty:?} {cleared:?}");
+    harness.state_mut().session_mut().apply(Command::AddShape(
+        model_reviewer_core::shapes::ShapeKind::Sphere,
+    ));
+    harness.step();
+    harness.step();
+    let with_sphere = center_color(&mut harness);
+    assert!(diff(empty, with_sphere) > 30.0, "2つ目も描かれる");
+    assert!(harness.state().gpu_notice().is_none());
+}

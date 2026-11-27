@@ -136,6 +136,11 @@ pub enum Command {
     SetDisplayUnit(Option<UnitLabel>),
     /// STL の単位の仮定を替える（同じファイルを開き直す）。
     SetStlUnit(UnitLabel),
+
+    // ---- 第5段階：新規作成（session/open.rs） ----
+    /// 部品が0個の空の文書を開く。履歴と未保存の印には入らない（文書ごと入れ替える）。
+    /// 未保存の変更があれば、別のモデルを開くときと同じ確認を通す。
+    NewDocument,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

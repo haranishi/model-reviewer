@@ -3,6 +3,7 @@
 //! 約束:
 //! - 元のファイルを読み直し、大きさとハッシュが開いたときの値と同じことを確かめる（違えば書かない）。
 //!   土台が STL なら、照合の後に STL を読み、最小の GLB を合成して土台にする（STL は書き換えない）。
+//!   新規の文書（`ExportBase::Empty`）は、ファイルを読まずに空の土台を使う。
 //! - 保存先と同じフォルダの一時ファイルへ書き、`model_reviewer_gltf::export::verify` で照合してから
 //!   名前を付け替える。失敗したら一時ファイルを消し、保存先には何も残さない。
 //! - 「開く」で開いたファイル（`forbidden`）へは書き出さない（正規化したパスか同じファイルなら断る）。
@@ -22,7 +23,8 @@ use std::time::{Duration, Instant};
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::units::UnitLabel;
 use model_reviewer_gltf::export::{
-    ExportError, ExportNote, ExportScene, build, synthesize_base, verify_locals, write_container,
+    ExportError, ExportNote, ExportScene, build, empty_base, synthesize_base, verify_locals,
+    write_container,
 };
 use model_reviewer_stl::{StlOptions, load_stl};
 
@@ -54,6 +56,9 @@ pub enum ExportBase {
     File,
     /// 土台は STL。`unit` は読み込んだときの単位の仮定、`name` は部品の名前。
     Stl { unit: UnitLabel, name: String },
+    /// 新規の文書。ファイルを読まず、識別も照合せず、`empty_base()` を土台にする
+    /// （`base_path` と `base_identity` は使わない）。
+    Empty,
 }
 
 /// 工程の前に呼ぶ試験用の関数。
@@ -277,21 +282,27 @@ fn run_export(
     emit(tx, wake, ExportEvent::Stage(ExportStage::Reading));
     call_hook(&hooks.before_read);
     let started = Instant::now();
-    let base_bytes = fs::read(&request.base_path).map_err(|err| {
-        ExportFailure::Io(format!(
-            "元のファイルを読めません（{}）",
-            loader::io_error_ja(&err)
-        ))
-    })?;
-    let actual_identity = ModelIdentity::from_bytes(&base_bytes);
-    if actual_identity != request.base_identity {
-        return Err(ExportFailure::BaseChanged);
-    }
-    // 土台が STL なら、読み直した STL から最小の GLB を作り、それを土台にする（要件8.1）。STL の
-    // バイト列は合成が終わったら手放す（土台のバイト列を常駐させない）。
     let base_bytes = match &request.base_kind {
-        ExportBase::File => base_bytes,
-        ExportBase::Stl { unit, name } => synthesize_from_stl(&base_bytes, *unit, name)?,
+        // 新規の文書には元のファイルが無い。読む工程と識別の照合を飛ばす（要件2.1）。
+        ExportBase::Empty => empty_base(),
+        ExportBase::File | ExportBase::Stl { .. } => {
+            let base_bytes = fs::read(&request.base_path).map_err(|err| {
+                ExportFailure::Io(format!(
+                    "元のファイルを読めません（{}）",
+                    loader::io_error_ja(&err)
+                ))
+            })?;
+            let actual_identity = ModelIdentity::from_bytes(&base_bytes);
+            if actual_identity != request.base_identity {
+                return Err(ExportFailure::BaseChanged);
+            }
+            // 土台が STL なら、読み直した STL から最小の GLB を作り、それを土台にする（要件8.1）。
+            // STL のバイト列は合成が終わったら手放す（土台のバイト列を常駐させない）。
+            match &request.base_kind {
+                ExportBase::Stl { unit, name } => synthesize_from_stl(&base_bytes, *unit, name)?,
+                _ => base_bytes,
+            }
+        }
     };
     sample_peak(&mut peak_mem);
     let read_time = started.elapsed();

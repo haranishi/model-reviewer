@@ -1,6 +1,7 @@
-//! 3Dビューの上端のボタン：表示（面・面と線・線・透かし）、投影（透視・平行）、格子。
+//! 3Dビューの上端のボタン：表示（面・面と線・線・透かし）、投影（透視・平行）、格子、断面。
 //! 状態が見えるように並べたボタンにする（開くメニューにしない）。線が使えないGPUでは「面と線」
-//! 「線」を無効にし、理由を出す。押すと `SetDisplay`・`SetProjection`・`SetGrid` を積む。
+//! 「線」を無効にし、理由を出す。押すと `SetDisplay`・`SetProjection`・`SetGrid`・
+//! `ToggleSection` を積む。[断面] は断面の状態を `show_with` で渡したときだけ出す。
 //! 名前は `ids::VIEW_*`。
 //!
 //! 選ばれているボタンは、色だけでなく琥珀の帯と太字でも示す（`chip`。道具の列も使う）。
@@ -34,7 +35,18 @@ pub struct ViewBarInput {
     pub lines_supported: bool,
 }
 
+/// [断面] を出さずに置く。
 pub fn show(ui: &mut egui::Ui, input: &ViewBarInput, out: &mut Vec<Command>) {
+    show_with(ui, input, None, out);
+}
+
+/// `section` は断面が入っているか（`None` なら [断面] を出さない）。
+pub fn show_with(
+    ui: &mut egui::Ui,
+    input: &ViewBarInput,
+    section: Option<bool>,
+    out: &mut Vec<Command>,
+) {
     egui::Frame::new()
         .fill(theme::PANEL_BG.gamma_multiply(0.92))
         .stroke(egui::Stroke::new(1.0, theme::SEPARATOR))
@@ -148,6 +160,31 @@ pub fn show(ui: &mut egui::Ui, input: &ViewBarInput, out: &mut Vec<Command>) {
                 reg(ids::VIEW_GRID, &response);
                 if response.clicked() {
                     out.push(Command::SetGrid(!input.grid_visible));
+                }
+                if let Some(on) = section {
+                    ui.add_space(GROUP_GAP);
+                    let label = "断面";
+                    let response = chip(
+                        ui,
+                        &Chip {
+                            label,
+                            selected: on,
+                            enabled: true,
+                            reason: None,
+                            hint: if on {
+                                "断面をやめて全体を表示します（C）"
+                            } else {
+                                "軸に垂直な面で切って中を見ます（C）"
+                            },
+                            size: text_size(ui, label),
+                            band: BandSide::Bottom,
+                        },
+                        None,
+                    );
+                    reg(ids::VIEW_SECTION, &response);
+                    if response.clicked() {
+                        out.push(Command::ToggleSection);
+                    }
                 }
             });
         });

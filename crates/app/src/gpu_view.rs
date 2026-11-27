@@ -513,6 +513,9 @@ fn frame_params(session: &Session, shown: Option<&Arc<Model>>) -> FrameParams {
             }
             _ => None,
         },
+        // 断面は描画の定数の空き2つに入るだけ（`scene_dirty.section` で描き直す）。表示中が別の
+        // モデル（転送中）なら切らない。
+        section: session.section.filter(|_| doc.is_some()),
     }
 }
 

@@ -32,7 +32,7 @@ pub struct FrameUniform {
     pub drag_normal: [[f32; 4]; 3],
     /// 変形中の範囲の始まりと終わり（始まり >= 終わりなら変形なし）、未使用2つ。
     pub drag: [u32; 4],
-    /// x: 格子の間隔。y: 面の不透明度。z, w: 未使用。
+    /// x: 格子の間隔。y: 面の不透明度。z: 断面の位置。w: 断面の軸と向き（`SectionPlane::code`、断面なしは 0）。
     pub params: [f32; 4],
 }
 
@@ -430,5 +430,52 @@ impl Pipelines {
             mask,
             outline,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SCENE_WGSL;
+
+    fn srgb_to_linear(c: u8) -> f32 {
+        let c = f32::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// シェーダーの切り口の色が、sRGB の #D9822B をリニアにした値と合う（許容差つき）。
+    #[test]
+    fn cut_color_is_d9822b_in_linear() {
+        let line = SCENE_WGSL
+            .lines()
+            .find(|line| line.starts_with("const CUT_COLOR"))
+            .expect("切り口の色の定数がある");
+        let inside = line
+            .split("vec3<f32>(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .expect("3つの数");
+        let values: Vec<f32> = inside
+            .split(',')
+            .map(|v| v.trim().parse().expect("数"))
+            .collect();
+        assert_eq!(values.len(), 3);
+        for (value, srgb) in values.iter().zip([0xD9u8, 0x82, 0x2B]) {
+            let expected = srgb_to_linear(srgb);
+            assert!((value - expected).abs() <= 1.0e-4, "{value} {expected}");
+        }
+    }
+
+    /// 断面で捨てるのは、微分を求めた後（落とし穴：微分は一様な制御の流れの中でしか使えない）。
+    #[test]
+    fn scene_discards_after_derivatives() {
+        let start = SCENE_WGSL.find("fn fs_main").expect("fs_main");
+        let body = &SCENE_WGSL[start..];
+        let derivative = body.find("dpdy(").expect("微分");
+        let discard = body.find("discard").expect("捨てる");
+        assert!(derivative < discard);
     }
 }

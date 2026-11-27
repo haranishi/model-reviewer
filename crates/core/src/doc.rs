@@ -20,6 +20,7 @@ use glam::Affine3A;
 use crate::math::Aabb;
 use crate::review::Annotation;
 use crate::scene::{Draw, Model, NodeId, PrimId, Primitive, SceneRead};
+use crate::shapes::ShapeSpec;
 
 /// 文書の中で変わらない鍵。開いたときは並び順に 0 から振る。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -605,6 +606,20 @@ impl Document {
     pub fn add_primitive(&mut self, prim: Arc<Primitive>) -> PrimId {
         self.added.push(prim);
         PrimId((self.base.primitives.len() + self.added.len() - 1) as u32)
+    }
+
+    /// 図形の形状を足して番号を返す。どの図形をどの大きさで作ったかを覚える（`shape_spec`）。
+    pub fn add_shape_primitive(&mut self, prim: Arc<Primitive>, spec: ShapeSpec) -> PrimId {
+        // 契約の先置き。記録は後の作業で書く。
+        let _ = spec;
+        self.add_primitive(prim)
+    }
+
+    /// 足した図形の作り方。読み込んだ形状と、記録の無い形状は `None`。
+    pub fn shape_spec(&self, prim: PrimId) -> Option<ShapeSpec> {
+        // 契約の先置き。記録は後の作業で書く。
+        let _ = prim;
+        None
     }
 
     /// 使っていない鍵を1つ取る。

@@ -3,8 +3,10 @@
 //! 印は3D表示の上に描くので、そのままだと手前の部品に隠れた点も手前の部品の印に見える。
 //! 点を通る視線（透視は目から放射状、平行は視線の向きに平行）を撃ち、手前に別の面があれば
 //! 中を塗らない輪と薄い番号で描く。変形中は、動かしている部品の印に差分の行列を掛ける。
+//!
+//! 断面が入っている間、消えた側にある印は不透明度40%で描き、押せる場所を置かない（要件4.3）。
+//! 隠れの判定も断面で消えた側の面を外す（`session::ray_hit`）。
 
-use model_reviewer_core::pick::pick;
 use model_reviewer_core::scene::NodeId;
 
 use crate::command::Command;
@@ -29,7 +31,12 @@ pub struct MarkerPlace {
     pub selected: bool,
     /// 目から点までの間に別の面がある。索引ができるまでは false。
     pub hidden: bool,
+    /// 断面で消えた側にある（薄く描き、押せない）。
+    pub faded: bool,
 }
+
+/// 消えた側の印の不透明度（計測の点と同じ）。
+pub const FADED_OPACITY: f32 = super::measure_view::FADED_OPACITY;
 
 pub fn placed_markers(session: &Session, rect: egui::Rect) -> Vec<MarkerPlace> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -66,6 +73,7 @@ pub fn placed_markers(session: &Session, rect: egui::Rect) -> Vec<MarkerPlace> {
             selected: session.selected_annotation == Some(note.id),
             // 動かしている間は、当たり判定の形（まだ動かす前）と見た目が食い違うので判定しない。
             hidden: !moving && is_hidden(session, world, ndc, aspect),
+            faded: session.section.is_some_and(|plane| plane.cuts(world)),
         });
     }
     places
@@ -85,13 +93,9 @@ fn moved_point(session: &Session, node: NodeId, world: glam::Vec3) -> (glam::Vec
 /// 視線は画面上の位置から作るので、透視（目から放射状）と平行（視線の向きに平行）の両方で
 /// 描かれた見え方と同じになる。
 pub fn is_hidden(session: &Session, world: glam::Vec3, ndc: glam::Vec2, aspect: f32) -> bool {
-    let (Some(doc), Some(index), Some(review)) = (
-        session.doc.as_ref(),
-        session.pick_index.as_ref(),
-        session.review.as_ref(),
-    ) else {
+    if session.doc.is_none() || session.pick_index.is_none() || session.review.is_none() {
         return false;
-    };
+    }
     let ray = session.camera.screen_ray(ndc, aspect);
     let distance = (world - ray.origin).dot(ray.dir);
     if !distance.is_finite() || distance <= 1.0e-6 {
@@ -103,7 +107,7 @@ pub fn is_hidden(session: &Session, world: glam::Vec3, ndc: glam::Vec2, aspect: 
         .length()
         .max(session.camera.distance.abs());
     let margin = scale * 1.0e-3 + 1.0e-5;
-    pick(doc, index, &review.visibility, &ray).is_some_and(|hit| hit.t < distance - margin)
+    crate::session::ray_hit(session, &ray).is_some_and(|hit| hit.t < distance - margin)
 }
 
 pub fn show(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Vec<Command>) {
@@ -113,13 +117,20 @@ pub fn show(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut Ve
     let mut order: Vec<&MarkerPlace> = places.iter().collect();
     order.sort_by_key(|place| !place.hidden);
     for place in &order {
+        let opacity = if place.faded { FADED_OPACITY } else { 1.0 };
         if place.hidden {
-            paint_hidden_pin(painter, place.center, place.number, place.selected);
+            paint_hidden_pin(painter, place.center, place.number, place.selected, opacity);
         } else {
-            paint_pin(painter, place.center, Some(place.number), place.selected);
+            paint_pin(
+                painter,
+                place.center,
+                Some(place.number),
+                place.selected,
+                opacity,
+            );
         }
     }
-    for place in &places {
+    for place in places.iter().filter(|place| !place.faded) {
         let response = ui.interact(
             egui::Rect::from_center_size(place.center, egui::Vec2::splat(RADIUS * 2.0)),
             ui.scope_id().with(("annotation.pin", place.id)),
@@ -169,7 +180,7 @@ fn show_draft(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut 
         return;
     };
     let center = ndc_to_pos(ndc, rect);
-    paint_pin(ui.painter(), center, None, false);
+    paint_pin(ui.painter(), center, None, false, 1.0);
     let text_id = egui::Id::unique(ids::DRAFT_TEXT);
     let key: FocusedDraft = (draft.node.0, draft.local_pos.to_array().map(f32::to_bits));
     // 枠と余白の分を引いても3D表示の中に収まる幅にする。
@@ -269,30 +280,43 @@ fn show_draft(ui: &mut egui::Ui, session: &Session, rect: egui::Rect, out: &mut 
         });
 }
 
-fn paint_pin(painter: &egui::Painter, center: egui::Pos2, number: Option<usize>, selected: bool) {
-    painter.circle_filled(center, RADIUS, theme::ANNOTATION);
-    painter.circle_stroke(center, RADIUS, egui::Stroke::new(1.5, egui::Color32::WHITE));
+fn paint_pin(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    number: Option<usize>,
+    selected: bool,
+    opacity: f32,
+) {
+    let white = egui::Color32::WHITE.gamma_multiply(opacity);
+    painter.circle_filled(center, RADIUS, theme::ANNOTATION.gamma_multiply(opacity));
+    painter.circle_stroke(center, RADIUS, egui::Stroke::new(1.5, white));
     if let Some(number) = number {
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
             number.to_string(),
             egui::FontId::proportional(theme::SMALL_SIZE),
-            egui::Color32::WHITE,
+            white,
         );
     }
     if selected {
         painter.circle_stroke(
             center,
             RADIUS + 3.5,
-            egui::Stroke::new(2.0, theme::SELECTION),
+            egui::Stroke::new(2.0, theme::SELECTION.gamma_multiply(opacity)),
         );
     }
 }
 
 /// 隠れた点の印。中を塗らない破線の輪と薄い番号で、色に頼らず形で見分けられるようにする。
-fn paint_hidden_pin(painter: &egui::Painter, center: egui::Pos2, number: usize, selected: bool) {
-    let color = theme::ANNOTATION.gamma_multiply(0.8);
+fn paint_hidden_pin(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    number: usize,
+    selected: bool,
+    opacity: f32,
+) {
+    let color = theme::ANNOTATION.gamma_multiply(0.8 * opacity);
     let segments = 12;
     for i in (0..segments).step_by(2) {
         let a0 = i as f32 / segments as f32 * std::f32::consts::TAU;
@@ -310,13 +334,13 @@ fn paint_hidden_pin(painter: &egui::Painter, center: egui::Pos2, number: usize, 
         egui::Align2::CENTER_CENTER,
         number.to_string(),
         egui::FontId::proportional(theme::SMALL_SIZE),
-        theme::TEXT_WEAK.gamma_multiply(0.85),
+        theme::TEXT_WEAK.gamma_multiply(0.85 * opacity),
     );
     if selected {
         painter.circle_stroke(
             center,
             RADIUS + 3.5,
-            egui::Stroke::new(2.0, theme::SELECTION),
+            egui::Stroke::new(2.0, theme::SELECTION.gamma_multiply(opacity)),
         );
     }
 }

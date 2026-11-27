@@ -229,6 +229,8 @@ mod tests {
             world_pos: Vec3::ZERO,
             local_pos: Vec3::ZERO,
             local_normal: Vec3::Y,
+            prim: crate::scene::PrimId(0),
+            triangle: 0,
         }
     }
 

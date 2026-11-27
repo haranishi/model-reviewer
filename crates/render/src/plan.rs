@@ -7,6 +7,7 @@ use std::ops::Range;
 
 use glam::{Mat4, Vec3};
 use model_reviewer_core::scene::{Model, Vertex};
+use model_reviewer_core::section::SectionPlane;
 
 use crate::RenderError;
 use crate::display::{DisplayMode, DragPreview};
@@ -58,6 +59,17 @@ pub struct FrameParams {
     pub grid: GridParams,
     /// 変形中だけ `Some`。
     pub drag: Option<DragPreview>,
+    /// 断面。既定の `None` は第2段階と同じ絵（定数の `params.z`・`params.w` は 0）。
+    pub section: Option<SectionPlane>,
+}
+
+/// 描画の定数 `params` の z（断面の位置）と w（`SectionPlane::code`）。断面なしは必ず `[0, 0]`。
+/// 位置が有限でない平面も、何も切らないように `[0, 0]` にする（0 以外が残ると画素が消える）。
+pub fn section_params(section: Option<&SectionPlane>) -> [f32; 2] {
+    match section {
+        Some(plane) if plane.offset.is_finite() => [plane.offset, plane.code()],
+        _ => [0.0, 0.0],
+    }
 }
 
 pub fn plan_buffers(model: &Model, limits: &wgpu::Limits) -> Result<BufferPlan, RenderError> {

@@ -19,6 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use model_reviewer_core::identity::ModelIdentity;
+use model_reviewer_core::units::UnitLabel;
 use model_reviewer_gltf::export::{
     ExportError, ExportNote, ExportScene, build, verify_locals, write_container,
 };
@@ -39,6 +40,18 @@ pub struct ExportRequest {
     pub scene: ExportScene,
     /// この作業で「開く」から開いたファイル。書き出し先にできない。
     pub forbidden: Vec<PathBuf>,
+    /// 土台の種類。STL なら、読み直した STL から最小の GLB を合成して土台にする。
+    pub base_kind: ExportBase,
+}
+
+/// 書き出しの土台の種類。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ExportBase {
+    /// 土台のファイル（GLB）をそのまま使う。
+    #[default]
+    File,
+    /// 土台は STL。`unit` は読み込んだときの単位の仮定、`name` は部品の名前。
+    Stl { unit: UnitLabel, name: String },
 }
 
 /// 工程の前に呼ぶ試験用の関数。

@@ -1,6 +1,7 @@
 // 形状の描画。色はリニアで計算し、sRGBのビューへ書く（ビュー形式が使えない環境では最後に変換する）。
 // 法線の無い形状は、ワールド座標の微分から面法線を導く。面の向きによる間引きはせず、裏面は法線を裏返して照らす。
 // 変形中の範囲の部品には、ワールド行列の前に差分の行列を掛ける（インスタンスは書き直さない）。
+// 断面が入っていると、消す側の画素を捨てる。「面」「面と線」では、裏を向いた面を照明なしの切り口の色で塗る。
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -43,6 +44,10 @@ fn vs_main(v: VertexIn) -> VertexOut {
 }
 
 const FLAG_DERIVE_NORMAL: u32 = 1u;
+// ワールド行列の行列式が負の部品。表と裏の判定が逆になるので反転する。
+const FLAG_MIRRORED: u32 = 2u;
+// 切り口の色。sRGB の #D9822B をリニアにした値。
+const CUT_COLOR: vec3<f32> = vec3<f32>(0.69387, 0.22323, 0.02416);
 const SKY: vec3<f32> = vec3<f32>(0.42, 0.45, 0.50);
 const GROUND: vec3<f32> = vec3<f32>(0.16, 0.15, 0.14);
 
@@ -51,9 +56,18 @@ fn is_selected(node: u32) -> bool {
 }
 
 @fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // 微分は分岐の外で求める（一様な制御の流れの中でしか使えない）。
+fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // 微分は分岐の外で求める（一様な制御の流れの中でしか使えない）。断面で捨てるのは、その後にする。
     let face = cross(dpdx(in.world_pos), dpdy(in.world_pos));
+    if (section_cut(in.world_pos)) {
+        discard;
+    }
+    if (section_on() && frame.selected.w <= 1u) {
+        let mirrored = (in.ids.y & FLAG_MIRRORED) != 0u;
+        if (front == mirrored) {
+            return vec4<f32>(finish_color(CUT_COLOR), frame.params.y);
+        }
+    }
     var n = in.normal;
     if ((in.ids.y & FLAG_DERIVE_NORMAL) != 0u) {
         n = face;
@@ -82,6 +96,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 // 線の表示。「面と線」では面の上に暗い線、「線」では部品の色を明るくした線。
 @fragment
 fn fs_line(in: VertexOut) -> @location(0) vec4<f32> {
+    if (section_cut(in.world_pos)) {
+        discard;
+    }
     var rgb: vec3<f32>;
     if (frame.selected.w == 2u) {
         rgb = mix(in.color.rgb, vec3<f32>(1.0), 0.35);

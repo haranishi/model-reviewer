@@ -31,11 +31,12 @@ target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target
 | `edit-1` → `edit-2` | ハンドルと数値の欄で動かす・取り消す・注釈・書き出し・レビュー保存。起動し直して一致 |
 | `edit-3` | 図形を足す・複製・削除・取り消し・書き出し。開き直して部品の数と位置が一致 |
 | `measure-1` | 2点の距離、部品を動かした後の距離、単位の切り替え、平行投影 |
+| `inspect-1` | 角や辺に吸着する計測、断面（軸・位置・反転、消えた側の当たり）、表示の単位 |
 | `heavy-edit` | 下の重いモデルで性能を測る（先に生成する） |
 
 終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。
 
-手順の `op` は `open_model`、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
+手順の `op` は `open_model`、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
 
 重いモデルは生成します（リポジトリには置きません）。`heavy-edit` は `stress-nested` を使います。
 

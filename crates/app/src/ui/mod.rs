@@ -1,6 +1,7 @@
 //! 5領域。部品は `Session` を読み、`Command` を積むだけ。
 //! 第2段階で足した部品（`viewcube`・`viewbar`・`toolrail`・`inspector`・`gizmo_view`・
-//! `measure_view`）は `Session` を読まず、自分のファイルに置いた入力用の構造体だけを受け取る。
+//! `measure_view`）と第3段階の部品（`section_bar`・`section_view`・`dims`・`measure_panel`）は
+//! `Session` を読まず、自分のファイルに置いた入力用の構造体だけを受け取る。
 //! 構造体を `Session` から組み立てて置くのは接合（WP-J*）の仕事。
 
 use crate::automation::{WidgetEntry, WidgetFrame};
@@ -10,13 +11,17 @@ use crate::session::Session;
 pub mod annotations;
 pub mod details;
 pub mod dialogs;
+pub mod dims;
 pub mod empty;
 pub mod gizmo_view;
 pub mod help;
 pub mod ids;
 pub mod inspector;
+pub mod measure_panel;
 pub mod measure_view;
 pub mod overlay;
+pub mod section_bar;
+pub mod section_view;
 pub mod status;
 pub mod toolbar;
 pub mod toolrail;
@@ -81,9 +86,10 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> [u3
     pixels
 }
 
-/// 右のパネル。上に部品の一覧、下に「変形」。一覧は下の場所を除いた高さに収める。
+/// 右のパネル。上に部品の一覧、下に「変形」、計測の道具のときはその下に「計測」。
+/// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
-    let below = transform_height(session);
+    let below = transform_height(session) + measure_height(session);
     let list_h = (ui.available_height() - below).max(80.0);
     let width = ui.available_width();
     ui.allocate_ui(egui::vec2(width, list_h), |ui| {
@@ -93,6 +99,39 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     if session.model.is_some() {
         ui.separator();
         inspector::show(ui, &inspector_input(session), out);
+        if measuring(session) {
+            ui.separator();
+            measure_panel::show(ui, &measure_panel_input(session), out);
+        }
+    }
+}
+
+fn measuring(session: &Session) -> bool {
+    session.model.is_some() && session.tool == model_reviewer_core::gizmo::Tool::Measure
+}
+
+/// 「計測」に空ける高さ（見出し、説明の1行、距離・3つの差・2点の種類の6行）。
+fn measure_height(session: &Session) -> f32 {
+    if measuring(session) { 196.0 } else { 0.0 }
+}
+
+/// 「計測」の入力。距離と差は、変形中なら動かしている部品と一緒に動いた値（3Dの線と同じ）。
+pub fn measure_panel_input(session: &Session) -> measure_panel::MeasurePanelInput {
+    let worlds = viewport::measure_worlds(session);
+    let points = [session.measurement.first, session.measurement.second]
+        .iter()
+        .filter(|point| point.is_some())
+        .count() as u8;
+    let (distance, delta) = match worlds {
+        [Some(a), Some(b)] => (Some(a.distance(b)), Some(b - a)),
+        _ => (None, None),
+    };
+    measure_panel::MeasurePanelInput {
+        distance,
+        delta,
+        points,
+        kinds: session.measurement.kinds,
+        units: session.units,
     }
 }
 

@@ -141,16 +141,45 @@ pub struct ModelStats {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadWarning {
-    Textures { count: u32 },
-    VertexColors { count: u32 },
-    AlphaBlend { count: u32 },
-    Animations { count: u32 },
-    Skins { count: u32 },
-    Morphs { count: u32 },
-    DerivedNormals { count: u32 },
-    OmittedLinesAndPoints { lines: u32, points: u32 },
-    SimplifiedExtension { name: String },
-    UnsupportedOptionalExtension { name: String },
+    Textures {
+        count: u32,
+    },
+    VertexColors {
+        count: u32,
+    },
+    AlphaBlend {
+        count: u32,
+    },
+    Animations {
+        count: u32,
+    },
+    Skins {
+        count: u32,
+    },
+    Morphs {
+        count: u32,
+    },
+    DerivedNormals {
+        count: u32,
+    },
+    OmittedLinesAndPoints {
+        lines: u32,
+        points: u32,
+    },
+    SimplifiedExtension {
+        name: String,
+    },
+    UnsupportedOptionalExtension {
+        name: String,
+    },
+    /// ASCII の STL に `solid` が複数あり、1つの部品にまとめた。`count` はまとめた `solid` の数。
+    StlSolidsMerged {
+        count: u32,
+    },
+    /// バイナリの STL の、三角形の後ろに余ったバイト。
+    StlTrailingBytes {
+        bytes: u64,
+    },
 }
 
 impl LoadWarning {
@@ -185,6 +214,12 @@ impl LoadWarning {
             }
             Self::UnsupportedOptionalExtension { name } => {
                 format!("未対応の任意拡張 {name} は無視します")
+            }
+            Self::StlSolidsMerged { count } => {
+                format!("STL の solid {count} 個を、1つの部品にまとめました")
+            }
+            Self::StlTrailingBytes { bytes } => {
+                format!("STL の末尾の余分な {bytes} バイトは読みませんでした")
             }
         }
     }

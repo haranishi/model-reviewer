@@ -5,6 +5,7 @@ use glam::{Affine3A, Vec3};
 use crate::bvh::Bvh;
 use crate::math::Ray;
 use crate::scene::{NodeId, PrimId, SceneRead};
+use crate::section::SectionPlane;
 use crate::visibility::Visibility;
 
 #[derive(Clone, Copy, Debug)]
@@ -14,6 +15,10 @@ pub struct Hit {
     pub world_pos: Vec3,
     pub local_pos: Vec3,
     pub local_normal: Vec3,
+    /// 当たった形状。
+    pub prim: PrimId,
+    /// 当たった三角形の番号（`prim` の中）。
+    pub triangle: u32,
 }
 
 pub struct PickIndex {
@@ -55,10 +60,66 @@ impl PickIndex {
         }
         added
     }
+
+    /// 形状の三角形の索引。番号の外なら `None`。
+    pub fn bvh(&self, prim: PrimId) -> Option<&Bvh> {
+        self.bvhs.get(prim.0 as usize)
+    }
 }
 
 pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &Ray) -> Option<Hit> {
-    if !ray.origin.is_finite() || !ray.dir.is_finite() || ray.dir.length_squared() <= 1.0e-20 {
+    pick_clipped(model, index, vis, ray, None)
+}
+
+/// 断面で消える側を除いた当たり判定。`clip = None` は `pick` と同じ結果になる。
+pub fn pick_clipped(
+    model: &impl SceneRead,
+    index: &PickIndex,
+    vis: &Visibility,
+    ray: &Ray,
+    clip: Option<&SectionPlane>,
+) -> Option<Hit> {
+    let Some(plane) = clip else {
+        return pick_within(model, index, vis, ray, f32::INFINITY);
+    };
+    // 視線が残す側にある範囲だけを探す。始点を範囲の入口へずらし、出口までを上限にして、
+    // 返す `t` と `world_pos` を元の視線の値へ戻す。
+    let (t0, t1) = plane.ray_range(ray)?;
+    let shifted = Ray {
+        origin: ray.origin + ray.dir * t0,
+        dir: ray.dir,
+    };
+    // 平面の上にちょうど乗った面を取りこぼさないよう、出口をわずかに広げる。
+    let limit = if t1.is_finite() {
+        (t1 - t0) * (1.0 + 1.0e-6) + 1.0e-6
+    } else {
+        f32::INFINITY
+    };
+    let mut hit = pick_within(model, index, vis, &shifted, limit)?;
+    let t = hit.t + t0;
+    let world_pos = ray.origin + ray.dir * t;
+    if !t.is_finite() || !world_pos.is_finite() {
+        return None;
+    }
+    hit.t = t;
+    hit.world_pos = world_pos;
+    Some(hit)
+}
+
+/// `pick` の本体。`max_t` より奥の当たりは数えない。
+fn pick_within(
+    model: &impl SceneRead,
+    index: &PickIndex,
+    vis: &Visibility,
+    ray: &Ray,
+    max_t: f32,
+) -> Option<Hit> {
+    if !ray.origin.is_finite()
+        || !ray.dir.is_finite()
+        || ray.dir.length_squared() <= 1.0e-20
+        || max_t.is_nan()
+        || max_t <= 0.0
+    {
         return None;
     }
     let mut candidates = Vec::new();
@@ -74,6 +135,9 @@ pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &R
         let Some(entry) = crate_ray_aabb(ray, world_aabb.min, world_aabb.max) else {
             continue;
         };
+        if entry > max_t {
+            continue;
+        }
         candidates.push((entry, id, inverse));
     }
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
@@ -93,7 +157,7 @@ pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &R
         {
             continue;
         }
-        let max_t = best.as_ref().map(|hit| hit.t).unwrap_or(f32::INFINITY);
+        let max_t = best.as_ref().map(|hit| hit.t).unwrap_or(max_t);
         for draw in model.draws(id) {
             let Some(prim) = model.primitive(draw.prim) else {
                 continue;
@@ -119,6 +183,8 @@ pub fn pick(model: &impl SceneRead, index: &PickIndex, vis: &Visibility, ray: &R
                 world_pos: ray.origin + ray.dir * tri.t,
                 local_pos: tri.local_pos,
                 local_normal: tri.normal,
+                prim: draw.prim,
+                triangle: tri.triangle,
             });
         }
     }

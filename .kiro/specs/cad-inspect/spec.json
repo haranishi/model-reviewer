@@ -1,0 +1,44 @@
+{
+  "feature_name": "cad-inspect",
+  "created_at": "2026-11-27T01:30:00Z",
+  "updated_at": "2026-11-27T03:00:00Z",
+  "language": "ja",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "approval_basis": "依頼者の指示で実装まで進める",
+  "ready_for_implementation": true,
+  "depends_on": "editor-foundation",
+  "documents": {
+    "requirements": [
+      "requirements.md",
+      "requirements-2.md"
+    ],
+    "ux": "ux.md",
+    "design": [
+      "design.md",
+      "design-snap.md",
+      "design-section.md",
+      "design-stl-units.md",
+      "design-shapes.md",
+      "design-testing.md",
+      "design-decisions.md"
+    ],
+    "tasks": [
+      "tasks.md",
+      "tasks-2.md"
+    ]
+  }
+}

@@ -27,6 +27,7 @@ fn sample_session() -> Session {
         path: "sample.glb".to_owned(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
+        stl_unit: None,
     });
     session.pick_index = Some(PickIndex::build(&model));
     session.set_model(model);
@@ -148,7 +149,7 @@ fn units_change_only_the_label_and_escape_clears_then_leaves() {
     let distance = measure(&mut session, A, B);
     for unit in [UnitLabel::Cm, UnitLabel::Mm, UnitLabel::M] {
         session.apply(Command::SetUnit(unit));
-        assert_eq!(session.unit, unit);
+        assert_eq!(session.units.source, unit);
         assert_eq!(
             measure_distance(&session),
             Some(distance),
@@ -175,10 +176,14 @@ fn opening_another_review_or_model_clears_the_measure() {
 }
 
 /// 平行投影でも、同じ表面の点を押せば同じ距離になる（視線の出発点の丸めが表示の桁に出ない）。
+/// 面の点どうしの比較なので吸着を切る（第2段階と同じ点）。吸着を入れた場合の透視と平行は
+/// `snap.rs` の `orthographic_snaps_to_the_same_vertex` が見る（見本では、平行にすると角の手前に
+/// 別の部品が来て、当たる部品が変わる所がある）。
 #[test]
 fn orthographic_gives_the_same_distance_as_perspective() {
     for zoom_out in [1.0_f32, 40.0, 2000.0] {
         let mut session = sample_session();
+        session.apply(Command::SetSnap(false));
         session.camera.distance *= zoom_out;
         let perspective = measure(&mut session, A * (1.0 / zoom_out), B * (1.0 / zoom_out));
         let points = world_points(&session);
@@ -199,10 +204,10 @@ fn orthographic_gives_the_same_distance_as_perspective() {
             session.measurement.first.unwrap(),
             session.measurement.second.unwrap(),
         ];
+        let scale = session.doc.as_ref().unwrap().bounds().radius();
         for (p, o) in locals.iter().zip(&ortho_locals) {
             assert_eq!(p.node, o.node, "同じ部品に当たる");
         }
-        let scale = session.doc.as_ref().unwrap().bounds().radius();
         assert!(
             (ortho - perspective).abs() <= 1.0e-5 * scale.max(1.0),
             "倍率 {zoom_out}: 透視 {perspective} 平行 {ortho}"

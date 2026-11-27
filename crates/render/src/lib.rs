@@ -869,6 +869,7 @@ fn frame_uniform(
         None => (Mat4::IDENTITY, [0; 4]),
     };
     let normal = instances::normal_matrix(&Affine3A::from_mat4(delta)).to_cols_array_2d();
+    let section = plan::section_params(frame.section.as_ref());
     let inverse = if inverse.is_finite() {
         inverse
     } else {
@@ -898,8 +899,8 @@ fn frame_uniform(
             } else {
                 1.0
             },
-            0.0,
-            0.0,
+            section[0],
+            section[1],
         ],
     }
 }
@@ -1106,6 +1107,7 @@ mod failure_tests {
             display: Default::default(),
             grid: Default::default(),
             drag: None,
+            section: None,
         }
     }
 
@@ -1233,5 +1235,98 @@ mod failure_tests {
         assert!(renderer.shown.as_ref().unwrap().instances.is_some());
         let after = center_after(&mut renderer, &device, &queue, [64, 48]);
         assert_eq!(after, before);
+    }
+}
+
+#[cfg(test)]
+mod uniform_tests {
+    use glam::{Mat4, Vec3};
+    use model_reviewer_core::section::{Axis, SectionPlane};
+
+    use super::{DisplayMode, FrameParams, frame_uniform};
+
+    fn frame(section: Option<SectionPlane>) -> FrameParams {
+        FrameParams {
+            size_px: [64, 48],
+            view_proj: Mat4::IDENTITY,
+            eye: Vec3::Z,
+            selected: None,
+            clear: [0.0, 0.0, 0.0, 1.0],
+            display: Default::default(),
+            grid: Default::default(),
+            drag: None,
+            section,
+        }
+    }
+
+    #[test]
+    fn no_section_leaves_params_z_and_w_zero() {
+        let u = frame_uniform(
+            &frame(None),
+            &(0..0),
+            DisplayMode::Faces,
+            Mat4::IDENTITY,
+            false,
+        );
+        assert_eq!(u.params[2], 0.0);
+        assert_eq!(u.params[3], 0.0);
+        assert_eq!(u.params[1], 1.0);
+        // 断面なしの定数は、項目を足す前と同じ値（格子の間隔と不透明度のほかは 0）。
+        let x = frame_uniform(
+            &frame(None),
+            &(0..0),
+            DisplayMode::XRay,
+            Mat4::IDENTITY,
+            false,
+        );
+        assert_eq!(x.params[2..], [0.0, 0.0]);
+    }
+
+    #[test]
+    fn section_packs_offset_and_code() {
+        for (axis, number) in [(Axis::X, 1.0), (Axis::Y, 2.0), (Axis::Z, 3.0)] {
+            for flipped in [false, true] {
+                let plane = SectionPlane {
+                    axis,
+                    offset: -2.5,
+                    flipped,
+                };
+                let u = frame_uniform(
+                    &frame(Some(plane)),
+                    &(0..0),
+                    DisplayMode::Faces,
+                    Mat4::IDENTITY,
+                    false,
+                );
+                assert_eq!(u.params[2], -2.5, "位置はそのまま入る");
+                let expected = if flipped { -number } else { number };
+                assert_eq!(u.params[3], expected);
+                assert_eq!(u.params[3], plane.code());
+            }
+        }
+    }
+
+    #[test]
+    fn non_finite_offset_cuts_nothing() {
+        for offset in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let plane = SectionPlane {
+                axis: Axis::Y,
+                offset,
+                flipped: false,
+            };
+            let u = frame_uniform(
+                &frame(Some(plane)),
+                &(0..0),
+                DisplayMode::Faces,
+                Mat4::IDENTITY,
+                false,
+            );
+            assert_eq!(u.params[2..], [0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn frame_uniform_is_still_304_bytes() {
+        assert_eq!(std::mem::size_of::<super::FrameUniform>(), 304);
     }
 }

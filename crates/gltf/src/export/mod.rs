@@ -19,6 +19,7 @@ mod base;
 mod container;
 mod json;
 mod patch;
+mod synth;
 mod verify;
 
 use std::io;
@@ -130,6 +131,7 @@ impl ExportError {
 }
 
 pub use container::glb_length;
+pub use synth::synthesize_base;
 
 /// 元のGLBと文書の写しから、新しいJSONと末尾に足すBINを作る。`base` は変えない。
 pub fn build(base: &[u8], scene: &ExportScene) -> Result<Built, ExportError> {

@@ -52,6 +52,10 @@ pub struct Metrics {
     pub export_verify: Option<Duration>,
     /// 直近のGLB書き出し中に観測した常駐メモリの最大。
     pub export_peak_mem: Option<u64>,
+    /// 直近の吸着の探索（クリックとポインタの移動。当たり判定を含む）。
+    pub snap_last: Option<Duration>,
+    /// この作業の間の吸着の探索の最大。
+    pub snap_max: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +161,11 @@ pub fn report_lines(metrics: &Metrics, counts: Option<Counts>) -> Vec<ReportLine
             about: "直近のGLB書き出しの工程ごとの時間（読み取り／組み立て／書き込み／確かめ）",
         },
         ReportLine {
+            label: "吸着の探索",
+            value: fmt_snap(metrics),
+            about: "計測の点の候補を探す時間（当たり判定を含む）。直近と最大。8ms を超えると、かかった時間の4倍だけ移動に合わせた探索を休む",
+        },
+        ReportLine {
             label: "GPUの処理時間",
             value: "未計測".to_owned(),
             about: "初版では計らない",
@@ -204,6 +213,8 @@ pub fn report_value(metrics: &Metrics) -> serde_json::Value {
         "export_write_ms": slot(metrics.export_write.map(ms), "直近の書き出しの書き込み時間"),
         "export_verify_ms": slot(metrics.export_verify.map(ms), "直近の書き出しの確かめ時間"),
         "export_peak_mem": slot(metrics.export_peak_mem.map(|bytes| serde_json::json!(bytes)), "直近の書き出し中に観測した physical_mem の最大"),
+        "snap_ms": slot(metrics.snap_last.map(ms), "直近の吸着の探索（当たり判定を含む）"),
+        "snap_max_ms": slot(metrics.snap_max.map(ms), "この作業の間の吸着の探索の最大"),
         "gpu_ms": slot(None, "初版では計らない"),
     })
 }
@@ -297,6 +308,15 @@ fn fmt_export(metrics: &Metrics) -> String {
             fmt_ms(write),
             fmt_ms(verify),
         ),
+    }
+}
+
+fn fmt_snap(metrics: &Metrics) -> String {
+    match (metrics.snap_last, metrics.snap_max) {
+        (Some(last), Some(max)) => {
+            format!("直近 {}／最大 {}", fmt_ms(Some(last)), fmt_ms(Some(max)))
+        }
+        _ => "未計測".to_owned(),
     }
 }
 

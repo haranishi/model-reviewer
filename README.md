@@ -28,7 +28,9 @@ Arguments: `[GLB or review JSON]`, `--script` and `--out` for scripted runs, and
 - **View**: floor grid and axes, an orientation cube, perspective or orthographic projection, and four display modes (shaded, shaded with edges, wireframe, see-through).
 - **Move**: select a part, then drag a handle or type values in the transform panel. Move and rotate follow the floor axes; scale follows the part's own axes. Undo and redo.
 - **Add and remove**: add a box, sphere, cylinder or plane; duplicate or delete a part together with its children.
-- **Measure**: click two points on surfaces to get the distance. Measurements are not saved. The unit is only a label; values are not converted.
+- **Measure**: click two points to get the distance and the X, Y and Z differences. The pointer snaps to corners and edges (X turns it off). Measurements are not saved.
+- **Section**: cut the model with one plane perpendicular to X, Y or Z to look inside. Drag the arrow or type the position.
+- **Units**: the status bar switches the shown unit between the file unit, mm, cm and m. The file unit is an assumption (GLB is read as metres).
 - **Review**: save notes, hidden parts and named views to a separate review JSON file.
 - **Export**: write a new GLB that keeps the original contents (textures, animations, unknown extensions) and changes only what you edited.
 
@@ -47,6 +49,8 @@ Arguments: `[GLB or review JSON]`, `--script` and `--out` for scripted runs, and
 | Undo / redo | Toolbar buttons | Cmd + Z / Shift + Cmd + Z |
 | Duplicate / delete | | Cmd + D / Delete (Backspace) |
 | Hide / show all | Eye icon, button | H / Shift + H |
+| Snapping on / off (measure tool) | Button next to the tool column | X |
+| Section view | Button above the view | C |
 
 No middle button is needed. On Windows and Linux use Ctrl instead of Cmd. Single-letter keys are ignored while you type in a text field.
 
@@ -60,7 +64,8 @@ It stores hidden parts, notes, views, and the path and fingerprint of the source
 
 ## Limitations
 
-- No vertex, edge or face editing; no reparenting, multi-selection, color or material editing, snapping, angle measurement, new empty document or auto-save.
+- No vertex, edge or face editing; no reparenting, multi-selection, color or material editing, angle measurement, new empty document or auto-save.
+- Snapping only looks at the part under the pointer. The section view has a single axis-aligned plane; cut surfaces get a flat colour without caps or outlines, and open or inside-out meshes can show that colour elsewhere.
 - For animated parts, playback tools use the animation values instead of your transform. glTF ignores the node transform of skinned parts. The export result counts both.
 - One dark theme. Window layout and unit choice are not remembered.
 - The unsaved-changes prompt appears on window close, Cmd + Q and the Quit menu, but not on Dock Quit or log out.

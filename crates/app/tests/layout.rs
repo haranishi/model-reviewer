@@ -167,7 +167,7 @@ fn top_controls_and_status_bar_fit_without_overlap_at_960() {
             .iter()
             .filter(|(name, _)| name.starts_with("viewcube."))
             .collect();
-        assert_eq!(bar.len(), 7, "{size:?}: 上端のボタンが7つ");
+        assert_eq!(bar.len(), 8, "{size:?}: 上端のボタンが8つ（断面を含む）");
         assert!(!cube.is_empty(), "{size:?}: 立方体の面が登録されていない");
         for (name, rect) in bar.iter().chain(cube.iter()) {
             assert!(
@@ -385,7 +385,7 @@ fn status_bar_with_distance_and_unit_fits_at_960_and_the_unit_cycles() {
         }
         harness.step();
         harness.step();
-        assert_eq!(harness.state().unit, unit);
+        assert_eq!(harness.state().units.source, unit);
         let text = format!(
             "距離 {}",
             model_reviewer_core::units::format_distance(distance, unit)
@@ -397,5 +397,192 @@ fn status_bar_with_distance_and_unit_fits_at_960_and_the_unit_cycles() {
                 .is_some()
         );
         assert!(!harness.state().doc_unsaved());
+    }
+}
+
+/// 第3段階の状態欄: 前提の単位・表示の単位・距離（mm）・格子・部品の数・2つの未保存の印・選択名が
+/// 同時に出ても、幅960で重ならない。幅が足りなければ「格子」「表示の単位」「部品の数」の順に省き、
+/// 前提の単位と未保存の印は省かない。広い幅ではすべて出る。
+#[test]
+fn status_bar_with_display_unit_fits_at_960() {
+    use egui_kittest::kittest::Queryable;
+    use model_reviewer::command::{Command, Tool};
+    use model_reviewer_core::doc::NodeKey;
+    use model_reviewer_core::measure::MeasurePoint;
+    use model_reviewer_core::units::UnitLabel;
+
+    for (size, heavy) in [
+        (egui::vec2(960.0, 600.0), true),
+        (egui::vec2(960.0, 600.0), false),
+        (egui::vec2(1280.0, 800.0), true),
+    ] {
+        let mut session = sample_session();
+        session.panel_details = false;
+        session.apply(Command::SetTool(Tool::Measure));
+        session.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
+        if heavy {
+            session.apply(Command::SetVisible {
+                node: NodeId(1),
+                visible: false,
+            });
+            session.apply(Command::AddShape(
+                model_reviewer_core::shapes::ShapeKind::Cube,
+            ));
+            session.apply(Command::SetTool(Tool::Measure));
+        } else {
+            session.selection = None;
+        }
+        for node in [1, 9] {
+            session.measurement.push(MeasurePoint {
+                node: NodeKey(node),
+                local: glam::Vec3::ZERO,
+            });
+        }
+        session.status_text = "計測: もう1点をクリック".to_owned();
+        let mut harness = Harness::builder()
+            .allow_missing_glyphs()
+            .with_accessibility_check(false)
+            .with_size(size)
+            .with_context_setup(model_reviewer::fonts::install)
+            .build_ui_state(
+                |ui, session| {
+                    let mut commands = Vec::new();
+                    let pixels = model_reviewer::ui::show(ui, session, &mut commands);
+                    for command in commands {
+                        session.apply(command);
+                    }
+                    session.set_viewport(pixels);
+                },
+                session,
+            );
+        for _ in 0..6 {
+            harness.step();
+        }
+        let session = harness.state();
+        assert_eq!(session.doc_unsaved() && session.review_unsaved(), heavy);
+        let distance = model_reviewer::session::measure_distance(session).unwrap();
+        let label = format!("距離 {}", session.units.format(distance, 4));
+        assert!(label.ends_with(" mm"), "{label}");
+        let status = widget_rect(&harness, ids::PANEL_STATUS);
+        let mut rects = vec![
+            ("距離", harness.get_by_label(&label).rect()),
+            ("前提", widget_rect(&harness, ids::STATUS_UNIT)),
+            ("詳細", widget_rect(&harness, ids::STATUS_DETAILS)),
+            (
+                "知らせ",
+                harness.get_by_label_contains("計測は保存されません").rect(),
+            ),
+        ];
+        if heavy {
+            rects.push(("形", harness.get_by_label("●形の編集 未書き出し").rect()));
+            rects.push(("レビュー", harness.get_by_label("●レビュー未保存").rect()));
+        }
+        let all = entries(&harness);
+        if let Some((_, rect)) = all.iter().find(|(n, _)| n == ids::STATUS_DISPLAY_UNIT) {
+            rects.push(("表示", *rect));
+        }
+        if let Some(node) = harness.query_by_label_contains("格子 ") {
+            rects.push(("格子", node.rect()));
+        }
+        if let Some(node) = harness.query_by_label_contains("部品 ") {
+            rects.push(("部品", node.rect()));
+        }
+        for (i, (an, a)) in rects.iter().enumerate() {
+            assert!(
+                a.max.x <= size.x + 0.5 && a.min.y >= status.min.y - 0.5,
+                "{size:?}: {an} {a:?} がはみ出す"
+            );
+            for (bn, b) in &rects[i + 1..] {
+                assert!(
+                    !a.shrink(0.5).intersects(b.shrink(0.5)),
+                    "{size:?}: {an} と {bn} が重なる: {a:?} {b:?}"
+                );
+            }
+        }
+        let names: Vec<_> = rects.iter().map(|(name, _)| *name).collect();
+        if !heavy {
+            assert!(
+                names.contains(&"表示"),
+                "{size:?}: 印が無ければ幅960でも表示の単位は出る {names:?}"
+            );
+        }
+        if size.x >= 1280.0 {
+            assert_eq!(rects.len(), 9, "{size:?}: 広い幅ではすべて出る");
+            let grid = model_reviewer::ui::status::grid_text(harness.state());
+            assert!(grid.ends_with(" mm"), "{grid}");
+            assert!(harness.query_by_label(&grid).is_some(), "{grid}");
+        }
+    }
+}
+
+/// 断面の帯（軸・位置・反転）は、上端のボタンの下に出て、立方体・道具の列・上端のボタンと
+/// 重ならず、3Dビューの中に収まる。
+#[test]
+fn section_bar_fits_under_the_view_buttons_at_960() {
+    use model_reviewer::command::Command;
+    for (size, parts, notes) in [
+        (egui::vec2(960.0, 600.0), true, true),
+        (egui::vec2(960.0, 600.0), false, false),
+        (egui::vec2(1280.0, 800.0), true, true),
+    ] {
+        let mut session = sample_session();
+        session.panel_details = false;
+        session.panel_parts = parts;
+        session.panel_notes = notes;
+        session.apply(Command::ToggleSection);
+        let mut harness = Harness::builder()
+            .allow_missing_glyphs()
+            .with_accessibility_check(false)
+            .with_size(size)
+            .with_context_setup(model_reviewer::fonts::install)
+            .build_ui_state(
+                |ui, session| {
+                    let mut commands = Vec::new();
+                    let pixels = model_reviewer::ui::show(ui, session, &mut commands);
+                    for command in commands {
+                        session.apply(command);
+                    }
+                    session.set_viewport(pixels);
+                },
+                session,
+            );
+        for _ in 0..6 {
+            harness.step();
+        }
+        let all = entries(&harness);
+        let viewport = widget_rect(&harness, ids::VIEWPORT);
+        let band: Vec<_> = all
+            .iter()
+            .filter(|(name, _)| name.starts_with("section.") && name != ids::SECTION_HANDLE)
+            .collect();
+        assert_eq!(band.len(), 5, "{size:?}: 軸3つ・位置・反転");
+        let others: Vec<_> = all
+            .iter()
+            .filter(|(name, _)| {
+                name.starts_with("view.")
+                    || name.starts_with("viewcube.")
+                    || name.starts_with("tool.")
+            })
+            .collect();
+        for (name, rect) in &band {
+            assert!(
+                viewport.contains_rect(*rect),
+                "{size:?}: {name} {rect:?} が3Dビュー {viewport:?} の外"
+            );
+            for (other, other_rect) in &others {
+                assert!(
+                    !rect.shrink(0.5).intersects(other_rect.shrink(0.5)),
+                    "{size:?}: {name} と {other} が重なる"
+                );
+            }
+        }
+        for (i, (a_name, a)) in band.iter().enumerate() {
+            for (b_name, b) in &band[i + 1..] {
+                assert!(
+                    !a.shrink(0.5).intersects(b.shrink(0.5)),
+                    "{size:?}: {a_name} と {b_name} が重なる"
+                );
+            }
+        }
     }
 }

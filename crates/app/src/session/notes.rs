@@ -41,6 +41,9 @@ pub fn commit(session: &mut Session, text: String) {
         world_pos: Vec3::ZERO,
         local_pos: draft.local_pos,
         local_normal: draft.local_normal,
+        // 注釈は部品と部品の中の座標だけを使う。形状と三角形の番号は読まない。
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     };
     let Some(key) = session.doc.as_ref().and_then(|doc| doc.key(draft.node)) else {
         return;

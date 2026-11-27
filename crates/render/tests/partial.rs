@@ -36,6 +36,7 @@ fn frame() -> FrameParams {
         display: Default::default(),
         grid: Default::default(),
         drag: None,
+        section: None,
     }
 }
 

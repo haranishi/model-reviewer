@@ -2,7 +2,7 @@
 
 use super::script::{is_plain_relative, load_script};
 use super::state::{numbers_match, values_match};
-use super::{Automation, WidgetEntry, WidgetFrame, view_to_screen};
+use super::{Automation, Op, WidgetEntry, WidgetFrame, view_to_screen};
 use crate::command::parse_args;
 use crate::loader::LoadPhase;
 use crate::session::Session;
@@ -51,6 +51,7 @@ fn parses_steps_and_rejects_absolute_paths() {
                 {"op": "drag_view", "from": [0, 0.5], "to": [1, 0.25], "button": "right", "modifiers": ["shift"], "frames": 4},
                 {"op": "scroll_view", "at": [0.5, 0.5], "delta": [0, -1]},
                 {"op": "click_view", "at": [0.2, 0.8]},
+                {"op": "hover_view", "at": [0.4, 0.6]},
                 {"op": "click_widget", "name": "toolbar.fit_all"},
                 {"op": "type_text", "text": "視点"},
                 {"op": "key", "key": "enter", "modifiers": ["ctrl"]},
@@ -66,7 +67,18 @@ fn parses_steps_and_rejects_absolute_paths() {
     )
     .unwrap();
     let run = load_script(&script, &dir.join("out")).unwrap();
-    assert_eq!(run.steps.len(), 15);
+    assert_eq!(run.steps.len(), 16);
+    assert!(matches!(run.steps[5].op, Op::HoverView { at } if at == [0.4, 0.6]));
+    let extra = dir.join("hover-extra.json");
+    fs::write(
+        &extra,
+        r#"{"steps":[{"op":"hover_view","at":[0.5,0.5],"button":"left"}]}"#,
+    )
+    .unwrap();
+    assert!(
+        load_script(&extra, &dir.join("out")).is_err(),
+        "押さない手順にボタンは無い"
+    );
     assert_eq!(run.default_timeout, Duration::from_secs(5));
     assert_eq!(run.steps[0].timeout, Some(Duration::from_secs(2)));
 
@@ -324,6 +336,16 @@ fn kittest_runs_dump_assert_and_quit() {
         serde_json::from_str(&fs::read_to_string(out.join("state.json")).unwrap()).unwrap();
     assert!(state.get("camera").is_some());
     assert!(state["hidden"].as_array().unwrap().is_empty());
+    // 第3段階の項目。既存の項目（`unit` など）はそのまま。
+    assert_eq!(state["unit"], "m");
+    assert_eq!(state["units"]["source"], "m");
+    assert!(state["units"]["display"].is_null());
+    assert!(state["units"]["stl"].is_null());
+    assert_eq!(state["snap"]["enabled"], true);
+    assert!(state["snap"]["candidate"].is_null());
+    assert!(state["section"].is_null());
+    assert!(state["measure"]["kinds"].as_array().unwrap().is_empty());
+    assert!(state["measure"]["delta"].is_null());
     drop(harness);
     let _ = fs::remove_dir_all(&dir);
 }

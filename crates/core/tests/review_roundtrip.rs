@@ -62,6 +62,7 @@ fn model_ref(bytes: &[u8]) -> ModelRef {
         path: "/work/models/review-sample.glb".to_owned(),
         relative_path: Some("../models/review-sample.glb".to_owned()),
         identity: ModelIdentity::from_bytes(bytes),
+        stl_unit: None,
     }
 }
 
@@ -95,6 +96,8 @@ fn sample() -> (Model, ModelRef, ReviewState) {
         world_pos: Vec3::new(0.2, 0.3, 0.4),
         local_pos: Vec3::new(0.12, 0.4, -0.05),
         local_normal: Vec3::Y,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     };
     assert_eq!(state.add_annotation(&hit, TEXT.to_owned()), Some(1));
     let camera = OrbitCamera {
@@ -192,6 +195,8 @@ fn roundtrip_keeps_japanese_text_visibility_and_views() {
             world_pos: Vec3::ZERO,
             local_pos: Vec3::ZERO,
             local_normal: Vec3::Z,
+            prim: model_reviewer_core::scene::PrimId(0),
+            triangle: 0,
         },
         "次".to_owned(),
     );
@@ -207,6 +212,8 @@ fn roundtrip_keeps_japanese_text_visibility_and_views() {
         world_pos: Vec3::ZERO,
         local_pos: Vec3::ZERO,
         local_normal: Vec3::ZERO,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     };
     let mut state = ReviewState::new(&model);
     state.add_annotation(&zero_normal, "零".to_owned());
@@ -229,6 +236,8 @@ fn adding_an_annotation_at_the_id_limit_roundtrips() {
         world_pos: Vec3::ZERO,
         local_pos: Vec3::ZERO,
         local_normal: Vec3::Y,
+        prim: model_reviewer_core::scene::PrimId(0),
+        triangle: 0,
     };
     let id = restored.add_annotation(&hit, "追記".to_owned()).unwrap();
     let saved = parse(&render(&restored, &model, &model_ref)).expect("追記後も読める");

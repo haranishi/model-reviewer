@@ -85,8 +85,35 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
         "measure": {
             "points": measure_points,
             "distance": crate::session::measure_distance(session).map(f64::from),
+            "kinds": measure_kinds(session),
+            "delta": crate::session::measure_delta(session).map(vec3_json),
         },
-        "unit": session.unit.suffix(),
+        // 前提の単位（第2段階からの項目。表示の単位は `units`）。
+        "unit": session.units.source.suffix(),
+        "units": {
+            "source": session.units.source.suffix(),
+            "display": session.units.display.map(|unit| unit.suffix()),
+            "stl": match session.source_kind {
+                crate::session::SourceKind::Glb => None,
+                crate::session::SourceKind::Stl { unit } => Some(unit.suffix()),
+            },
+        },
+        "snap": {
+            "enabled": session.snap.enabled,
+            "candidate": session.snap_preview.map(|target| json!({
+                "kind": snap_kind_name(target.kind),
+                "world": vec3_json(target.world),
+            })),
+        },
+        "section": session.section.map(|plane| json!({
+            "axis": match plane.axis {
+                model_reviewer_core::section::Axis::X => "x",
+                model_reviewer_core::section::Axis::Y => "y",
+                model_reviewer_core::section::Axis::Z => "z",
+            },
+            "offset": f64::from(plane.offset),
+            "flipped": plane.flipped,
+        })),
         "triangles": session.placed_triangles(),
         "grid": {
             "visible": session.grid_visible,
@@ -97,6 +124,26 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
 
 /// 状態の比較で見ない項目。履歴は開き直すと空になる（保存されるものではない）。
 pub(in crate::automation) const NOT_COMPARED: [&str; 1] = ["history"];
+
+/// 置いた点の種類（置いた数だけ）。
+fn measure_kinds(session: &Session) -> Vec<&'static str> {
+    let measurement = &session.measurement;
+    [measurement.first, measurement.second]
+        .iter()
+        .zip(measurement.kinds)
+        .filter(|(point, _)| point.is_some())
+        .map(|(_, kind)| snap_kind_name(kind))
+        .collect()
+}
+
+fn snap_kind_name(kind: model_reviewer_core::snap::SnapKind) -> &'static str {
+    use model_reviewer_core::snap::SnapKind;
+    match kind {
+        SnapKind::Vertex => "vertex",
+        SnapKind::Edge => "edge",
+        SnapKind::Face => "face",
+    }
+}
 
 fn tool_name(tool: model_reviewer_core::gizmo::Tool) -> &'static str {
     use model_reviewer_core::gizmo::Tool;

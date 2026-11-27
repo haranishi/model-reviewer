@@ -38,6 +38,8 @@ pub struct TriHit {
     pub t: f32,
     pub local_pos: Vec3,
     pub normal: Vec3,
+    /// 当たった三角形の番号（形状の番号の表で何番目の三角形か）。
+    pub triangle: u32,
 }
 
 impl Bvh {
@@ -133,6 +135,79 @@ impl Bvh {
         }
         best
     }
+
+    /// 境界箱が球（中心 `center`・半径 `radius`、形状の中の座標）に触れる三角形の番号を `out` に足す。
+    /// `limit` を超えたら `false` を返す（`out` の中身は途中まで）。
+    pub fn triangles_near(
+        &self,
+        center: Vec3,
+        radius: f32,
+        vertices: &[Vertex],
+        indices: &[u32],
+        limit: usize,
+        out: &mut Vec<u32>,
+    ) -> bool {
+        // 有限でない中心・半径、負の半径は「何も触れない」とする（上限は超えていない）。
+        if self.nodes.is_empty() || !center.is_finite() || !radius.is_finite() || radius < 0.0 {
+            return true;
+        }
+        let radius_sq = radius * radius;
+        let mut found = 0usize;
+        let mut stack = Vec::with_capacity(64);
+        stack.push(0u32);
+        while let Some(index) = stack.pop() {
+            let Some(node) = self.nodes.get(index as usize) else {
+                continue;
+            };
+            if !sphere_touches_box(center, radius_sq, node.min, node.max) {
+                continue;
+            }
+            match node.kind {
+                NodeKind::Leaf { start, count } => {
+                    for slot in start..start.saturating_add(count) {
+                        let Some(triangle) = self.tri_indices.get(slot as usize).copied() else {
+                            continue;
+                        };
+                        let Some((min, max)) = triangle_bounds(vertices, indices, triangle) else {
+                            continue;
+                        };
+                        if !sphere_touches_box(center, radius_sq, min, max) {
+                            continue;
+                        }
+                        if found >= limit {
+                            return false;
+                        }
+                        out.push(triangle);
+                        found += 1;
+                    }
+                }
+                NodeKind::Branch { left, right } => {
+                    stack.push(right);
+                    stack.push(left);
+                }
+            }
+        }
+        true
+    }
+}
+
+/// 球（中心と半径の2乗）が箱に触れるか。箱の上の最も近い点までの距離で比べる。
+fn sphere_touches_box(center: Vec3, radius_sq: f32, min: Vec3, max: Vec3) -> bool {
+    let nearest = center.clamp(min.min(max), max.max(min));
+    let distance_sq = (center - nearest).length_squared();
+    distance_sq <= radius_sq
+}
+
+/// 三角形の境界箱。番号が外れているか、頂点が有限でなければ `None`。
+fn triangle_bounds(vertices: &[Vertex], indices: &[u32], triangle: u32) -> Option<(Vec3, Vec3)> {
+    let base = triangle as usize * 3;
+    let p0 = vertex(vertices, *indices.get(base)?)?;
+    let p1 = vertex(vertices, *indices.get(base + 1)?)?;
+    let p2 = vertex(vertices, *indices.get(base + 2)?)?;
+    if !p0.is_finite() || !p1.is_finite() || !p2.is_finite() {
+        return None;
+    }
+    Some((p0.min(p1).min(p2), p0.max(p1).max(p2)))
 }
 
 fn build_node(
@@ -336,6 +411,7 @@ fn ray_triangle(
         t,
         local_pos,
         normal,
+        triangle,
     })
 }
 
@@ -343,4 +419,146 @@ fn vertex(vertices: &[Vertex], index: u32) -> Option<Vec3> {
     vertices
         .get(index as usize)
         .map(|vertex| Vec3::from(vertex.position))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::Aabb;
+
+    /// 決まった種の擬似乱数（試験だけで使う）。
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn unit(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 40) as u32 as f32) / (1u32 << 24) as f32
+        }
+    }
+
+    fn scattered(count: usize, seed: u64) -> Primitive {
+        let mut rng = Lcg(seed);
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for _ in 0..count {
+            let base = Vec3::new(rng.unit(), rng.unit(), rng.unit()) * 20.0 - 10.0;
+            for _ in 0..3 {
+                let offset = Vec3::new(rng.unit(), rng.unit(), rng.unit()) * 1.5;
+                indices.push(vertices.len() as u32);
+                vertices.push(Vertex {
+                    position: (base + offset).to_array(),
+                    normal: [0.0, 0.0, 1.0],
+                });
+            }
+        }
+        Primitive {
+            vertices,
+            indices,
+            local_aabb: Aabb::empty(),
+            has_normals: false,
+        }
+    }
+
+    fn brute(prim: &Primitive, center: Vec3, radius: f32) -> Vec<u32> {
+        (0..(prim.indices.len() / 3) as u32)
+            .filter(|&triangle| {
+                triangle_bounds(&prim.vertices, &prim.indices, triangle)
+                    .is_some_and(|(min, max)| sphere_touches_box(center, radius * radius, min, max))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn near_matches_brute_force() {
+        let prim = scattered(2000, 7);
+        let bvh = Bvh::build(&prim, &|| false).unwrap();
+        let mut rng = Lcg(99);
+        let mut nonempty = 0;
+        for _ in 0..200 {
+            let center = Vec3::new(rng.unit(), rng.unit(), rng.unit()) * 24.0 - 12.0;
+            let radius = rng.unit() * 3.0;
+            let mut out = Vec::new();
+            assert!(bvh.triangles_near(
+                center,
+                radius,
+                &prim.vertices,
+                &prim.indices,
+                usize::MAX,
+                &mut out
+            ));
+            out.sort_unstable();
+            let expected = brute(&prim, center, radius);
+            assert_eq!(out, expected);
+            if !expected.is_empty() {
+                nonempty += 1;
+            }
+        }
+        assert!(
+            nonempty > 20,
+            "試験の球がほとんど何にも触れていない: {nonempty}"
+        );
+    }
+
+    #[test]
+    fn near_reports_when_the_limit_is_exceeded() {
+        let prim = scattered(2000, 3);
+        let bvh = Bvh::build(&prim, &|| false).unwrap();
+        let all = brute(&prim, Vec3::ZERO, 5.0);
+        assert!(all.len() > 10);
+        let mut out = Vec::new();
+        assert!(!bvh.triangles_near(Vec3::ZERO, 5.0, &prim.vertices, &prim.indices, 10, &mut out));
+        assert!(out.len() <= 10);
+        let mut exact = Vec::new();
+        assert!(bvh.triangles_near(
+            Vec3::ZERO,
+            5.0,
+            &prim.vertices,
+            &prim.indices,
+            all.len(),
+            &mut exact
+        ));
+        assert_eq!(exact.len(), all.len());
+    }
+
+    #[test]
+    fn near_survives_empty_shapes_and_non_finite_input() {
+        let empty = Primitive {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            local_aabb: Aabb::empty(),
+            has_normals: false,
+        };
+        let bvh = Bvh::build(&empty, &|| false).unwrap();
+        let mut out = Vec::new();
+        assert!(bvh.triangles_near(Vec3::ZERO, 1.0, &[], &[], 8, &mut out));
+        assert!(out.is_empty());
+
+        let prim = scattered(50, 11);
+        let bvh = Bvh::build(&prim, &|| false).unwrap();
+        for (center, radius) in [
+            (Vec3::splat(f32::NAN), 1.0),
+            (Vec3::new(f32::INFINITY, 0.0, 0.0), 1.0),
+            (Vec3::ZERO, f32::NAN),
+            (Vec3::ZERO, f32::INFINITY),
+            (Vec3::ZERO, -1.0),
+        ] {
+            let mut out = Vec::new();
+            assert!(bvh.triangles_near(center, radius, &prim.vertices, &prim.indices, 8, &mut out));
+            assert!(out.is_empty());
+        }
+        // 番号の表と頂点が食い違っても落ちない。
+        let mut out = Vec::new();
+        bvh.triangles_near(
+            Vec3::ZERO,
+            100.0,
+            &prim.vertices[..4],
+            &prim.indices,
+            1000,
+            &mut out,
+        );
+        assert!(out.iter().all(|&t| t < 2));
+    }
 }

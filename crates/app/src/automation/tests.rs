@@ -82,6 +82,35 @@ fn parses_steps_and_rejects_absolute_paths() {
     assert_eq!(run.default_timeout, Duration::from_secs(5));
     assert_eq!(run.steps[0].timeout, Some(Duration::from_secs(2)));
 
+    let stl = dir.join("stl.json");
+    fs::write(
+        &stl,
+        r#"{"steps":[{"op":"open_model","path":"box.stl","stl_unit":"cm"},{"op":"open_model","path":"a.stl"}]}"#,
+    )
+    .unwrap();
+    let run = load_script(&stl, &dir.join("out")).unwrap();
+    assert!(matches!(
+        run.steps[0].op,
+        Op::OpenModel {
+            stl_unit: Some(model_reviewer_core::units::UnitLabel::Cm),
+            ..
+        }
+    ));
+    assert!(matches!(
+        run.steps[1].op,
+        Op::OpenModel { stl_unit: None, .. }
+    ));
+    let inch = dir.join("inch.json");
+    fs::write(
+        &inch,
+        r#"{"steps":[{"op":"open_model","path":"box.stl","stl_unit":"inch"}]}"#,
+    )
+    .unwrap();
+    assert!(
+        load_script(&inch, &dir.join("out")).is_err(),
+        "インチは無い"
+    );
+
     let absolute = dir.join("bad.json");
     fs::write(
         &absolute,
@@ -346,6 +375,9 @@ fn kittest_runs_dump_assert_and_quit() {
     assert!(state["section"].is_null());
     assert!(state["measure"]["kinds"].as_array().unwrap().is_empty());
     assert!(state["measure"]["delta"].is_null());
+    assert_eq!(state["source_kind"], "glb");
+    assert!(state["selection_dims"].is_null());
+    assert!(state["selection"].is_null());
     drop(harness);
     let _ = fs::remove_dir_all(&dir);
 }

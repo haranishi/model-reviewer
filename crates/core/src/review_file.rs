@@ -3,6 +3,9 @@
 //! 版2は版1に「視点の `camera.projection` に `"orthographic"` を許す」を足しただけ。平行投影の
 //! 視点を1つでも含むときだけ版2で書き、含まなければ版1のまま書く（前の版のアプリでも読める）。
 //! 読むときは版1と版2の両方を受け付ける。版1のファイルに `"orthographic"` があれば不正とする。
+//!
+//! STL の単位の仮定は `model.stl_unit`（`"mm"`・`"cm"`・`"m"`）として書く。GLB では項目ごと
+//! 省略し、版も上げない。読むときは省略なら `None`、3つ以外の値は不正とする。
 
 use std::collections::HashSet;
 
@@ -15,6 +18,7 @@ use crate::error::ReviewError;
 use crate::identity::{ModelIdentity, ModelRef};
 use crate::review::{Annotation, ReviewState, SavedView};
 use crate::scene::{NodeId, SceneRead};
+use crate::units::UnitLabel;
 use crate::visibility::Visibility;
 
 const FORMAT: &str = "model-reviewer.review";
@@ -50,6 +54,43 @@ pub struct ReviewModelRecord {
     pub size_bytes: u64,
     pub hash: ReviewHashRecord,
     pub node_count: u32,
+    /// STL の単位の仮定。GLB では `None` で、項目ごと書かない。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "stl_unit_text"
+    )]
+    pub stl_unit: Option<UnitLabel>,
+}
+
+/// `model.stl_unit` の文字（`"mm"`・`"cm"`・`"m"`）。ほかの文字と文字列でない値は不正。
+mod stl_unit_text {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::units::UnitLabel;
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<UnitLabel>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(unit) => serializer.serialize_str(unit.suffix()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<UnitLabel>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        match text.as_str() {
+            "mm" => Ok(Some(UnitLabel::Mm)),
+            "cm" => Ok(Some(UnitLabel::Cm)),
+            "m" => Ok(Some(UnitLabel::M)),
+            _ => Err(D::Error::custom("stl_unit")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +152,7 @@ pub fn to_json(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         model: ReviewModelRecord {
             file_name: model_ref.file_name.clone(),
-            path: model_ref.path.clone(),
+            path: model_ref.path.display().to_string(),
             relative_path: model_ref.relative_path.clone(),
             size_bytes: model_ref.identity.size_bytes,
             hash: ReviewHashRecord {
@@ -119,6 +160,7 @@ pub fn to_json(
                 hex: model_ref.identity.blake3_hex.clone(),
             },
             node_count: model.node_count() as u32,
+            stl_unit: model_ref.stl_unit,
         },
         hidden_nodes: state
             .visibility
@@ -175,18 +217,21 @@ pub fn restore(
             actual: identity.clone(),
         });
     }
+    // STL の部品名はファイル名から付く。同じファイルを改名しても部品番号は 0 のまま。
+    let single_stl = file.model.stl_unit.is_some() && model.node_count() == 1;
+    let resolve_node = |record: &ReviewNodeRecord| require_node(model, record, single_stl);
     let mut visibility = Visibility::all_visible(model.node_count());
     if !file.hidden_nodes.is_empty() {
         let hidden = file
             .hidden_nodes
             .iter()
-            .map(|record| require_node(model, record))
+            .map(resolve_node)
             .collect::<Result<Vec<_>, _>>()?;
         visibility.set_many(model, hidden, false);
     }
     let mut annotations = Vec::with_capacity(file.annotations.len());
     for record in &file.annotations {
-        let node = require_node(model, &record.node)?;
+        let node = resolve_node(&record.node)?;
         annotations.push(Annotation {
             id: record.id,
             node,
@@ -283,18 +328,17 @@ fn camera_from_record(
     })
 }
 
-fn require_node(model: &impl SceneRead, record: &ReviewNodeRecord) -> Result<NodeId, ReviewError> {
-    let Some(id) = model.find_file_index(record.gltf_index) else {
-        return Err(ReviewError::UnknownNode {
+fn require_node(
+    model: &impl SceneRead,
+    record: &ReviewNodeRecord,
+    single_stl: bool,
+) -> Result<NodeId, ReviewError> {
+    model
+        .find_file_index(record.gltf_index)
+        .filter(|&id| (single_stl && record.gltf_index == 0) || model.name(id) == record.name)
+        .ok_or(ReviewError::UnknownNode {
             gltf_index: record.gltf_index,
-        });
-    };
-    if model.name(id) != record.name {
-        return Err(ReviewError::UnknownNode {
-            gltf_index: record.gltf_index,
-        });
-    }
-    Ok(id)
+        })
 }
 
 fn validate_file(file: &ReviewFile) -> Result<(), ReviewError> {

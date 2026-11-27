@@ -18,8 +18,10 @@ use model_reviewer_core::history::{Applied, Edit, Pushed, Step};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{Draw, NodeId, SceneRead};
 use model_reviewer_core::shapes::{self, SHAPE_COLOR, ShapeKind};
+use model_reviewer_core::units::{UnitLabel, Units};
 
 use super::Session;
+use crate::ui::gizmo_view;
 use crate::ui::status::grouped;
 
 /// ハンドルの画面上の長さ（ポイント。ux.md の約90ポイント）。
@@ -235,11 +237,12 @@ pub(super) fn drag_transform(session: &mut Session, ndc: Vec2) {
         session.scene_dirty.drag = true;
     }
     transform.readout = Some(state.readout);
-    session.status_text = readout_status(state.readout);
+    session.status_text = readout_status(state.readout, session.units);
 }
 
-fn readout_status(readout: Readout) -> String {
-    let text = crate::ui::gizmo_view::readout_text(readout);
+fn readout_status(readout: Readout, units: Units) -> String {
+    let shown = gizmo_view::shown_readout(readout, units);
+    let text = gizmo_view::readout_text_with(shown, units.display.map(UnitLabel::suffix));
     match readout {
         Readout::Distance(_) => format!("移動 {text}"),
         Readout::AngleDeg(_) => format!("回転 {text}"),
@@ -404,8 +407,10 @@ pub(super) fn commit_local(session: &mut Session, trs: Trs) {
 }
 
 fn same_trs(a: &Trs, b: &Trs) -> bool {
-    let close =
-        |x: Vec3, y: Vec3| (x - y).abs().max_element() <= 1.0e-6 * x.abs().max_element().max(1.0);
+    let close = |x: Vec3, y: Vec3| {
+        let relative = x.abs().max(y.abs()) * 1.0e-6;
+        (x - y).abs().cmple(relative.max(Vec3::splat(1.0e-9))).all()
+    };
     close(a.translation, b.translation)
         && close(a.scale, b.scale)
         && a.rotation.dot(b.rotation).abs() >= 1.0 - 1.0e-7
@@ -584,7 +589,7 @@ fn after_applied(session: &mut Session, applied: &Applied, from_history: bool) {
 }
 
 /// 図形を視点の注視点に置き、選択して移動の道具へ切り替える（要件9.1・9.2）。形状は
-/// `Document::add_primitive` で足し、取り消しても残す（モデルを閉じると消える）。
+/// `Document::add_shape_primitive` で足し、取り消しても残す（モデルを閉じると消える）。
 pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
     if session.block_edit_if_locked() {
         return;
@@ -600,7 +605,11 @@ pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
     }
     let started = Instant::now();
     let size = shapes::size_for(doc.bounds().radius());
-    let prim = doc.add_primitive(Arc::new(shapes::build(kind, size)));
+    // 作り方（種類と大きさ）を覚えておくと、右のパネルの「寸法」で直せる（要件9.1）。
+    let prim = doc.add_shape_primitive(
+        Arc::new(shapes::build(kind, size)),
+        shapes::ShapeSpec { kind, size },
+    );
     let local = Affine3A::from_translation(if target.is_finite() {
         target
     } else {

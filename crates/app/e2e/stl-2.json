@@ -1,0 +1,11 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "load_review", "path": "stl-1-review.json", "relative_to": "out" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "status.display_unit" },
+    { "op": "assert_state_equals", "path": "stl-1-state.json", "relative_to": "out" },
+    { "op": "screenshot", "path": "stl-2.png" },
+    { "op": "quit" }
+  ]
+}

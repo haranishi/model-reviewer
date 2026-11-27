@@ -77,8 +77,14 @@ fn parse_step(value: &Value) -> Result<Step, String> {
     };
     let op = match op_name {
         "open_model" => {
-            reject_unknown(map, &["op", "timeout_secs", "path", "relative_to"])?;
-            Op::OpenModel(parse_path(map, PathBase::Script)?)
+            reject_unknown(
+                map,
+                &["op", "timeout_secs", "path", "relative_to", "stl_unit"],
+            )?;
+            Op::OpenModel {
+                path: parse_path(map, PathBase::Script)?,
+                stl_unit: parse_stl_unit(map.get("stl_unit"))?,
+            }
         }
         "load_review" => {
             reject_unknown(map, &["op", "timeout_secs", "path", "relative_to"])?;
@@ -343,6 +349,21 @@ fn parse_modifiers(value: Option<&Value>) -> Result<egui::Modifiers, String> {
         }
     }
     Ok(modifiers)
+}
+
+fn parse_stl_unit(
+    value: Option<&Value>,
+) -> Result<Option<model_reviewer_core::units::UnitLabel>, String> {
+    use model_reviewer_core::units::UnitLabel;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some("mm") => Ok(Some(UnitLabel::Mm)),
+        Some("cm") => Ok(Some(UnitLabel::Cm)),
+        Some("m") => Ok(Some(UnitLabel::M)),
+        _ => Err("stl_unit は mm、cm、m のいずれかです".to_owned()),
+    }
 }
 
 fn parse_wheel_unit(value: Option<&Value>) -> Result<egui::MouseWheelUnit, String> {

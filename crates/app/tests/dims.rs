@@ -37,6 +37,7 @@ fn trs(scale: Vec3) -> Trs {
 /// 0.5 の立方体を (2, 4, 1) 倍した図形（寸法 1 × 2 × 0.5）。
 fn cube_view(units: Units) -> DimsView {
     DimsView {
+        node: None,
         extent: Some([1.0, 2.0, 0.5]),
         shape: Some(ShapeDims {
             dims: Some(Dims::Cube {
@@ -55,6 +56,7 @@ fn cube_view(units: Units) -> DimsView {
 
 fn loaded_view() -> DimsView {
     DimsView {
+        node: None,
         extent: Some([0.5, 2.5, 1024.0]),
         shape: None,
         units: Units::default(),
@@ -195,6 +197,7 @@ fn loaded_part_shows_extent_only() {
     );
     // 境界箱が空か有限でなければ「—」。
     harness.state_mut().view = DimsView {
+        node: None,
         extent: None,
         ..loaded_view()
     };
@@ -339,6 +342,7 @@ fn cylinder_has_diameter_and_height_fields() {
         size: 1.0,
     };
     let mut harness = harness(DimsView {
+        node: None,
         extent: Some([2.0, 0.5, 2.0]),
         shape: Some(ShapeDims {
             dims: Some(Dims::Cylinder { d: 2.0, h: 0.5 }),
@@ -403,5 +407,230 @@ fn render_dims_for_visual_check() {
             .expect("描画")
             .save(dir.join(format!("{name}.png")))
             .expect("PNGの保存");
+    }
+}
+
+mod support;
+
+mod joined {
+    //! 接合: `Session` から組み立てた「寸法」を、右のパネルごと動かす。
+    use super::support;
+    use egui_kittest::kittest::Queryable;
+    use model_reviewer::command::{Command, ShapeKind};
+    use model_reviewer::session::selection_dims;
+    use model_reviewer::ui::dims::LOADED_PART;
+    use model_reviewer::ui::ids;
+    use model_reviewer_core::scene::NodeId;
+    use model_reviewer_core::shapes::Dims;
+    use model_reviewer_core::units::UnitLabel;
+
+    const SIZE: egui::Vec2 = egui::vec2(1100.0, 760.0);
+
+    fn cube_dims(session: &model_reviewer::session::Session) -> [f32; 3] {
+        match selection_dims(session)
+            .and_then(|view| view.shape)
+            .and_then(|s| s.dims)
+        {
+            Some(Dims::Cube { x, y, z }) => [x, y, z],
+            other => panic!("立方体の寸法ではない: {other:?}"),
+        }
+    }
+
+    fn type_into(
+        harness: &mut egui_kittest::Harness<'static, model_reviewer::session::Session>,
+        name: &str,
+        text: &str,
+        enter: bool,
+    ) {
+        let rect = support::widget_rect(harness, name).unwrap_or_else(|| panic!("{name} が無い"));
+        support::click(harness, rect.center());
+        harness.event(egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        harness.event(egui::Event::Text(text.to_owned()));
+        harness.step();
+        if enter {
+            harness.key_press(egui::Key::Enter);
+            harness.step();
+            harness.step();
+        }
+    }
+
+    #[test]
+    fn dims_edit_is_one_undo_step() {
+        let mut session = support::session();
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        let before = cube_dims(&session);
+        let undo_before = session.history.len();
+        let (mut harness, seen) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        seen.lock().unwrap().clear();
+        type_into(&mut harness, ids::DIMS_X, "1.5", true);
+        let commits = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::CommitLocal(_)))
+            .count();
+        assert_eq!(commits, 1, "{:?}", seen.lock().unwrap());
+        let after = cube_dims(harness.state());
+        assert!(support::near(after[0], 1.5), "{after:?}");
+        assert!(support::near(after[1], before[1]) && support::near(after[2], before[2]));
+        assert_eq!(harness.state().history.len(), undo_before + 1);
+        // 中心は動かない。
+        let center = |s: &model_reviewer::session::Session| {
+            let id = s.selection.unwrap();
+            s.doc.as_ref().unwrap().subtree_bounds(id).center()
+        };
+        let c0 = center(harness.state());
+        harness.state_mut().apply(Command::Undo);
+        let undone = cube_dims(harness.state());
+        assert!(support::near(undone[0], before[0]), "{undone:?}");
+        assert!(support::close3(center(harness.state()), c0));
+        harness.state_mut().apply(Command::Redo);
+        assert!(support::near(cube_dims(harness.state())[0], 1.5));
+
+        // 表示を mm にすると、欄は mm で受ける（250 mm = 0.25 m）。
+        harness
+            .state_mut()
+            .apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
+        harness.step();
+        type_into(&mut harness, ids::DIMS_Y, "250", true);
+        assert!(support::near(cube_dims(harness.state())[1], 0.25));
+        harness.step();
+        harness.get_by_label("250.000 mm");
+    }
+
+    #[test]
+    fn editing_a_thin_plate_in_mm_is_one_undo_step() {
+        let mut session = support::session();
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        session.apply(Command::SetDisplayUnit(Some(UnitLabel::Mm)));
+        let (mut harness, _) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        type_into(&mut harness, ids::DIMS_X, "2000", true);
+        type_into(&mut harness, ids::DIMS_Y, "0.002", true);
+        let before = cube_dims(harness.state());
+        assert!(support::near(before[0], 2.0));
+        assert!((before[1] - 2.0e-6).abs() < 1.0e-11);
+        let steps = harness.state().history.len();
+
+        type_into(&mut harness, ids::DIMS_Y, "0.003", true);
+        assert_eq!(harness.state().history.len(), steps + 1);
+        assert!((cube_dims(harness.state())[1] - 3.0e-6).abs() < 1.0e-11);
+        let mut roundoff = selection_dims(harness.state()).unwrap().shape.unwrap().trs;
+        roundoff.scale.y = roundoff.scale.y.next_up();
+        harness.state_mut().apply(Command::CommitLocal(roundoff));
+        assert_eq!(harness.state().history.len(), steps + 1);
+        harness.state_mut().apply(Command::Undo);
+        assert_eq!(cube_dims(harness.state()), before);
+    }
+
+    #[test]
+    fn dims_of_loaded_part_are_read_only() {
+        let mut session = support::session();
+        session.apply(Command::Select(Some(NodeId(0))));
+        let view = selection_dims(&session).expect("外形");
+        assert!(view.shape.is_none());
+        let extent = view.extent.unwrap();
+        assert!(extent.iter().all(|v| support::near(*v, 2.0)), "{extent:?}");
+        let (mut harness, _) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        harness.get_by_label(LOADED_PART);
+        assert!(support::widget_rect(&harness, ids::DIMS_X).is_none());
+        // 選択が無ければ「寸法」は出さない。
+        harness.state_mut().apply(Command::Select(None));
+        harness.step();
+        assert!(selection_dims(harness.state()).is_none());
+        assert!(harness.query_by_label(LOADED_PART).is_none());
+    }
+
+    #[test]
+    fn typed_text_does_not_follow_a_new_selection() {
+        let mut session = support::session();
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        let first = session.selection.unwrap();
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        let second = session.selection.unwrap();
+        session.apply(Command::Select(Some(first)));
+        let (mut harness, seen) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        let original = {
+            harness.state_mut().apply(Command::Select(Some(second)));
+            let dims = cube_dims(harness.state());
+            harness.state_mut().apply(Command::Select(Some(first)));
+            dims
+        };
+        harness.step();
+        // 1つ目の幅に打ちかけたまま、選択を2つ目へ替える（欄を離れていない）。
+        type_into(&mut harness, ids::DIMS_X, "7", false);
+        harness.state_mut().apply(Command::Select(Some(second)));
+        harness.step();
+        harness.step();
+        harness.key_press(egui::Key::Enter);
+        harness.step();
+        harness.step();
+        assert_eq!(harness.state().selection, Some(second));
+        let now = cube_dims(harness.state());
+        assert!(
+            support::near(now[0], original[0]),
+            "2つ目に当てはまった: {now:?}"
+        );
+        assert!(
+            !seen.lock().unwrap().iter().any(|c| matches!(
+                c,
+                Command::CommitLocal(trs) if (trs.scale.x - 7.0).abs() < 1.0
+                    || trs.scale.x > 5.0
+            )),
+            "打ちかけの文字が確定した"
+        );
+    }
+
+    #[test]
+    fn typed_position_does_not_follow_a_new_selection() {
+        let mut session = support::session();
+        session.apply(Command::Select(Some(NodeId(0))));
+        let (mut harness, seen) = support::harness(session, SIZE);
+        harness.step();
+        harness.step();
+        let before = harness
+            .state()
+            .doc
+            .as_ref()
+            .unwrap()
+            .node(NodeId(1))
+            .unwrap()
+            .local;
+        type_into(&mut harness, ids::INSPECTOR_POS_X, "9", false);
+        harness.state_mut().apply(Command::Select(Some(NodeId(1))));
+        harness.step();
+        harness.step();
+        harness.key_press(egui::Key::Enter);
+        harness.step();
+        harness.step();
+        let after = harness
+            .state()
+            .doc
+            .as_ref()
+            .unwrap()
+            .node(NodeId(1))
+            .unwrap()
+            .local;
+        assert_eq!(after, before, "打ちかけの位置が別の部品に当てはまった");
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::CommitLocal(_)))
+        );
     }
 }

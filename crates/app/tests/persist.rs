@@ -119,14 +119,17 @@ fn save_is_atomic_and_records_both_paths() {
     assert!(!dir.join(".review.json.tmp").exists());
     assert_eq!(std::fs::read(&glb).unwrap(), original);
     let model_ref = session.model_ref.as_ref().unwrap();
-    let absolute = PathBuf::from(&model_ref.path);
+    let absolute = &model_ref.path;
     assert!(absolute.is_absolute());
     let relative = model_ref.relative_path.as_deref().unwrap();
     let via_relative = std::fs::canonicalize(dir.join(relative)).unwrap();
     assert_eq!(via_relative, std::fs::canonicalize(&glb).unwrap());
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&review_path).unwrap()).unwrap();
-    assert_eq!(json["model"]["path"].as_str().unwrap(), model_ref.path);
+    assert_eq!(
+        json["model"]["path"].as_str().unwrap(),
+        model_ref.path.to_string_lossy()
+    );
     assert_eq!(json["model"]["relative_path"].as_str().unwrap(), relative);
 }
 

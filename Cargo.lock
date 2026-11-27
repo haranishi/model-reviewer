@@ -1850,6 +1850,7 @@ dependencies = [
  "model-reviewer-core",
  "model-reviewer-gltf",
  "model-reviewer-render",
+ "model-reviewer-stl",
  "model-reviewer-testdata",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -1901,6 +1902,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "model-reviewer-core",
+ "model-reviewer-testdata",
  "thiserror 2.0.21",
 ]
 

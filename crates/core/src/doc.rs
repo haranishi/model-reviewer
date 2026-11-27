@@ -190,6 +190,8 @@ pub enum DocError {
 pub struct Document {
     base: Arc<Model>,
     added: Vec<Arc<Primitive>>,
+    /// `added` と同じ並びで、足した図形の作り方を持つ。記録の無い形状は `None`。
+    added_specs: Vec<Option<ShapeSpec>>,
     nodes: Vec<DocNode>,
     draws: Vec<Draw>,
     index_of: HashMap<NodeKey, u32>,
@@ -247,6 +249,7 @@ impl Document {
             next_key: model.nodes.len() as u64,
             base,
             added: Vec::new(),
+            added_specs: Vec::new(),
             nodes,
             draws,
             index_of,
@@ -605,21 +608,23 @@ impl Document {
     /// 形状を足して番号を返す。形状は作業中に消さない。
     pub fn add_primitive(&mut self, prim: Arc<Primitive>) -> PrimId {
         self.added.push(prim);
+        self.added_specs.push(None);
         PrimId((self.base.primitives.len() + self.added.len() - 1) as u32)
     }
 
     /// 図形の形状を足して番号を返す。どの図形をどの大きさで作ったかを覚える（`shape_spec`）。
     pub fn add_shape_primitive(&mut self, prim: Arc<Primitive>, spec: ShapeSpec) -> PrimId {
-        // 契約の先置き。記録は後の作業で書く。
-        let _ = spec;
-        self.add_primitive(prim)
+        let id = self.add_primitive(prim);
+        if let Some(slot) = self.added_specs.last_mut() {
+            *slot = Some(spec);
+        }
+        id
     }
 
     /// 足した図形の作り方。読み込んだ形状と、記録の無い形状は `None`。
     pub fn shape_spec(&self, prim: PrimId) -> Option<ShapeSpec> {
-        // 契約の先置き。記録は後の作業で書く。
-        let _ = prim;
-        None
+        let index = (prim.0 as usize).checked_sub(self.base.primitives.len())?;
+        self.added_specs.get(index).copied().flatten()
     }
 
     /// 使っていない鍵を1つ取る。

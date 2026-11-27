@@ -70,11 +70,10 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         return;
     };
     let destination = parent.join(file_name);
-    let model_path = PathBuf::from(&model_ref.path);
     // レビューの保存先に、開いたGLBやいまの作業対象のGLBを選ぶと、モデルが消える。
     // 別名のリンク経由も含めて断る（書き出しの `forbidden` と同じ判定）。
     let model_file = |candidate: &Path| {
-        crate::exporter::same_file(candidate, &model_path)
+        crate::exporter::same_file(candidate, &model_ref.path)
             || session
                 .opened_files
                 .iter()
@@ -88,10 +87,11 @@ pub fn save_review(session: &mut Session, path: PathBuf) {
         );
         return;
     }
-    let model_abs = std::fs::canonicalize(&model_path).unwrap_or(model_path);
     let mut stamped = model_ref;
-    stamped.path = model_abs.display().to_string();
-    stamped.relative_path = Some(relative_from(&parent, &model_abs));
+    if let Ok(absolute) = std::fs::canonicalize(&stamped.path) {
+        stamped.path = absolute;
+    }
+    stamped.relative_path = Some(relative_from(&parent, &stamped.path));
     let written = match session.doc.as_ref() {
         Some(doc) => review_file::to_json(&review, doc, &stamped),
         None => return,
@@ -174,7 +174,19 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         }
     };
     let expected = identity_of(&file);
+    // STL は同じファイルでも単位の仮定が違えば部品の大きさが違う。レビューの単位（無ければ mm）と
+    // 開いている単位が違うときは、その場で当てはめず、レビューの単位で開き直す（要件8.5）。
+    let same_unit = match session.source_kind {
+        super::SourceKind::Glb => true,
+        super::SourceKind::Stl { unit } => {
+            file.model
+                .stl_unit
+                .unwrap_or(model_reviewer_core::units::UnitLabel::Mm)
+                == unit
+        }
+    };
     let same_loaded = session.model.is_some()
+        && same_unit
         && session
             .model_ref
             .as_ref()
@@ -190,7 +202,7 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
         if let Some(current) = session
             .model_ref
             .as_ref()
-            .map(|model_ref| PathBuf::from(&model_ref.path))
+            .map(|model_ref| model_ref.path.clone())
             .filter(|candidate| candidate.is_file())
         {
             existing.push(current);
@@ -367,8 +379,15 @@ fn apply_in_place(session: &mut Session, file: &ReviewFile) {
             // 足した図形の形状はGPUと当たり判定の索引に送ってある。番号をそろえるため、同じ順に
             // 引き継ぐ（部品は戻すが、形状の番号は作業の間ずっと同じ物を指す）。
             if let Some(old) = session.doc.as_ref() {
-                for prim in old.added_primitives() {
-                    doc.add_primitive(std::sync::Arc::clone(prim));
+                let base = old.base().primitives.len() as u32;
+                for (index, prim) in old.added_primitives().iter().enumerate() {
+                    let id = model_reviewer_core::scene::PrimId(base + index as u32);
+                    let prim = std::sync::Arc::clone(prim);
+                    // 図形の作り方の記録も引き継ぐ（同じ形状を指す部品の寸法を直せるように）。
+                    match old.shape_spec(id) {
+                        Some(spec) => doc.add_shape_primitive(prim, spec),
+                        None => doc.add_primitive(prim),
+                    };
                 }
             }
             doc

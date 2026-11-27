@@ -38,20 +38,105 @@ pub enum Dims {
 pub const DIM_MIN: f32 = 1.0e-6;
 pub const DIM_MAX: f32 = 1.0e9;
 
+/// 球の3軸と円柱の X・Z がそろっているとみなす相対差の上限。
+const UNIFORM_REL_TOL: f64 = 1.0e-4;
+
 /// 大きさ（部品の中の3軸の拡大）から寸法を求める。球の3軸、円柱の X と Z が相対 1e-4 以内で
 /// そろっていなければ `None`。
 pub fn dims_of(spec: ShapeSpec, scale: Vec3) -> Option<Dims> {
-    // 契約の先置き。中身は後の作業で書く。
-    let _ = (spec, scale);
-    None
+    if !positive_finite(spec.size) || !scale.is_finite() {
+        return None;
+    }
+    let dim = |component: f32| -> Option<f32> {
+        if !positive_finite(component) {
+            return None;
+        }
+        let value = spec.size * component;
+        positive_finite(value).then_some(value)
+    };
+    match spec.kind {
+        ShapeKind::Cube => Some(Dims::Cube {
+            x: dim(scale.x)?,
+            y: dim(scale.y)?,
+            z: dim(scale.z)?,
+        }),
+        ShapeKind::Sphere => {
+            let d = dim(scale.x)?;
+            let _ = (dim(scale.y)?, dim(scale.z)?);
+            if !uniform_triple(scale.x, scale.y, scale.z) {
+                return None;
+            }
+            Some(Dims::Sphere { d })
+        }
+        ShapeKind::Cylinder => {
+            let d = dim(scale.x)?;
+            let h = dim(scale.y)?;
+            let _ = dim(scale.z)?;
+            if !uniform_pair(scale.x, scale.z) {
+                return None;
+            }
+            Some(Dims::Cylinder { d, h })
+        }
+        ShapeKind::Plane => Some(Dims::Plane {
+            x: dim(scale.x)?,
+            z: dim(scale.z)?,
+        }),
+    }
 }
 
 /// 寸法から大きさを求める。図形の種類が合わない、有限でない、`DIM_MIN`〜`DIM_MAX` の外なら
 /// `None`。平面の Y は `keep_y` をそのまま使う。
 pub fn scale_for(spec: ShapeSpec, dims: Dims, keep_y: f32) -> Option<Vec3> {
-    // 契約の先置き。中身は後の作業で書く。
-    let _ = (spec, dims, keep_y);
-    None
+    if !positive_finite(spec.size) {
+        return None;
+    }
+    let ratio = |value: f32| -> Option<f32> {
+        if !valid_dim(value) {
+            return None;
+        }
+        let factor = value / spec.size;
+        positive_finite(factor).then_some(factor)
+    };
+    match (spec.kind, dims) {
+        (ShapeKind::Cube, Dims::Cube { x, y, z }) => {
+            Some(Vec3::new(ratio(x)?, ratio(y)?, ratio(z)?))
+        }
+        (ShapeKind::Sphere, Dims::Sphere { d }) => Some(Vec3::splat(ratio(d)?)),
+        (ShapeKind::Cylinder, Dims::Cylinder { d, h }) => {
+            let xz = ratio(d)?;
+            let y = ratio(h)?;
+            Some(Vec3::new(xz, y, xz))
+        }
+        (ShapeKind::Plane, Dims::Plane { x, z }) => {
+            if !keep_y.is_finite() {
+                return None;
+            }
+            Some(Vec3::new(ratio(x)?, keep_y, ratio(z)?))
+        }
+        _ => None,
+    }
+}
+
+fn positive_finite(value: f32) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+fn valid_dim(value: f32) -> bool {
+    value.is_finite() && (DIM_MIN..=DIM_MAX).contains(&value)
+}
+
+fn uniform_pair(a: f32, b: f32) -> bool {
+    let (a, b) = (f64::from(a), f64::from(b));
+    let max = a.max(b);
+    let min = a.min(b);
+    max - min <= max * UNIFORM_REL_TOL
+}
+
+fn uniform_triple(a: f32, b: f32, c: f32) -> bool {
+    let (a, b, c) = (f64::from(a), f64::from(b), f64::from(c));
+    let max = a.max(b).max(c);
+    let min = a.min(b).min(c);
+    max - min <= max * UNIFORM_REL_TOL
 }
 
 /// 足した図形の色（中間の灰色1色）。
@@ -420,5 +505,143 @@ mod tests {
         assert_eq!(name_ja(ShapeKind::Sphere), "球");
         assert_eq!(name_ja(ShapeKind::Cylinder), "円柱");
         assert_eq!(name_ja(ShapeKind::Plane), "平面");
+    }
+
+    fn dims_close(actual: Dims, expected: Dims) {
+        let values = |dims: Dims| -> Vec<f32> {
+            match dims {
+                Dims::Cube { x, y, z } => vec![0.0, x, y, z],
+                Dims::Sphere { d } => vec![1.0, d],
+                Dims::Cylinder { d, h } => vec![2.0, d, h],
+                Dims::Plane { x, z } => vec![3.0, x, z],
+            }
+        };
+        let (a, e) = (values(actual), values(expected));
+        assert_eq!(a.len(), e.len(), "{actual:?} vs {expected:?}");
+        assert_eq!(a[0], e[0], "{actual:?} vs {expected:?}");
+        for (a, e) in a.iter().zip(&e).skip(1) {
+            assert!(
+                (a - e).abs() <= e.abs() * 1.0e-5,
+                "{actual:?} vs {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dims_round_trip_per_kind() {
+        let cases = [
+            Dims::Cube {
+                x: 0.02,
+                y: 0.03,
+                z: 0.04,
+            },
+            Dims::Sphere { d: 12.5 },
+            Dims::Cylinder { d: 0.5, h: 3.0 },
+            Dims::Plane { x: 250.0, z: 0.75 },
+        ];
+        for (kind, dims) in ALL.into_iter().zip(cases) {
+            for size in [0.1_f32, 1.0, 10.0] {
+                let spec = ShapeSpec { kind, size };
+                let scale = scale_for(spec, dims, 1.0).expect("範囲の中の寸法");
+                assert!(scale.is_finite() && scale.min_element() > 0.0);
+                let back = dims_of(spec, scale).expect("そろった大きさ");
+                dims_close(back, dims);
+            }
+        }
+        // 寸法は spec.size × 大きさ。円柱は直径が X、高さが Y。
+        let spec = ShapeSpec {
+            kind: ShapeKind::Cylinder,
+            size: 2.0,
+        };
+        dims_close(
+            dims_of(spec, Vec3::new(1.5, 4.0, 1.5)).unwrap(),
+            Dims::Cylinder { d: 3.0, h: 8.0 },
+        );
+        // 平面の Y は keep_y のまま。
+        let plane = ShapeSpec {
+            kind: ShapeKind::Plane,
+            size: 1.0,
+        };
+        let scale = scale_for(plane, Dims::Plane { x: 2.0, z: 3.0 }, 7.0).unwrap();
+        assert!((scale.y - 7.0).abs() <= 1.0e-6);
+        dims_close(
+            dims_of(plane, Vec3::new(2.0, 0.01, 3.0)).unwrap(),
+            Dims::Plane { x: 2.0, z: 3.0 },
+        );
+    }
+
+    #[test]
+    fn uneven_sphere_has_no_dims() {
+        let sphere = ShapeSpec {
+            kind: ShapeKind::Sphere,
+            size: 1.0,
+        };
+        assert!(dims_of(sphere, Vec3::splat(2.0)).is_some());
+        assert_eq!(dims_of(sphere, Vec3::new(2.0, 2.0, 2.5)), None);
+        assert_eq!(dims_of(sphere, Vec3::new(1.0, 1.5, 1.0)), None);
+        let cylinder = ShapeSpec {
+            kind: ShapeKind::Cylinder,
+            size: 1.0,
+        };
+        // 高さ（Y）は自由。X と Z がそろっていないと None。
+        assert!(dims_of(cylinder, Vec3::new(2.0, 9.0, 2.0)).is_some());
+        assert_eq!(dims_of(cylinder, Vec3::new(2.0, 9.0, 3.0)), None);
+        // 立方体と平面は軸ごとに違ってよい。
+        let cube = ShapeSpec {
+            kind: ShapeKind::Cube,
+            size: 1.0,
+        };
+        assert!(dims_of(cube, Vec3::new(1.0, 2.0, 3.0)).is_some());
+        // 鏡に映した（負の）大きさ、0、有限でない値は寸法にしない。
+        assert_eq!(dims_of(cube, Vec3::new(-1.0, 1.0, 1.0)), None);
+        assert_eq!(dims_of(cube, Vec3::new(0.0, 1.0, 1.0)), None);
+        assert_eq!(dims_of(cube, Vec3::new(f32::NAN, 1.0, 1.0)), None);
+        assert_eq!(dims_of(sphere, Vec3::splat(f32::INFINITY)), None);
+    }
+
+    #[test]
+    fn out_of_range_dims_are_rejected() {
+        let cube = ShapeSpec {
+            kind: ShapeKind::Cube,
+            size: 1.0,
+        };
+        let cube_with = |x: f32| Dims::Cube { x, y: 1.0, z: 1.0 };
+        for bad in [
+            0.0,
+            -1.0,
+            DIM_MIN * 0.5,
+            DIM_MAX * 2.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            assert_eq!(scale_for(cube, cube_with(bad), 1.0), None, "{bad}");
+        }
+        assert!(scale_for(cube, cube_with(DIM_MIN * 2.0), 1.0).is_some());
+        assert!(scale_for(cube, cube_with(DIM_MAX * 0.5), 1.0).is_some());
+        let sphere = ShapeSpec {
+            kind: ShapeKind::Sphere,
+            size: 1.0,
+        };
+        assert_eq!(scale_for(sphere, Dims::Sphere { d: -2.0 }, 1.0), None);
+        assert_eq!(
+            scale_for(sphere, Dims::Cylinder { d: 1.0, h: 1.0 }, 1.0),
+            None,
+            "図形の種類が合わない"
+        );
+        let plane = ShapeSpec {
+            kind: ShapeKind::Plane,
+            size: 1.0,
+        };
+        assert_eq!(
+            scale_for(plane, Dims::Plane { x: 1.0, z: 1.0 }, f32::NAN),
+            None
+        );
+        let broken = ShapeSpec {
+            kind: ShapeKind::Cube,
+            size: 0.0,
+        };
+        assert_eq!(scale_for(broken, cube_with(1.0), 1.0), None);
+        assert_eq!(dims_of(broken, Vec3::ONE), None);
     }
 }

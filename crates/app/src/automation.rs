@@ -128,7 +128,11 @@ struct PathStep {
 
 #[derive(Clone, Debug)]
 enum Op {
-    OpenModel(PathStep),
+    /// `stl_unit` は STL の単位の仮定（省略は mm）。GLB では使わない。
+    OpenModel {
+        path: PathStep,
+        stl_unit: Option<model_reviewer_core::units::UnitLabel>,
+    },
     LoadReview(PathStep),
     SaveReview(PathStep),
     ExportGlb(PathStep),
@@ -193,7 +197,7 @@ enum Op {
 impl Op {
     fn name(&self) -> &'static str {
         match self {
-            Self::OpenModel(_) => "open_model",
+            Self::OpenModel { .. } => "open_model",
             Self::LoadReview(_) => "load_review",
             Self::SaveReview(_) => "save_review",
             Self::ExportGlb(_) => "export_glb",
@@ -541,8 +545,17 @@ impl Automation {
         op: Op,
     ) -> Result<(), String> {
         match op {
-            Op::OpenModel(path) => {
-                session.apply(Command::OpenModel(self.resolve(&path)?));
+            Op::OpenModel { path, stl_unit } => {
+                let path = self.resolve(&path)?;
+                match stl_unit {
+                    None => session.apply(Command::OpenModel(path)),
+                    Some(unit) => session.open_model_with(
+                        path,
+                        crate::loader::LoadOptions {
+                            stl_unit: Some(unit),
+                        },
+                    ),
+                }
                 self.mark_ok();
             }
             Op::LoadReview(path) => {

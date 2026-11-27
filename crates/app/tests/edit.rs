@@ -26,7 +26,7 @@ fn sample_session() -> Session {
     session.review = Some(ReviewState::new(&model));
     session.model_ref = Some(ModelRef {
         file_name: "sample.glb".to_owned(),
-        path: "sample.glb".to_owned(),
+        path: "sample.glb".into(),
         relative_path: None,
         identity: ModelIdentity::from_bytes(&bytes),
         stl_unit: None,

@@ -1,6 +1,6 @@
 # model-reviewer
 
-A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. The file you opened is never overwritten.
+A small desktop app, written in Rust, for checking 3D models and making simple changes. Open a self-contained GLB or an STL file, move, rotate and scale parts, add simple shapes, duplicate or delete parts, measure distances, pin notes to surfaces, and export the result as a new GLB. The file you opened is never overwritten.
 
 **Status: early version (0.1.0).** The window has been run only on macOS (Apple Silicon). The user interface is in Japanese. Vertices and faces cannot be edited yet.
 
@@ -21,16 +21,16 @@ cargo run --release -p model-reviewer
 cargo run --release -p model-reviewer -- assets/samples/review-sample.glb
 ```
 
-Arguments: `[GLB or review JSON]`, `--script` and `--out` for scripted runs, and `--log-metrics` to print performance values on exit. The sample model was generated for this project ([how to regenerate it](assets/samples/README.md)).
+Arguments: `[GLB, STL or review JSON]`, `--script` and `--out` for scripted runs, and `--log-metrics` to print performance values on exit. The sample models (a GLB and a 20 x 30 x 40 mm STL box) were generated for this project ([how to regenerate it](assets/samples/README.md)).
 
 ## What it does
 
 - **View**: floor grid and axes, an orientation cube, perspective or orthographic projection, and four display modes (shaded, shaded with edges, wireframe, see-through).
 - **Move**: select a part, then drag a handle or type values in the transform panel. Move and rotate follow the floor axes; scale follows the part's own axes. Undo and redo.
-- **Add and remove**: add a box, sphere, cylinder or plane; duplicate or delete a part together with its children.
+- **Add and remove**: add a box, sphere, cylinder or plane and set its dimensions (in mm, for example) in the Dimensions panel; selecting a part also shows its overall width, height and depth; duplicate or delete a part together with its children.
 - **Measure**: click two points to get the distance and the X, Y and Z differences. The pointer snaps to corners and edges (X turns it off). Measurements are not saved.
 - **Section**: cut the model with one plane perpendicular to X, Y or Z to look inside. Drag the arrow or type the position.
-- **Units**: the status bar switches the shown unit between the file unit, mm, cm and m. The file unit is an assumption (GLB is read as metres).
+- **Units**: the status bar switches the shown unit between the file unit, mm, cm and m. The file unit is an assumption (GLB is read as metres; STL is assumed to be in mm, which the status bar can change).
 - **Review**: save notes, hidden parts and named views to a separate review JSON file.
 - **Export**: write a new GLB that keeps the original contents (textures, animations, unknown extensions) and changes only what you edited.
 
@@ -54,9 +54,9 @@ Arguments: `[GLB or review JSON]`, `--script` and `--out` for scripted runs, and
 
 No middle button is needed. On Windows and Linux use Ctrl instead of Cmd. Single-letter keys are ignored while you type in a text field.
 
-## Supported GLB and export
+## Supported GLB, STL and export
 
-The app reads GLB files whose geometry is inside the file (BIN chunk), with uncompressed triangle meshes. Textures, vertex colors and animations are accepted but shown in a simplified way. **Deleting a part only removes it from the scene: its geometry data stays in the exported file** (the export result tells you how many). Details: [docs/glb.md](docs/glb.md) (Japanese).
+The app reads GLB files whose geometry is inside the file (BIN chunk), with uncompressed triangle meshes. Textures, vertex colors and animations are accepted but shown in a simplified way. **Deleting a part only removes it from the scene: its geometry data stays in the exported file** (the export result tells you how many). Details: [docs/glb.md](docs/glb.md) (Japanese). Binary and ASCII STL files open as one part; exporting one writes a GLB that reads in metres (the app never writes STL). Details: [docs/stl.md](docs/stl.md) (Japanese).
 
 ## Review JSON
 

@@ -3,8 +3,9 @@ use std::path::{Component, Path};
 use std::process::ExitCode;
 
 use model_reviewer_testdata::{
-    MESH_COUNT, NODE_COUNT, PLACED_TRIANGLES, PRIMITIVE_COUNT, UNIQUE_TRIANGLES,
-    nested_descendants, placed_triangles, sample_glb, stress_glb, stress_nested_glb,
+    MESH_COUNT, NODE_COUNT, PLACED_TRIANGLES, PRIMITIVE_COUNT, STL_SAMPLE_TRIANGLES,
+    STL_SAMPLE_VERTICES, UNIQUE_TRIANGLES, nested_descendants, placed_triangles, sample_glb,
+    stl_sample, stl_stress, stress_glb, stress_nested_glb,
 };
 
 fn main() -> ExitCode {
@@ -86,12 +87,59 @@ fn run() -> Result<(), Exit> {
             println!("bytes {}", bytes.len());
             Ok(())
         }
+        "stl-sample" => {
+            let path = args
+                .next()
+                .unwrap_or_else(|| "assets/samples/review-sample.stl".to_owned());
+            if args.next().is_some() {
+                return Err(Exit::Usage(usage()));
+            }
+            let bytes = stl_sample();
+            write_file(&path, &bytes)?;
+            println!("triangles {STL_SAMPLE_TRIANGLES}");
+            println!("vertices {STL_SAMPLE_VERTICES}");
+            println!("bytes {}", bytes.len());
+            Ok(())
+        }
+        "stl-stress" => {
+            let triangles = args
+                .next()
+                .ok_or(Exit::Usage(usage()))?
+                .parse::<u32>()
+                .map_err(|_| Exit::Usage(usage()))?;
+            if triangles == 0 || triangles > STL_STRESS_MAX_TRIANGLES {
+                return Err(Exit::Usage(
+                    "stl-stress の三角形数は 1 から 20000000 までです",
+                ));
+            }
+            let ascii = match args.next().as_deref() {
+                Some("binary") => false,
+                Some("ascii") => true,
+                _ => return Err(Exit::Usage(usage())),
+            };
+            let path = args
+                .next()
+                .unwrap_or_else(|| "target/stress.stl".to_owned());
+            if args.next().is_some() || !is_under_target(&path) {
+                return Err(Exit::Usage(
+                    "stl-stress の出力は target/ 以下の相対パスだけです",
+                ));
+            }
+            let bytes = stl_stress(triangles, ascii);
+            write_file(&path, &bytes)?;
+            println!("triangles {triangles}");
+            println!("bytes {}", bytes.len());
+            Ok(())
+        }
         _ => Err(Exit::Usage(usage())),
     }
 }
 
+/// 重い STL の三角形の上限（バイナリで約1GB）。
+const STL_STRESS_MAX_TRIANGLES: u32 = 20_000_000;
+
 fn usage() -> &'static str {
-    "使い方: model-reviewer-testdata sample [出力パス]\n       model-reviewer-testdata stress <部品数> <三角形数> [target/ 以下のパス]\n       model-reviewer-testdata stress-nested <部品数> <三角形数> [target/ 以下のパス]\n         （根の下に、部品数の半分を子孫に持つまとめ役を置く。部品数は 4 以上）"
+    "使い方: model-reviewer-testdata sample [出力パス]\n       model-reviewer-testdata stress <部品数> <三角形数> [target/ 以下のパス]\n       model-reviewer-testdata stress-nested <部品数> <三角形数> [target/ 以下のパス]\n         （根の下に、部品数の半分を子孫に持つまとめ役を置く。部品数は 4 以上）\n       model-reviewer-testdata stl-sample [出力パス]\n       model-reviewer-testdata stl-stress <三角形数> <binary|ascii> [target/ 以下のパス]"
 }
 
 fn is_under_target(path: &str) -> bool {

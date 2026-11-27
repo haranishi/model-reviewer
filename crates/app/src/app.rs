@@ -401,7 +401,9 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
     match command {
         Command::OpenModelDialog if session.is_exporting() => Some(Command::OpenModelDialog),
         Command::OpenModelDialog => rfd::FileDialog::new()
+            .add_filter("GLB・STL", &["glb", "stl", "STL"])
             .add_filter("GLB", &["glb"])
+            .add_filter("STL", &["stl", "STL"])
             .pick_file()
             .map(Command::OpenModel),
         Command::SaveReviewDialog if session.doc_unsaved() || session.is_exporting() => {
@@ -418,16 +420,29 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .map(Command::LoadReview),
         Command::RelinkModelDialog if session.is_exporting() => Some(Command::RelinkModelDialog),
         Command::RelinkModelDialog => rfd::FileDialog::new()
-            .add_filter("GLB", &["glb"])
+            .add_filter("GLB・STL", &["glb", "stl", "STL"])
             .pick_file()
             .map(Command::RelinkModel),
         Command::ExportGlbDialog if session.model.is_none() || session.edits_locked() => {
             Some(Command::ExportGlbDialog)
         }
-        Command::ExportGlbDialog => rfd::FileDialog::new()
-            .add_filter("GLB", &["glb"])
-            .save_file()
-            .map(Command::ExportGlb),
+        Command::ExportGlbDialog => {
+            let mut dialog = rfd::FileDialog::new().add_filter("GLB", &["glb"]);
+            if let Some(name) = export_file_name(session) {
+                dialog = dialog.set_file_name(name);
+            }
+            dialog.save_file().map(Command::ExportGlb)
+        }
         other => Some(other),
     }
+}
+
+/// 書き出しの保存先の既定の名前。STL を開いているときは「<元の名前>.glb」。GLB は既定の名前を
+/// 付けない（開いたファイルと同じ名前になり、そこへは書き出せないため）。
+pub fn export_file_name(session: &Session) -> Option<String> {
+    if !matches!(session.source_kind, crate::session::SourceKind::Stl { .. }) {
+        return None;
+    }
+    let path = &session.model_ref.as_ref()?.path;
+    Some(format!("{}.glb", crate::loader::stl_part_name(path)))
 }

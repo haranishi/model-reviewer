@@ -22,7 +22,7 @@ use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
 use crate::exporter::{ExportHandle, ExportHooks, ExportStage};
-use crate::loader::{self, LoadEvent, LoadHandle, LoadHooks, LoadPhase, LoadedModel};
+use crate::loader::{self, LoadEvent, LoadHandle, LoadHooks, LoadOptions, LoadPhase, LoadedModel};
 use crate::metrics::Metrics;
 use crate::ui::ids;
 
@@ -44,7 +44,7 @@ pub use dims::{DimsView, ShapeDims, selection_dims};
 pub use edit::{
     GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
 };
-pub use export::{export_scene, note_ja};
+pub use export::{export_scene, note_ja, stl_export_note};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
 pub use pick::ray_hit;
@@ -69,7 +69,7 @@ pub enum SourceKind {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Pending {
-    OpenModel(PathBuf),
+    OpenModel(PathBuf, LoadOptions),
     LoadReview(PathBuf),
     Quit,
 }
@@ -285,7 +285,7 @@ struct Incoming {
     doc: Document,
     review: Option<ReviewState>,
     model_ref: ModelRef,
-    resolved_path: PathBuf,
+    source_kind: SourceKind,
     source_path: Option<PathBuf>,
     forbid_on_commit: bool,
     file_bytes: u64,
@@ -346,7 +346,7 @@ impl Session {
                     self.status_text = "モデルを開くと書き出せます".to_owned();
                 }
             }
-            Command::OpenModel(path) => open::open_guarded(self, path),
+            Command::OpenModel(path) => open::open_guarded(self, path, LoadOptions::default()),
             Command::LoadReview(path) => open::review_guarded(self, path),
             Command::DroppedFiles(paths) => open::dropped(self, paths),
             Command::SaveReview(path) => persist::save_review(self, path),
@@ -594,6 +594,16 @@ impl Session {
         open::open_launch(self, path);
     }
 
+    /// `Command::OpenModel` と同じ（未保存の確認を通る）。STL の単位の仮定を指定できる
+    /// （自動操作の `open_model` の `stl_unit`）。
+    pub fn open_model_with(&mut self, path: PathBuf, options: LoadOptions) {
+        if self.transform.is_some() {
+            edit::cancel_transform(self);
+        }
+        open::open_guarded(self, path, options);
+        snap::set_preview(self, None);
+    }
+
     pub fn set_viewport(&mut self, size_px: [u32; 2]) {
         if self.viewport_px != size_px {
             self.viewport_px = size_px;
@@ -744,7 +754,7 @@ impl Session {
         self.dialog = None;
         self.discard_bypass = true;
         match self.pending.take() {
-            Some(Pending::OpenModel(path)) => open::open_model(self, path),
+            Some(Pending::OpenModel(path, options)) => open::open_model(self, path, options),
             Some(Pending::LoadReview(path)) => open::load_review(self, path),
             Some(Pending::Quit) => {
                 self.discard_bypass = false;
@@ -811,12 +821,23 @@ impl Session {
         }
     }
 
-    pub(super) fn start_model_load(&mut self, path: PathBuf) {
-        self.start_model_load_with_expected(path, None, true);
+    pub(super) fn start_model_load(&mut self, path: PathBuf, options: LoadOptions) {
+        self.start_model_load_with_expected(path, None, true, options);
     }
 
     pub(super) fn start_model_load_for_restore(&mut self, path: PathBuf, expected: ModelIdentity) {
-        self.start_model_load_with_expected(path, Some(expected), true);
+        let options = self.restore_options();
+        self.start_model_load_with_expected(path, Some(expected), true, options);
+    }
+
+    /// 復元のときの読み込みの指定。レビューの `stl_unit`（無ければ mm）で STL を開く（要件8.5）。
+    fn restore_options(&self) -> LoadOptions {
+        LoadOptions {
+            stl_unit: self
+                .restore
+                .as_ref()
+                .and_then(|pending| pending.file.model.stl_unit),
+        }
     }
 
     /// 書き出したファイルへのレビュー復元（未書き出し編集を破棄して開き直す場合）。
@@ -826,7 +847,8 @@ impl Session {
         path: PathBuf,
         expected: ModelIdentity,
     ) {
-        self.start_model_load_with_expected(path, Some(expected), false);
+        let options = self.restore_options();
+        self.start_model_load_with_expected(path, Some(expected), false, options);
     }
 
     fn start_model_load_with_expected(
@@ -834,6 +856,7 @@ impl Session {
         path: PathBuf,
         expected_identity: Option<ModelIdentity>,
         forbid_on_commit: bool,
+        options: LoadOptions,
     ) {
         self.generation = self.generation.wrapping_add(1);
         if let Some(active) = self.loader.take() {
@@ -867,6 +890,7 @@ impl Session {
             generation,
             path,
             expected_identity,
+            options,
             hooks,
             ctx,
         ));
@@ -983,7 +1007,7 @@ impl Session {
             doc,
             review,
             model_ref: loaded.model_ref,
-            resolved_path: loaded.resolved_path,
+            source_kind: loaded.source_kind,
             source_path,
             forbid_on_commit,
             file_bytes: loaded.file_bytes,
@@ -1142,7 +1166,7 @@ impl Session {
             if let Some(source) = incoming.source_path.as_deref() {
                 self.remember_opened_file(source);
             }
-            self.remember_opened_file(&incoming.resolved_path);
+            self.remember_opened_file(&incoming.model_ref.path);
         }
         self.exported_since_load = false;
         self.export_error = None;
@@ -1163,9 +1187,16 @@ impl Session {
         self.snap_preview = None;
         self.snap_rest_until = None;
         section::reset(self);
-        // GLB を開くと、ファイルの単位は m、表示は「ファイルと同じ」（要件7.5）。
-        self.source_kind = SourceKind::Glb;
-        self.units = Units::default();
+        // GLB を開くと、ファイルの単位は m、表示は「ファイルと同じ」（要件7.5）。STL は部品の大きさで
+        // メートルに合わせてあるので、シーンの単位は m、表示は STL の単位の仮定（要件7.6）。
+        self.source_kind = incoming.source_kind;
+        self.units = match incoming.source_kind {
+            SourceKind::Glb => Units::default(),
+            SourceKind::Stl { unit } => Units {
+                source: UnitLabel::M,
+                display: Some(unit),
+            },
+        };
         self.recount_triangles();
         self.reset_history();
         self.discard_bypass = false;
@@ -1241,10 +1272,29 @@ impl Session {
     }
 }
 
-/// STL の単位の仮定を替える（同じファイルを開き直す）。
+/// STL の単位の仮定を替える（要件7.7）。同じファイルを新しい単位で開き直す。別のモデルを開くときと
+/// 同じ経路（書き出し中は断る・未保存の確認・読み込み中の表示・失敗しても前のモデルが残る）を通す。
 fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
-    // 契約の先置き。中身は接合の作業で書く。
-    let _ = (session, unit);
+    let SourceKind::Stl { unit: current } = session.source_kind else {
+        return;
+    };
+    if current == unit {
+        return;
+    }
+    if session.is_loading_replacement() {
+        session.block_edit_if_locked();
+        return;
+    }
+    let Some(model_ref) = session.model_ref.as_ref() else {
+        return;
+    };
+    open::open_guarded(
+        session,
+        model_ref.path.clone(),
+        LoadOptions {
+            stl_unit: Some(unit),
+        },
+    );
 }
 
 /// 変形の途中に届いたら、先に変形をやめる操作。視点の操作は、ハンドルのドラッグのときだけ
@@ -1397,20 +1447,20 @@ mod tests {
     use model_reviewer_core::scene::NodeId;
     use model_reviewer_testdata::{inputs, sample_glb};
 
-    use super::{PendingRestore, Session};
+    use super::{PendingRestore, Session, SourceKind};
 
     fn loaded_model(name: &str, bytes: &[u8], generation: u64) -> LoadedModel {
         LoadedModel {
             generation,
             model: Arc::new(model_reviewer_gltf::load_glb(bytes).unwrap()),
-            resolved_path: PathBuf::from(name),
             model_ref: ModelRef {
                 file_name: name.to_owned(),
-                path: name.to_owned(),
+                path: PathBuf::from(name),
                 relative_path: None,
                 identity: ModelIdentity::from_bytes(bytes),
                 stl_unit: None,
             },
+            source_kind: SourceKind::Glb,
             file_bytes: bytes.len() as u64,
             read: Duration::ZERO,
             identity: Duration::ZERO,

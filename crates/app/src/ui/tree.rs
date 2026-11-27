@@ -65,10 +65,12 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) -> usi
     };
     let stride = ROW_H + ui.spacing().item_spacing.y;
     let content_h = (stride * total as f32 - ui.spacing().item_spacing.y).max(0.0);
-    let viewport_h = if mem.viewport_h > 1.0 {
-        mem.viewport_h
-    } else {
+    // 一覧の高さは、このフレームの残りの高さで決まる（`auto_shrink` なし）。前のフレームの値を
+    // 使うと、選ぶと同時に下の「寸法」が出て一覧が縮んだとき、選んだ行が隠れたままになる。
+    let viewport_h = if ui.available_height() > 1.0 {
         ui.available_height()
+    } else {
+        mem.viewport_h
     };
     let mut area = egui::ScrollArea::vertical()
         .id_salt("parts.rows")

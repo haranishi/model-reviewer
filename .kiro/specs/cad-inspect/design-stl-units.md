@@ -49,7 +49,7 @@ pub const STL_COLOR: [f32; 4] = [0.72, 0.72, 0.72, 1.0];   pub const COORD_LIMIT
 - **バイナリ**: 三角形1つは50バイト。法線の12バイトを飛ばし、`f32` を9個読み、付属の2バイトを飛ばす。確保する量は「実際に収まる三角形の数」で決める（要件6.2）。
 - **ASCII**: 行に分け（`\n`・`\r\n`・`\r`）、行を空白で語に分ける。キーワードは大文字小文字を区別しない。`solid` の行は名前ごと読み飛ばす。`facet normal` の3つの数は、数として読めることだけ確かめる。`outer loop` の中の `vertex` が3つでなければ `Syntax`。面の途中や `endsolid` の前でファイルが終われば `Truncated`。2つ目以降の `solid` は同じ部品に足し、数を警告にする。
 - **数の検査**: 座標が有限でない、または絶対値が `COORD_LIMIT` を超えたら `BadNumber`。Rust の `f32` の文字列の読み取りは `nan`・`inf`・`infinity` と、大きすぎる数（無限大になる）を成功として返す。**読めた後に必ず有限かを見る**（小さなプログラムで確かめた。試験でも固定する）。上限を 1e18 にしたのは、長さの2乗が `f32` で無限大にならない範囲に収めるためである。
-- **頂点をまとめる**（`weld.rs`）: 3つの成分のビット（`-0.0` は `0.0` にしてから）を鍵にした表で、同じ位置の頂点を1つにする。順番は最初に出た順（結果が決まる）。表は標準の `HashMap` に、自前の軽いハッシュ関数を付ける（外部の依存を足さない）。頂点の法線は0で埋め、`has_normals = false` にする。描画は、既にある「法線の無い形状は面ごとの法線で描く」経路を通る。面積0の三角形も捨てない。
+- **頂点をまとめる**（`weld.rs`）。各座標の `-0.0` を `0.0` にそろえ、3成分のビットを鍵にして同じ位置の頂点を1つにする。標準の `HashMap` は表ごとに `RandomState` の鍵を持つ。頂点番号は入力に初めて現れた順に振るので、同じSTLを読めば頂点と番号の並びも同じになる。頂点の法線は0で埋め、`has_normals = false` にする。描画では面ごとに法線を求める。面積0の三角形も残す。
 - **できあがる `Model`**: 部品1つ（名前は `options.name`、`gltf_index` は 0、`local` は `unit.meters()` の一様な拡大）、描画1つ（色は `STL_COLOR`）、形状1つ。`LoadWarning` に `StlSolidsMerged { count: u32 }` と `StlTrailingBytes { bytes: u64 }` を足す。法線を導くことは STL では当たり前なので、`DerivedNormals` は出さない。
 
 ### メモリの見込み（測った値ではない）
@@ -64,7 +64,7 @@ pub fn synthesize_base(model: &Model) -> Result<Vec<u8>, ExportError>;      // �
 pub enum ExportBase { File, Stl { unit: UnitLabel, name: String } }         // ExportRequest に base_kind として足す（既定は File）
 ```
 - 土台が STL のとき、書き出しのスレッドは「STL を読み直す → 大きさとハッシュを照合 → `load_stl` → `synthesize_base`」で土台のバイト列を作り、あとは第2段階の `build`・`write_container`・照合へ渡す。土台のバイト列を常駐させない方針（第2段階）を保つ。
-- 合成する GLB: BIN は位置（`f32` × 3）と番号（`u32`）。JSON は `asset`（`version` と `generator: "model-reviewer"`）、シーン1つ、ノード1つ（名前、`mesh`、倍率が1でなければ `scale`）、メッシュ1つ（`POSITION` と `indices`、三角形リスト）、材質1つ（基本色のみ）、アクセサ2つ（位置には `min`・`max`）。`NORMAL` は書かない。
+- 合成する GLB: BIN は位置（`f32` × 3）と番号（`u32`）。JSON は `asset`（`version` と `generator: "model-reviewer"`）、シーン1つ、ノード1つ（名前、`mesh`、倍率が1でなければ `scale`）、メッシュ1つ（`POSITION` と `indices`、三角形リスト）、材質1つ（基本色と、足した図形と同じ `metallicFactor: 0`。ほかのソフトで金属に見えないようにする）、アクセサ2つ（位置には `min`・`max`）。`NORMAL` は書かない。
 - **約束**: `load_glb(synthesize_base(m))` は、部品の数・名前・`local`（相対 1e-6 以内）・位置と番号のバイト・色が `m` と同じになる。これが崩れると、文書の部品と形状の番号が土台とずれる。
 - 書き出しが終わると `source_kind` は `Glb` になり、次の書き出しは新しい GLB を土台にする。`units` は変えない（シーンは最初からメートルなので、数値は動かない）。結果の一覧に、`app` が1行足す:「STL から GLB を作りました。座標の値は元のまま（mm）で、部品の大きさ 0.001 でメートルに合わせています」。開き直すと「法線の無い形状 1 件」の簡略表示が出る（事実なので、そのままにする）。
 
@@ -72,4 +72,6 @@ pub enum ExportBase { File, Stl { unit: UnitLabel, name: String } }         // E
 - `ModelRef` に `stl_unit: Option<UnitLabel>` を足し、`model` の中へ `"stl_unit": "mm"`（`"cm"`・`"m"`）として書く。GLB では項目ごと書かないので、GLB のレビューは今までと同じバイト列になる。
 - 版を上げない理由: 座標の意味（部品の中の座標）が変わらず、前の版のアプリは知らない項目を無視するからである。前の版のアプリが STL 用のレビューを読むと、STL を開けずに「GLBではありません」と出して止まる（誤った復元はしない）。
 - 読むとき、`stl_unit` が無ければ mm、3つ以外の文字なら `InvalidValue`。復元でモデルを読み込むときは、`loader` へ `LoadOptions { stl_unit }` を渡す。
+- STL の部品名はファイル名に由来する。ハッシュとバイト数が一致し、`stl_unit` があって部品が1つなら、改名後も番号0の部品に注釈と表示状態を戻す。
+- 読み直しと保存先の照合には、開いたときか書き出したときの実パスを `PathBuf` で保持する。画面とレビューJSONに載せるときに文字列へ変換する。
 - `SetStlUnit` は、同じパスを新しい単位で開き直す。未保存があれば、別のモデルを開くときと同じ確認を通る。開き直すと、履歴・断面・計測は消える（モデルを開いたときと同じ）。

@@ -9,6 +9,7 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
+use model_reviewer_core::shapes::{self, ShapeKind, ShapeSpec};
 
 /// 決まった種の乱数（xorshift64）。
 struct Rng(u64);
@@ -564,4 +565,46 @@ fn adopting_file_locals_recomputes_like_loading_and_ignores_bad_input() {
             .map_or(Affine3A::IDENTITY, |p| doc.nodes()[p.0 as usize].world);
         assert_eq!(bits(&node.world), bits(&(parent * nudged[index])));
     }
+}
+
+#[test]
+fn shape_spec_survives_duplicate() {
+    let model = Arc::new(family());
+    let mut doc = Document::new(Arc::clone(&model));
+    let spec = ShapeSpec {
+        kind: ShapeKind::Cylinder,
+        size: 0.5,
+    };
+    let plain = doc.add_primitive(Arc::new(prim(-1.0, 1.0)));
+    let id = doc.add_shape_primitive(Arc::new(shapes::build(spec.kind, spec.size)), spec);
+    assert_eq!(id, PrimId(3));
+    assert_eq!(doc.shape_spec(id), Some(spec));
+    assert_eq!(doc.shape_spec(plain), None, "記録の無い形状");
+    assert_eq!(doc.shape_spec(PrimId(0)), None, "読み込んだ形状");
+    assert_eq!(doc.shape_spec(PrimId(1)), None, "読み込んだ形状");
+    assert_eq!(doc.shape_spec(PrimId(99)), None, "無い番号");
+
+    let draw = Draw {
+        prim: id,
+        base_color: shapes::SHAPE_COLOR,
+    };
+    let (place, piece) = doc.shape_piece("円柱", shift(3.0), draw).unwrap();
+    let key = piece.nodes[0].key;
+    doc.insert_subtree(place, piece).unwrap();
+    let (place, piece) = doc.duplicate_subtree(key).unwrap();
+    let copy_key = piece.nodes[0].key;
+    doc.insert_subtree(place, piece).unwrap();
+    check_invariants(&doc);
+    let copy = doc.id_of(copy_key).unwrap();
+    let copy_prim = doc.draws(copy)[0].prim;
+    assert_eq!(copy_prim, id, "複製は同じ形状を指す");
+    assert_eq!(doc.shape_spec(copy_prim), Some(spec));
+
+    // 元を消しても、形状と記録は残る。
+    doc.remove_subtree(key).unwrap();
+    assert_eq!(doc.shape_spec(id), Some(spec));
+
+    // 文書を作り直すと記録は消える。
+    let fresh = Document::new(model);
+    assert_eq!(fresh.shape_spec(id), None);
 }

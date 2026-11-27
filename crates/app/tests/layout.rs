@@ -586,3 +586,40 @@ fn section_bar_fits_under_the_view_buttons_at_960() {
         }
     }
 }
+
+#[test]
+fn right_panel_dims_and_measure_fit_above_the_status_bar() {
+    use model_reviewer::command::{Command, ShapeKind, Tool};
+    for size in [egui::vec2(1280.0, 800.0), egui::vec2(960.0, 720.0)] {
+        let mut harness = harness(size);
+        let session = harness.state_mut();
+        session.panel_details = false;
+        session.apply(Command::AddShape(ShapeKind::Cube));
+        session.apply(Command::SetTool(Tool::Measure));
+        harness.run_steps(4);
+        let status = widget_rect(&harness, ids::PANEL_STATUS);
+        let scale = widget_rect(&harness, ids::INSPECTOR_SCALE_Z);
+        let fields =
+            [ids::DIMS_X, ids::DIMS_Y, ids::DIMS_Z].map(|name| widget_rect(&harness, name));
+        let clear = widget_rect(&harness, ids::MEASURE_CLEAR);
+        // 部品 → 変形 → 寸法 → 計測 の順に、重ならずに並ぶ。
+        assert!(scale.bottom() <= fields[0].top(), "{size:?}");
+        for pair in fields.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top(), "{size:?}");
+        }
+        assert!(fields[2].bottom() <= clear.top(), "{size:?}");
+        assert!(
+            clear.bottom() <= status.top(),
+            "{size:?}: {clear:?} {status:?}"
+        );
+        // 選んだ図形の行が一覧に見えている。
+        let row = harness.state().selection.unwrap();
+        let entries = entries(&harness);
+        assert!(
+            entries
+                .iter()
+                .any(|(name, _)| *name == format!("parts.row.{}", row.0)),
+            "{size:?}"
+        );
+    }
+}

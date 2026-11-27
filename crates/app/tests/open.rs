@@ -284,7 +284,7 @@ fn empty_screen_shows_the_operation_table_until_a_load_starts() {
             let mut commands = Vec::new();
             model_reviewer::ui::show(ui, &session, &mut commands);
         });
-    harness.get_by_label("GLBをここへドロップ、または［開く］");
+    harness.get_by_label(model_reviewer::ui::empty::EMPTY_HINT);
     harness.get_by_label("左ドラッグ");
     harness.get_by_label("トラックパッド");
 
@@ -304,7 +304,7 @@ fn empty_screen_shows_the_operation_table_until_a_load_starts() {
     loading.get_by_label("waiting.glb");
     assert!(
         loading
-            .query_by_label("GLBをここへドロップ、または［開く］")
+            .query_by_label(model_reviewer::ui::empty::EMPTY_HINT)
             .is_none()
     );
 }

@@ -146,44 +146,50 @@ pub fn show(ui: &mut egui::Ui, input: &InspectorInput, out: &mut Vec<Command>) {
     }
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
 
-    egui::Grid::new(id.with("grid"))
-        .num_columns(4)
-        .spacing(egui::vec2(6.0, 6.0))
-        .show(ui, |ui| {
-            ui.label("");
-            for (axis, name) in ["X", "Y", "Z"].into_iter().enumerate() {
-                // 軸の色に文字を添える。欄の中央にそろえる。
-                ui.add_sized(
-                    egui::vec2(FIELD_WIDTH, 18.0),
-                    egui::Label::new(egui::RichText::new(name).color(theme::AXES[axis]).strong()),
-                );
-            }
-            ui.end_row();
-            for (row, names) in FIELDS.iter().enumerate() {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(0.0, FIELD_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| ui.label(ROW_LABELS[row]),
-                );
-                for (axis, name) in names.iter().enumerate() {
-                    let index = row * 3 + axis;
-                    field(
-                        ui,
-                        &mut memory,
-                        &base,
-                        Field {
-                            index,
-                            name,
-                            row,
-                            axis,
-                        },
-                        escape,
-                        out,
+    // 欄の名前（egui の入力位置の鍵）は並びの位置から作られるので、部品ごとの鍵の下に置く。
+    // 置かないと、選択を替えたとき、前の部品へ打ちかけた文字が次の部品の欄に残る。
+    ui.push_id(input.node, |ui| {
+        egui::Grid::new(id.with("grid"))
+            .num_columns(4)
+            .spacing(egui::vec2(6.0, 6.0))
+            .show(ui, |ui| {
+                ui.label("");
+                for (axis, name) in ["X", "Y", "Z"].into_iter().enumerate() {
+                    // 軸の色に文字を添える。欄の中央にそろえる。
+                    ui.add_sized(
+                        egui::vec2(FIELD_WIDTH, 18.0),
+                        egui::Label::new(
+                            egui::RichText::new(name).color(theme::AXES[axis]).strong(),
+                        ),
                     );
                 }
                 ui.end_row();
-            }
-        });
+                for (row, names) in FIELDS.iter().enumerate() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(0.0, FIELD_HEIGHT),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| ui.label(ROW_LABELS[row]),
+                    );
+                    for (axis, name) in names.iter().enumerate() {
+                        let index = row * 3 + axis;
+                        field(
+                            ui,
+                            &mut memory,
+                            &base,
+                            Field {
+                                index,
+                                name,
+                                row,
+                                axis,
+                            },
+                            escape,
+                            out,
+                        );
+                    }
+                    ui.end_row();
+                }
+            });
+    });
     ui.data_mut(|data| data.insert_temp(id, memory));
 }
 

@@ -1,9 +1,9 @@
 {
   "feature_name": "cad-inspect",
   "created_at": "2026-11-27T01:30:00Z",
-  "updated_at": "2026-11-27T03:00:00Z",
+  "updated_at": "2026-11-27T06:45:00Z",
   "language": "ja",
-  "phase": "tasks-generated",
+  "phase": "implemented",
   "approvals": {
     "requirements": {
       "generated": true,
@@ -39,6 +39,10 @@
     "tasks": [
       "tasks.md",
       "tasks-2.md"
+    ],
+    "verification": [
+      "verification.md",
+      "verification-a.md"
     ]
   }
 }

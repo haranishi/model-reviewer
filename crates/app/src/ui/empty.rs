@@ -4,6 +4,9 @@ use crate::command::Command;
 use crate::loader::LoadPhase;
 use crate::session::Session;
 
+/// モデルが無いときの案内（要件5.1）。
+pub const EMPTY_HINT: &str = "GLB か STL をここへドロップ、または［開く］";
+
 pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     let _ = out;
     ui.vertical_centered(|ui| {
@@ -18,7 +21,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                 }
             }
             LoadPhase::Idle | LoadPhase::Failed(_) => {
-                ui.label("GLBをここへドロップ、または［開く］");
+                ui.label(EMPTY_HINT);
                 ui.add_space(12.0);
                 // ヘルプと同じ、幅に合わせて折り返す表。右端で切れないよう、使える幅に収める。
                 // 低い画面では下が切れないよう、縦にスクロールする。

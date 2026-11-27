@@ -13,7 +13,7 @@ cargo test --workspace -- --include-ignored
 - GPUの描画テスト（`crates/render/tests/gpu.rs`）: 中心が背景色でない、選択で画像が変わる、大きさ0では描かない、汚れの無いフレームでは描かない、転送に失敗しても表示中のモデルが残る。基準画像との1画素比較はしません。
 - アプリの通し（`crates/app/tests/gpu_flow.rs`）と、画面の画像を書き出すテスト（`ui_shots.rs`。`UI_SHOT=<接頭辞>` で `target/ui-check/` に出力）。
 - 数百万三角形の当たり判定の準備時間を測るテスト（`crates/core/tests/pick.rs`）。
-- 外部で作ったGLBを読むテスト。`MR_EXTERNAL_GLB_DIR=<フォルダ> cargo test -p model-reviewer-gltf --test external -- --ignored --nocapture`。変数が無ければ何もしません。
+- 外部で作ったGLBを読むテスト。`MR_EXTERNAL_GLB_DIR=<フォルダ> cargo test -p model-reviewer-gltf --test external -- --ignored --nocapture`。STL は `MR_EXTERNAL_STL_DIR` と `-p model-reviewer-stl`。変数が無ければ何もしません。
 
 ## 実機の自動操作
 
@@ -32,22 +32,23 @@ target/release/model-reviewer --script crates/app/e2e/<名前>.json --out target
 | `edit-3` | 図形を足す・複製・削除・取り消し・書き出し。開き直して部品の数と位置が一致 |
 | `measure-1` | 2点の距離、部品を動かした後の距離、単位の切り替え、平行投影 |
 | `inspect-1` | 角や辺に吸着する計測、断面（軸・位置・反転、消えた側の当たり）、表示の単位 |
-| `heavy-edit` | 下の重いモデルで性能を測る（先に生成する） |
+| `stl-1` → `stl-2` | 見本の STL（20×30×40 mm の箱）を開く・角から角で 20 mm・注釈・円柱の寸法・GLB へ書き出し・レビュー保存。起動し直して一致 |
+| `heavy-edit`・`heavy-inspect` | 下の重いモデルで性能を測る（先に生成する）。`heavy-inspect` は吸着の探索300回・断面の矢印のドラッグ・重い STL を開く |
 
-終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。
+終了コードは成功が0、失敗や時間切れが1です。`report.json` に各手順の結果と性能値が残ります。手順の `op` は `open_model`（STL の単位の仮定 `stl_unit` を省略できる）、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
 
-手順の `op` は `open_model`、`load_review`、`save_review`、`export_glb`、`wait_idle`、`drag_view`、`drag_widget`、`scroll_view`、`click_view`、`click_widget`、`hover_view`、`type_text`、`key`、`screenshot`、`dump_state`、`assert_state_equals`、`sample`、`quit` です。パスは相対だけです。`click_widget` と `drag_widget` は部品の位置が2回続けて同じになってから押し、`type_text` は入力欄に入力位置が来てから打ちます。`wait_idle` は読み込み・書き出しの失敗を手順の失敗にします。`sample`（`label`、待つフレーム数 `frames`）と、ドラッグの `sample_every` は、常駐メモリ・フレームのCPU時間・GPUへ送ったバイト数・描いた回数・履歴の大きさなどを `report.json` の `samples` に残します。
-
-重いモデルは生成します（リポジトリには置きません）。`heavy-edit` は `stress-nested` を使います。
+重いモデルは生成します（リポジトリには置きません）。`heavy-edit` と `heavy-inspect` は、下の2行目からの3つを使います。
 
 ```
 cargo run --release -p model-reviewer-testdata -- stress 100000 200 target/stress.glb
 cargo run --release -p model-reviewer-testdata -- stress-nested 100000 200 target/stress-nested.glb
+cargo run --release -p model-reviewer-testdata -- stl-stress 5000000 binary target/stress.stl
+cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii target/stress-ascii.stl
 ```
 
 ## 性能値の定義
 
-詳細パネルと `--log-metrics` は同じ値を出します。測っていない値は「未計測」で、0で埋めません。CPU側の時間を GPU の処理時間とは書きません。
+詳細パネルと `--log-metrics` は同じ値を出します。測っていない値は「未計測」で、0で埋めません。CPU側の時間を GPU の処理時間とは書きません。フレームの値は直近120回なので、操作の途中で測るときは `sample_every` か、操作の直後の `sample` を使います。
 
 | 名前 | 何を測ったか |
 |---|---|
@@ -67,8 +68,6 @@ cargo run --release -p model-reviewer-testdata -- stress-nested 100000 200 targe
 | 取り消し・やり直し | 直近の取り消し・やり直しで、文書とレビューを書き換えた時間 |
 | 履歴 | 履歴が持つ操作の大きさの見積もり（バイト）と、取り消せる回数 |
 | 書き出し | 読み取り・組み立て・書き込み・確かめの各時間と、書き出し中の常駐メモリの最大 |
-
-フレームの値は直近120回なので、操作の途中で測るときは `sample_every` か、操作の直後の `sample` を使います。
 
 ## 測定値
 

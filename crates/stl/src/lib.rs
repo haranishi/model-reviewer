@@ -7,11 +7,17 @@
 //! - 座標の値は形状にそのまま入れ、部品の `local` に単位の倍率（mm なら 0.001）を入れる。
 //! - 申告された三角形の数で確保しない。座標が有限でないか `COORD_LIMIT` を超えたら断る。
 
+mod ascii;
+mod binary;
+mod detect;
 mod error;
+mod weld;
 
-use model_reviewer_core::scene::Model;
+use glam::{Affine3A, Vec3};
+use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId};
 use model_reviewer_core::units::UnitLabel;
 
+pub use detect::detect;
 pub use error::StlError;
 
 /// STL の種類。
@@ -35,18 +41,52 @@ pub const STL_COLOR: [f32; 4] = [0.72, 0.72, 0.72, 1.0];
 /// 座標の絶対値の上限。長さの2乗が `f32` で無限大にならない範囲。
 pub const COORD_LIMIT: f32 = 1.0e18;
 
-/// STL かどうかと、その種類。どちらでもなければ `None`。
-pub fn detect(bytes: &[u8], allow_trailing: bool) -> Option<StlKind> {
-    // 契約の先置き。中身は後の作業で書く。
-    let _ = (bytes, allow_trailing);
-    None
-}
-
 /// STL を読んで `Model` を作る。
 pub fn load_stl(bytes: &[u8], options: &StlOptions) -> Result<Model, StlError> {
-    // 契約の先置き。中身は後の作業で書く。
-    let _ = (bytes, options);
-    Err(StlError::NotStl)
+    let parsed = match detect(bytes, options.allow_trailing) {
+        Some(StlKind::Ascii) => ascii::parse(bytes)?,
+        Some(StlKind::Binary) => binary::parse(bytes, options)?,
+        None if detect::looks_like_broken_ascii(bytes) => ascii::parse(bytes)?,
+        None => binary::parse(bytes, options)?,
+    };
+    Ok(assemble_model(parsed, options))
+}
+
+fn assemble_model(parsed: binary::Parsed, options: &StlOptions<'_>) -> Model {
+    let scale = options.unit.meters() as f32;
+    let local = Affine3A::from_scale(Vec3::splat(scale));
+    let world = local;
+    let world_aabb = parsed.primitive.local_aabb.transformed(&world);
+    let triangles = (parsed.primitive.indices.len() / 3) as u64;
+    let node = Node {
+        name: options.name.to_owned(),
+        gltf_index: 0,
+        parent: None,
+        subtree_end: 1,
+        depth: 0,
+        local,
+        world,
+        draws: 0..1,
+        world_aabb,
+    };
+    let draw = Draw {
+        prim: PrimId(0),
+        base_color: STL_COLOR,
+    };
+    Model {
+        nodes: vec![node],
+        draws: vec![draw],
+        primitives: vec![parsed.primitive],
+        bounds: world_aabb,
+        stats: ModelStats {
+            nodes: 1,
+            meshes: 1,
+            primitives: 1,
+            unique_triangles: triangles,
+            placed_triangles: triangles,
+        },
+        warnings: parsed.warnings,
+    }
 }
 
 #[cfg(test)]
@@ -54,13 +94,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placeholders_do_not_panic() {
+    fn empty_input_is_rejected_without_panic() {
         let options = StlOptions {
             name: "部品",
             unit: UnitLabel::Mm,
             allow_trailing: true,
         };
         assert_eq!(detect(&[], true), None);
-        assert!(matches!(load_stl(&[], &options), Err(StlError::NotStl)));
+        assert_eq!(load_stl(&[], &options), Err(StlError::TooShort));
     }
 }

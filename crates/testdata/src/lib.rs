@@ -3,12 +3,16 @@ mod glb_writer;
 pub mod rich;
 mod sample;
 mod shapes;
+pub mod stl;
 mod stress;
 
 pub use rich::rich_glb;
 pub use sample::{
     EXPECTED_WORLD_POSITIONS, MESH_COUNT, NODE_COUNT, NODE_NAMES, PLACED_TRIANGLES,
     PRIMITIVE_COUNT, UNIQUE_TRIANGLES, bytes as sample_bytes,
+};
+pub use stl::{
+    STL_SAMPLE_SIZE, STL_SAMPLE_TRIANGLES, STL_SAMPLE_VERTICES, stl_inputs, stl_sample, stl_stress,
 };
 pub use stress::{nested_descendants, placed_triangles, stress_glb, stress_nested_glb};
 

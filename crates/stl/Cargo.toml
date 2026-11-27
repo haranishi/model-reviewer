@@ -10,3 +10,6 @@ version.workspace = true
 model-reviewer-core = { path = "../core" }
 glam = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+model-reviewer-testdata = { path = "../testdata" }

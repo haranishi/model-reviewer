@@ -1901,6 +1901,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "model-reviewer-core",
+ "model-reviewer-testdata",
  "thiserror 2.0.21",
 ]
 

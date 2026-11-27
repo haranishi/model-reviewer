@@ -6,10 +6,12 @@ use std::sync::Arc;
 use glam::{Affine3A, Mat3, Quat, Vec3};
 use gltf::json::Value;
 use model_reviewer_core::math::Aabb;
-use model_reviewer_core::scene::{Draw, Model, PrimId, Primitive, Vertex};
+use model_reviewer_core::scene::{
+    Draw, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
+};
 use model_reviewer_gltf::export::{
-    Built, ExportError, ExportNode, ExportNote, ExportScene, build, glb_length, verify,
-    write_container,
+    Built, ExportError, ExportNode, ExportNote, ExportScene, build, glb_length, synthesize_base,
+    verify, write_container,
 };
 use model_reviewer_gltf::load_glb;
 use model_reviewer_testdata::rich::{
@@ -1410,4 +1412,224 @@ fn serde_json_scenes(roots: &[u32]) -> Value {
     let mut scene: Value = gltf::json::deserialize::from_str("{}").unwrap();
     scene["nodes"] = serde_uints(roots);
     Value::Array(vec![scene])
+}
+
+// ---- 土台の合成（STL から読んだ形のモデル） ----
+
+/// STL を読んだときと同じ形の `Model`（部品1つ・形状1つ・法線なし・mm の倍率）を手で組む。
+/// `gltf` は `stl` に依存しないので、ここで組み立てる。
+fn stl_like_model(scale: f32) -> Model {
+    let size = Vec3::new(20.0, 30.0, 40.0);
+    let corner = |i: u32| {
+        [
+            if i & 1 != 0 { size.x } else { 0.0 },
+            if i & 2 != 0 { size.y } else { 0.0 },
+            if i & 4 != 0 { size.z } else { 0.0 },
+        ]
+    };
+    let vertices: Vec<Vertex> = (0..8)
+        .map(|i| Vertex {
+            position: corner(i),
+            normal: [0.0; 3],
+        })
+        .collect();
+    let quads: [[u32; 4]; 6] = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
+    let mut indices = Vec::new();
+    for [a, b, c, d] in quads {
+        indices.extend_from_slice(&[a, b, c, a, c, d]);
+    }
+    let local_aabb = Aabb {
+        min: Vec3::ZERO,
+        max: size,
+    };
+    let local = Affine3A::from_scale(Vec3::splat(scale));
+    let world_aabb = local_aabb.transformed(&local);
+    Model {
+        nodes: vec![Node {
+            name: "箱".to_owned(),
+            gltf_index: 0,
+            parent: None,
+            subtree_end: 1,
+            depth: 0,
+            local,
+            world: local,
+            draws: 0..1,
+            world_aabb,
+        }],
+        draws: vec![Draw {
+            prim: PrimId(0),
+            base_color: [0.72, 0.72, 0.72, 1.0],
+        }],
+        primitives: vec![Primitive {
+            vertices,
+            indices,
+            local_aabb,
+            has_normals: false,
+        }],
+        bounds: world_aabb,
+        stats: ModelStats {
+            nodes: 1,
+            meshes: 1,
+            primitives: 1,
+            unique_triangles: 12,
+            placed_triangles: 12,
+        },
+        warnings: Vec::new(),
+    }
+}
+
+fn relative_close(a: f32, b: f32) -> bool {
+    let scale = a.abs().max(b.abs());
+    if scale < 1.0e-3 {
+        (a - b).abs() <= 1.0e-9
+    } else {
+        (a - b).abs() <= 1.0e-6 * scale
+    }
+}
+
+fn assert_local_close(actual: Affine3A, expected: Affine3A) {
+    let a = actual.to_cols_array();
+    let e = expected.to_cols_array();
+    for (x, y) in a.iter().zip(e.iter()) {
+        assert!(relative_close(*x, *y), "{actual:?} != {expected:?}");
+    }
+}
+
+#[test]
+fn synth_base_round_trips_through_load_glb() {
+    for scale in [0.001f32, 0.01, 1.0] {
+        let model = stl_like_model(scale);
+        let base = synthesize_base(&model).expect("synthesize");
+        let loaded = load_glb(&base).expect("load");
+        assert_eq!(loaded.nodes.len(), 1);
+        assert_eq!(loaded.nodes[0].name, "箱");
+        assert_eq!(loaded.nodes[0].gltf_index, 0);
+        assert_eq!(loaded.nodes[0].parent, None);
+        assert_local_close(loaded.nodes[0].local, model.nodes[0].local);
+        assert_eq!(loaded.draws.len(), 1);
+        assert_eq!(loaded.draws[0].base_color, model.draws[0].base_color);
+        assert_eq!(loaded.primitives.len(), 1);
+        let (got, want) = (&loaded.primitives[0], &model.primitives[0]);
+        let bits = |prim: &Primitive| {
+            prim.vertices
+                .iter()
+                .map(|vertex| vertex.position.map(f32::to_bits))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(got), bits(want));
+        assert_eq!(got.indices, want.indices);
+        assert!(!got.has_normals);
+        assert_eq!(loaded.stats.unique_triangles, 12);
+        // 法線を書かないので、開き直すと「法線の無い形状 1 件」が出る（事実なので、そのまま）。
+        assert!(
+            loaded
+                .warnings
+                .contains(&LoadWarning::DerivedNormals { count: 1 })
+        );
+        let json = json_of(&base);
+        assert_eq!(json["asset"]["generator"], "model-reviewer");
+        assert_eq!(json["asset"]["version"], "2.0");
+        let mesh = &json["meshes"][0]["primitives"][0];
+        assert!(mesh["attributes"].get("NORMAL").is_none());
+        assert_eq!(json["accessors"][0]["min"], serde_vec(&[0.0, 0.0, 0.0]));
+        assert_eq!(json["accessors"][0]["max"], serde_vec(&[20.0, 30.0, 40.0]));
+        if scale == 1.0 {
+            assert!(node(&json, 0).get("scale").is_none());
+        } else {
+            assert!(node(&json, 0).get("scale").is_some());
+        }
+        assert!(node(&json, 0).get("translation").is_none());
+        assert!(node(&json, 0).get("rotation").is_none());
+    }
+}
+
+#[test]
+fn synth_base_is_deterministic() {
+    let model = stl_like_model(0.001);
+    let first = synthesize_base(&model).unwrap();
+    assert_eq!(first, synthesize_base(&model).unwrap());
+    assert_eq!(first, synthesize_base(&model.clone()).unwrap());
+    assert_eq!(first.len() % 4, 0);
+    assert_eq!(
+        u32::from_le_bytes(first[8..12].try_into().unwrap()) as usize,
+        first.len()
+    );
+}
+
+#[test]
+fn export_on_synth_base_verifies() {
+    let model = stl_like_model(0.001);
+    let base = synthesize_base(&model).unwrap();
+    let loaded = load_glb(&base).unwrap();
+    // 何も変えない書き出し。
+    let (_, written) = export(&base, &scene_of(&loaded));
+    assert_eq!(bin_of(&written), bin_of(&base));
+    // 動かして、図形を足して、書き出す。
+    let mut scene = scene_of(&loaded);
+    scene.nodes[0].local = translated(scene.nodes[0].local, Vec3::new(0.01, 0.0, -0.02));
+    let prim = PrimId(scene.base_primitive_count);
+    scene.added.push(tetra());
+    scene.nodes.push(added_node(
+        None,
+        "四面体",
+        Affine3A::from_translation(Vec3::new(0.05, 0.0, 0.0)),
+        vec![Draw {
+            prim,
+            base_color: [0.2, 0.6, 0.9, 1.0],
+        }],
+    ));
+    let (built, written) = export(&base, &scene);
+    assert_eq!(built.assigned, vec![0, 1]);
+    let reloaded = load_glb(&written).unwrap();
+    assert_eq!(reloaded.nodes.len(), 2);
+    assert_eq!(reloaded.nodes[0].name, "箱");
+    assert_eq!(reloaded.node(NodeId(1)).name, "四面体");
+    assert_eq!(reloaded.stats.placed_triangles, 12 + 4);
+    assert_eq!(reloaded.primitives[0].indices, model.primitives[0].indices);
+    let moved = translation_of(reloaded.nodes[0].local);
+    assert!(relative_close(moved.x, 0.01) && relative_close(moved.z, -0.02));
+    let scale = reloaded.nodes[0].local.matrix3.x_axis.x;
+    assert!(relative_close(scale, 0.001), "{scale}");
+}
+
+#[test]
+fn synth_base_refuses_models_of_another_shape() {
+    let model = stl_like_model(0.001);
+    let mut two_nodes = model.clone();
+    let mut second = two_nodes.nodes[0].clone();
+    second.gltf_index = 1;
+    two_nodes.nodes.push(second);
+    let mut two_draws = model.clone();
+    two_draws.draws.push(two_draws.draws[0]);
+    let mut no_triangles = model.clone();
+    no_triangles.primitives[0].indices.clear();
+    let mut out_of_range = model.clone();
+    out_of_range.primitives[0].indices[0] = 99;
+    let mut not_finite = model.clone();
+    not_finite.primitives[0].vertices[3].position[1] = f32::NAN;
+    let mut wrong_prim = model.clone();
+    wrong_prim.draws[0].prim = PrimId(1);
+    let mut child = model;
+    child.nodes[0].parent = Some(NodeId(0));
+    for (what, broken) in [
+        ("two nodes", two_nodes),
+        ("two draws", two_draws),
+        ("no triangles", no_triangles),
+        ("index out of range", out_of_range),
+        ("not finite", not_finite),
+        ("wrong prim", wrong_prim),
+        ("child", child),
+    ] {
+        assert!(
+            matches!(synthesize_base(&broken), Err(ExportError::InvalidScene(_))),
+            "{what}"
+        );
+    }
 }

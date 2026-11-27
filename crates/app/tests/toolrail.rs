@@ -7,10 +7,12 @@ use model_reviewer::automation::WidgetFrame;
 use model_reviewer::command::{Command, ShapeKind, Tool};
 use model_reviewer::ui::ids;
 use model_reviewer::ui::ids::TOOL_SHAPE;
-use model_reviewer::ui::toolrail::{self, NO_MODEL_REASON, ToolRailInput};
+use model_reviewer::ui::toolrail::{self, NO_MODEL_REASON, ToolRailInput, snap_label};
 
 struct Probe {
     input: ToolRailInput,
+    /// 吸着の状態（`None` なら `show` を呼ぶ）。
+    snap: Option<bool>,
     out: Vec<Command>,
 }
 
@@ -36,11 +38,15 @@ fn harness(input: ToolRailInput) -> Harness<'static, Probe> {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(egui::Id::NULL, WidgetFrame::default()));
                 let mut out = Vec::new();
-                toolrail::show(ui, &probe.input, &mut out);
+                match probe.snap {
+                    None => toolrail::show(ui, &probe.input, &mut out),
+                    Some(_) => toolrail::show_with(ui, &probe.input, probe.snap, &mut out),
+                };
                 probe.out.extend(out);
             },
             Probe {
                 input,
+                snap: None,
                 out: Vec::new(),
             },
         )
@@ -232,6 +238,61 @@ fn blocked_editing_disables_edit_tools_and_shapes_with_the_reason() {
 }
 
 #[test]
+fn snap_button_only_in_measure_tool() {
+    // 吸着の状態を渡しても、計測の道具でなければ出さない。
+    for tool in [Tool::Select, Tool::Move, Tool::Shape, Tool::Annotate] {
+        let mut harness = harness(input(tool));
+        harness.state_mut().snap = Some(true);
+        harness.step();
+        harness.step();
+        assert!(
+            names(&harness)
+                .iter()
+                .all(|(name, _)| name != ids::MEASURE_SNAP),
+            "{tool:?}"
+        );
+    }
+    // 計測の道具でも、状態を渡さなければ出さない（接合の前の呼び方）。
+    let mut harness = harness(input(Tool::Measure));
+    harness.step();
+    harness.step();
+    assert!(
+        names(&harness)
+            .iter()
+            .all(|(name, _)| name != ids::MEASURE_SNAP)
+    );
+
+    // 計測の道具の横に並び、押すと入・切が替わる。
+    harness.state_mut().snap = Some(true);
+    harness.step();
+    harness.step();
+    let measure = widget(&harness, ids::TOOL_MEASURE);
+    let snap = widget(&harness, ids::MEASURE_SNAP);
+    assert!(snap.left() >= measure.right(), "{snap:?} {measure:?}");
+    assert!(
+        (snap.center().y - measure.center().y).abs() < 6.0,
+        "計測の道具の横: {snap:?} {measure:?}"
+    );
+    assert!(snap.width() >= 44.0 && snap.height() >= 44.0, "{snap:?}");
+    let on = harness.get_by_label(snap_label(true));
+    assert_eq!(on.accesskit_node().toggled(), Some(Toggled::True));
+    assert_eq!(
+        click(&mut harness, ids::MEASURE_SNAP),
+        vec![Command::SetSnap(false)]
+    );
+    harness.state_mut().snap = Some(false);
+    harness.step();
+    let off = harness.get_by_label(snap_label(false));
+    assert_eq!(off.accesskit_node().toggled(), Some(Toggled::False));
+    assert_eq!(
+        click(&mut harness, ids::MEASURE_SNAP),
+        vec![Command::SetSnap(true)]
+    );
+    assert_eq!(snap_label(true), "吸着 入");
+    assert_eq!(snap_label(false), "吸着 切");
+}
+
+#[test]
 #[ignore = "wgpuで画面をPNGへ書き出す"]
 fn render_toolrail_for_visual_check() {
     let cases = [
@@ -272,6 +333,7 @@ fn render_toolrail_for_visual_check() {
                 },
                 Probe {
                     input,
+                    snap: None,
                     out: Vec::new(),
                 },
             );

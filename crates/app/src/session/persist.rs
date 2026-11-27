@@ -334,7 +334,7 @@ pub(super) fn take_restored(
     doc: &Document,
     identity: &ModelIdentity,
 ) -> Restored {
-    let Some(pending) = session.restore.clone() else {
+    let Some(pending) = session.restore.as_ref() else {
         return Restored::Absent;
     };
     match review_file::restore(&pending.file, doc, identity) {
@@ -502,39 +502,25 @@ fn relative_from(from_dir: &Path, target: &Path) -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let Some(name) = path.file_name() else {
-        return Err("保存先のファイル名がありません".to_owned());
-    };
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(".tmp");
-    let tmp = parent.join(tmp_name);
+    let (file, temp) = crate::exporter::create_temp(path)?;
     // 名前を付け替える前に装置へ書き切る。書き切らずに付け替えると、電源が落ちたときに
     // 中身の無いファイルが前のレビューを置き換えることがある。
-    if let Err(err) = write_synced(&tmp, bytes) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
+    write_synced(file, bytes).map_err(|err| {
+        format!(
             "レビューを書けませんでした（{}）",
             loader::io_error_ja(&err)
-        ));
-    }
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
+        )
+    })?;
+    temp.replace(path).map_err(|err| {
+        format!(
             "レビューを置き換えられませんでした（{}）",
             loader::io_error_ja(&err)
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+fn write_synced(mut file: std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }

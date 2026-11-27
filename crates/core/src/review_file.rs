@@ -28,8 +28,8 @@ const VERSION: u32 = 2;
 const VERSION_PERSPECTIVE_ONLY: u32 = 1;
 const PROJECTION_PERSPECTIVE: &str = "perspective";
 const PROJECTION_ORTHOGRAPHIC: &str = "orthographic";
-/// 手書き JSON の `u64::MAX` 近くの番号は拒み、読み込み後の新規採番に余裕を残す。
-const MAX_PARSED_ID: u64 = u64::MAX - 1024;
+/// レビューJSONが受け付ける注釈・視点の番号の上限。
+pub(crate) const MAX_PARSED_ID: u64 = u64::MAX - 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReviewFile {
@@ -218,9 +218,13 @@ pub fn restore(
         });
     }
     let mut visibility = Visibility::all_visible(model.node_count());
-    for record in &file.hidden_nodes {
-        let id = require_node(model, record)?;
-        visibility.set(model, id, false);
+    if !file.hidden_nodes.is_empty() {
+        let hidden = file
+            .hidden_nodes
+            .iter()
+            .map(|record| require_node(model, record))
+            .collect::<Result<Vec<_>, _>>()?;
+        visibility.set_many(model, hidden, false);
     }
     let mut annotations = Vec::with_capacity(file.annotations.len());
     for record in &file.annotations {
@@ -363,7 +367,7 @@ fn validate_file(file: &ReviewFile) -> Result<(), ReviewError> {
     Ok(())
 }
 
-/// 注釈と視点は一つの番号。重複と、次の番号を作れない端は拒む。
+/// 注釈と視点は一つの番号。重複と上限を超える番号は拒む。
 fn validate_ids(file: &ReviewFile) -> Result<(), ReviewError> {
     let mut seen = HashSet::with_capacity(file.annotations.len() + file.views.len());
     for id in file

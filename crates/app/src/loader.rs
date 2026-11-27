@@ -82,6 +82,7 @@ pub(crate) struct LoadedModel {
     pub model_ref: ModelRef,
     /// 元の形式（STL なら単位の仮定つき）。
     pub source_kind: SourceKind,
+    pub resolved_path: PathBuf,
     pub file_bytes: u64,
     pub read: Duration,
     pub identity: Duration,
@@ -225,7 +226,8 @@ fn load_thread(
         return;
     }
     let started = Instant::now();
-    let bytes = match std::fs::read(&path) {
+    let resolved_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let bytes = match std::fs::read(&resolved_path) {
         Ok(bytes) => bytes,
         Err(err) => {
             log::error!("failed to read model: {err}");
@@ -331,12 +333,13 @@ fn load_thread(
         SourceKind::Glb => None,
         SourceKind::Stl { unit } => Some(unit),
     };
-    let model_ref = model_ref_for(&path, identity, stl_unit);
+    let model_ref = model_ref_for(&resolved_path, identity, stl_unit);
     if !emit(LoadEvent::Loaded(Box::new(LoadedModel {
         generation,
         model: Arc::clone(&model),
         model_ref,
         source_kind,
+        resolved_path,
         file_bytes,
         read,
         identity: identity_elapsed,
@@ -416,14 +419,13 @@ pub(crate) fn io_error_ja(err: &std::io::Error) -> String {
 }
 
 fn model_ref_for(path: &Path, identity: ModelIdentity, stl_unit: Option<UnitLabel>) -> ModelRef {
-    let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let file_name = absolute
+    let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "モデル".to_owned());
     ModelRef {
         file_name,
-        path: absolute.display().to_string(),
+        path: path.display().to_string(),
         relative_path: None,
         identity,
         stl_unit,

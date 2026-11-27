@@ -152,6 +152,10 @@ enum Op {
         button: egui::PointerButton,
         modifiers: egui::Modifiers,
     },
+    /// 3Dビューの中の位置へポインタを動かす（押さない）。計測の吸着の候補を出す。
+    HoverView {
+        at: [f32; 2],
+    },
     ClickWidget {
         name: String,
     },
@@ -197,6 +201,7 @@ impl Op {
             Self::DragView { .. } => "drag_view",
             Self::ScrollView { .. } => "scroll_view",
             Self::ClickView { .. } => "click_view",
+            Self::HoverView { .. } => "hover_view",
             Self::ClickWidget { .. } => "click_widget",
             Self::DragWidget { .. } => "drag_widget",
             Self::TypeText { .. } => "type_text",
@@ -647,6 +652,12 @@ impl Automation {
                 };
                 self.queue(click_events(pos, button, modifiers));
             }
+            Op::HoverView { at } => {
+                let Some(pos) = self.view_pos(ctx, at)? else {
+                    return Ok(());
+                };
+                self.queue(vec![egui::Event::PointerMoved(pos)]);
+            }
             Op::ClickWidget { name } => {
                 let Some(rect) = widget_rect(ctx, &name) else {
                     self.note(format!("{name} がありません"));
@@ -822,6 +833,8 @@ impl Automation {
             "export_write_ms": ms(m.export_write),
             "export_verify_ms": ms(m.export_verify),
             "export_peak_mem": m.export_peak_mem,
+            "snap_ms": ms(m.snap_last),
+            "snap_max_ms": ms(m.snap_max),
             "uploaded_bytes": stats.map(|s| s.uploaded_bytes),
             "frame_bytes": stats.map(|s| s.frame_bytes),
             "draw_count": stats.map(|s| s.draw_count),

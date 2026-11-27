@@ -139,6 +139,12 @@ fn parse_step(value: &Value) -> Result<Step, String> {
                 modifiers: parse_modifiers(map.get("modifiers"))?,
             }
         }
+        "hover_view" => {
+            reject_unknown(map, &["op", "timeout_secs", "at"])?;
+            Op::HoverView {
+                at: parse_pair(map, "at")?,
+            }
+        }
         "click_widget" => {
             reject_unknown(map, &["op", "timeout_secs", "name"])?;
             Op::ClickWidget {

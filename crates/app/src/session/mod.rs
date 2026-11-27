@@ -45,8 +45,11 @@ pub use edit::{
     GIZMO_SIZE, Transform, TransformSource, gizmo_frame, moved_frame, tool_edits, tool_has_gizmo,
 };
 pub use export::{export_scene, note_ja};
-pub use measure::distance as measure_distance;
+pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
+pub use pick::ray_hit;
+pub use section::section_bounds;
+pub use snap::{SNAP_RADIUS_POINTS, find as find_snap, rest_after as snap_rest_after};
 
 #[derive(Clone, Debug)]
 pub(super) struct PendingRestore {
@@ -89,20 +92,24 @@ pub struct Session {
     pub selection: Option<NodeId>,
     /// 2点の計測。保存せず、履歴にも未保存の印にも入れない。部品を消すと消える。
     pub measurement: Measurement,
-    /// 長さに添える単位の文字（数値は換算しない）。作業の間だけの設定。
-    pub unit: UnitLabel,
     /// ファイルの単位（前提）と表示の単位。作業の間だけの設定で、保存しない。
+    /// GLB を開くと `{ source: M, display: None }`（第2段階と同じ数値と文字）に戻る。
     pub units: Units,
     /// 開いているモデルの元の形式。
     pub source_kind: SourceKind,
-    /// 吸着の設定。作業の間だけの設定で、保存しない。
+    /// 吸着の設定。作業の間だけの設定で、保存しない。`radius_px` はポイントで持ち、探索のときに
+    /// `pixels_per_point` を掛けて物理画素にする。
     pub snap: SnapSettings,
+    /// 遅い探索の後、ポインタの移動に合わせた探索を休む期限。
+    snap_rest_until: Option<Instant>,
     /// ポインタの下の吸着の候補（計測の道具のとき）。クリックはこれを使わない。
     pub snap_preview: Option<SnapTarget>,
     /// 断面。履歴・未保存の印・レビューJSONに入れない。
     pub section: Option<SectionPlane>,
     /// 断面を切っている間の控え（もう一度入れると、この軸と位置を使う）。
     pub section_memory: SectionPlane,
+    /// 控えが一度でも置かれたか（偽なら、入れたときに Z 軸の中央から始める）。
+    section_remembered: bool,
     /// 文書の部品が置く三角形の数（追加・複製・削除のたびに数え直す）。
     placed_triangles: u64,
     /// いまの道具。`Annotate` のときは `annotate_mode` も真（第1段階の口として残す）。
@@ -189,10 +196,13 @@ impl Default for Session {
             lines_supported: false,
             selection: None,
             measurement: Measurement::default(),
-            unit: UnitLabel::default(),
             units: Units::default(),
             source_kind: SourceKind::Glb,
-            snap: SnapSettings::default(),
+            snap: SnapSettings {
+                radius_px: snap::SNAP_RADIUS_POINTS,
+                ..SnapSettings::default()
+            },
+            snap_rest_until: None,
             snap_preview: None,
             section: None,
             section_memory: SectionPlane {
@@ -200,6 +210,7 @@ impl Default for Session {
                 offset: 0.0,
                 flipped: false,
             },
+            section_remembered: false,
             placed_triangles: 0,
             tool: Tool::Select,
             annotate_mode: false,
@@ -289,6 +300,22 @@ struct StagedPick {
 
 impl Session {
     pub fn apply(&mut self, cmd: Command) {
+        let tool = self.tool;
+        let doc_rev = self.history.doc_rev();
+        let camera = self.camera;
+        let shown = self.shown_generation;
+        self.apply_inner(cmd);
+        // 道具・部品の表・視点・モデルが変わったら、吸着の候補は古い（次の移動で探し直す）。
+        if self.tool != tool
+            || self.history.doc_rev() != doc_rev
+            || self.camera != camera
+            || self.shown_generation != shown
+        {
+            snap::set_preview(self, None);
+        }
+    }
+
+    fn apply_inner(&mut self, cmd: Command) {
         if self.transform.is_some() && interrupts_transform(&cmd, self.transform.as_ref()) {
             // 変形の途中に別の操作が来たら、変形をやめてから行う（文書はまだ書き換えていない）。
             edit::cancel_transform(self);
@@ -453,7 +480,7 @@ impl Session {
             Command::ToggleSnap => snap::toggle_snap(self),
             Command::SetSection(plane) => section::set_section(self, plane),
             Command::ToggleSection => section::toggle_section(self),
-            Command::SetDisplayUnit(unit) => set_display_unit(self, unit),
+            Command::SetDisplayUnit(unit) => measure::set_display_unit(self, unit),
             Command::SetStlUnit(unit) => set_stl_unit(self, unit),
         }
     }
@@ -526,6 +553,8 @@ impl Session {
         self.doc = Some(Document::new(Arc::clone(&model)));
         self.model = Some(model);
         self.measurement.clear();
+        self.snap_preview = None;
+        section::reset(self);
         self.recount_triangles();
     }
 
@@ -578,6 +607,18 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// 移動に合わせた吸着の探索を休んでいるか。
+    pub fn snap_resting(&self) -> bool {
+        self.snap_rest_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// 移動に合わせた吸着の探索を `rest` だけ休ませる。遅い探索の後と同じ状態を、試験で作るのに
+    /// 使う（実際の休みは `snap::rest_after` が決める）。
+    pub fn rest_snap_for(&mut self, rest: Duration) {
+        self.snap_rest_until = Some(Instant::now() + rest);
     }
 
     pub fn take_scene_dirty(&mut self) -> SceneDirty {
@@ -1120,6 +1161,12 @@ impl Session {
         self.doc = Some(doc);
         self.model = Some(model);
         self.measurement.clear();
+        self.snap_preview = None;
+        self.snap_rest_until = None;
+        section::reset(self);
+        // GLB を開くと、ファイルの単位は m、表示は「ファイルと同じ」（要件7.5）。
+        self.source_kind = SourceKind::Glb;
+        self.units = Units::default();
         self.recount_triangles();
         self.reset_history();
         self.discard_bypass = false;
@@ -1193,12 +1240,6 @@ impl Session {
             PanelKind::Details => self.panel_details = open,
         }
     }
-}
-
-/// 表示の単位を替える（`None` は「ファイルと同じ」）。
-fn set_display_unit(session: &mut Session, unit: Option<UnitLabel>) {
-    // 契約の先置き。中身は接合の作業で書く。
-    let _ = (session, unit);
 }
 
 /// STL の単位の仮定を替える（同じファイルを開き直す）。

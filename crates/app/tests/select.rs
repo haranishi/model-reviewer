@@ -238,6 +238,7 @@ fn markers_skip_hidden_parts_the_back_side_and_keep_list_numbers() {
             center: places[0].center,
             selected: false,
             hidden: false,
+            faded: false,
         }
     );
 

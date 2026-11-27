@@ -179,8 +179,16 @@ pub fn to_json(
 }
 
 pub fn parse(json: &str) -> Result<ReviewFile, ReviewError> {
-    let value: Value =
-        serde_json::from_str(json).map_err(|err| ReviewError::Json(err.to_string()))?;
+    parse_value(serde_json::from_str(json))
+}
+
+/// 保存先を順に読み、JSON の構文エラーが見つかったところで止める。
+pub fn parse_reader(reader: impl std::io::Read) -> Result<ReviewFile, ReviewError> {
+    parse_value(serde_json::from_reader(reader))
+}
+
+fn parse_value(value: serde_json::Result<Value>) -> Result<ReviewFile, ReviewError> {
+    let value = value.map_err(|err| ReviewError::Json(err.to_string()))?;
     if value.get("format").and_then(Value::as_str) != Some(FORMAT) {
         return Err(ReviewError::WrongFormat);
     }
@@ -202,10 +210,29 @@ pub fn parse(json: &str) -> Result<ReviewFile, ReviewError> {
     Ok(file)
 }
 
+/// 形式を指定しない復元では、部品番号と部品名の両方を照合する。
 pub fn restore(
     file: &ReviewFile,
     model: &impl SceneRead,
     identity: &ModelIdentity,
+) -> Result<ReviewState, ReviewError> {
+    restore_nodes(file, model, identity, false)
+}
+
+/// 実際に読んだ形式で、ファイル名から部品名を付ける STL を見分ける。
+pub fn restore_loaded(
+    file: &ReviewFile,
+    model: &impl SceneRead,
+    loaded: &ModelRef,
+) -> Result<ReviewState, ReviewError> {
+    restore_nodes(file, model, &loaded.identity, loaded.stl_unit.is_some())
+}
+
+fn restore_nodes(
+    file: &ReviewFile,
+    model: &impl SceneRead,
+    identity: &ModelIdentity,
+    loaded_stl: bool,
 ) -> Result<ReviewState, ReviewError> {
     validate_file(file)?;
     let expected = ModelIdentity {
@@ -219,7 +246,7 @@ pub fn restore(
         });
     }
     // STL の部品名はファイル名から付く。同じファイルを改名しても部品番号は 0 のまま。
-    let single_stl = file.model.stl_unit.is_some() && model.node_count() == 1;
+    let single_stl = loaded_stl && model.node_count() == 1;
     let resolve_node = |record: &ReviewNodeRecord| require_node(model, record, single_stl);
     let mut visibility = Visibility::all_visible(model.node_count());
     if !file.hidden_nodes.is_empty() {

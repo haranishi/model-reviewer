@@ -247,6 +247,59 @@ fn click_before_pick_index_says_preparing() {
 }
 
 #[test]
+fn protect_interrupted_pick() {
+    for cancel in [false, true] {
+        let dir = scratch(if cancel { "cancel-pick" } else { "failed-pick" });
+        let good = write_bytes(&dir, "box.stl", &model_reviewer_testdata::stl_sample());
+        let other = write_bytes(&dir, "other.glb", &inputs::triangle());
+        let mut owner = Session::default();
+        owner.apply(Command::OpenModel(other.clone()));
+        pump(&mut owner);
+        let review = dir.join("other.json");
+        owner.apply(Command::SaveReview(review.clone()));
+
+        let release = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let hold = Hold {
+            release: Arc::clone(&release),
+        };
+        let mut session = Session::default();
+        session.set_viewport([800, 800]);
+        session.set_load_hooks(LoadHooks {
+            before_pick: Some(block_first(release, Arc::clone(&entered))),
+            ..Default::default()
+        });
+        session.apply(Command::OpenModel(good));
+        wait_flag(&entered);
+        pump_until(&mut session, |s| s.model.is_some());
+        assert!(session.pick_index.is_none());
+        let displayed = Arc::clone(session.model.as_ref().unwrap());
+        if cancel {
+            session.apply(Command::LoadReview(review));
+            assert!(session.is_loading_replacement());
+            session.apply(Command::CancelRestore);
+        } else {
+            session.apply(Command::OpenModel(dir.join("absent.glb")));
+            pump_until(&mut session, |s| matches!(s.load, LoadPhase::Failed(_)));
+            session.apply(Command::DismissDialog);
+        }
+        drop(hold);
+        pump(&mut session);
+        assert!(Arc::ptr_eq(session.model.as_ref().unwrap(), &displayed));
+        session.apply(Command::ViewClick {
+            ndc: Default::default(),
+        });
+        assert_eq!(session.selection, Some(NodeId(0)));
+        session.apply(Command::SetAnnotateMode(true));
+        session.apply(Command::ViewClick {
+            ndc: Default::default(),
+        });
+        session.apply(Command::CommitDraft { text: "面".into() });
+        assert_eq!(session.review.unwrap().annotations[0].text, "面");
+    }
+}
+
+#[test]
 fn multiple_drops_use_the_first_and_json_is_a_review() {
     let dir = scratch("route");
     let glb = write_bytes(&dir, "first.glb", &inputs::triangle());

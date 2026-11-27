@@ -2,21 +2,32 @@
 
 use std::path::PathBuf;
 
+use model_reviewer_core::identity::ModelIdentity;
+
 use crate::command::is_review_path;
 use crate::loader::{self, LoadOptions};
 
 use super::{Pending, Session};
 
 pub(super) fn open_guarded(session: &mut Session, path: PathBuf, options: LoadOptions) {
+    open_guarded_with_identity(session, path, options, None);
+}
+
+pub(super) fn open_guarded_with_identity(
+    session: &mut Session,
+    path: PathBuf,
+    options: LoadOptions,
+    expected: Option<ModelIdentity>,
+) {
     if session.is_exporting() {
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
     session.protect_document(&path);
-    if session.hold(Pending::OpenModel(path.clone(), options)) {
+    if session.hold(Pending::OpenModel(path.clone(), options, expected.clone())) {
         return;
     }
-    open_model(session, path, options);
+    open_model(session, path, options, expected);
 }
 
 pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
@@ -31,14 +42,19 @@ pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
     load_review(session, path);
 }
 
-pub fn open_model(session: &mut Session, path: PathBuf, options: LoadOptions) {
+pub(super) fn open_model(
+    session: &mut Session,
+    path: PathBuf,
+    options: LoadOptions,
+    expected: Option<ModelIdentity>,
+) {
     if session.is_exporting() {
         session.end_discard_bypass();
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
     session.restore = None;
-    session.start_model_load(path, options);
+    session.start_model_load_with_expected(path, expected, options);
 }
 
 /// 新規作成（要件1.1・1.3・1.4）。書き出し中・読み込み中は断る。未保存があれば確認を出し、

@@ -361,6 +361,99 @@ fn renamed_stl_restores_the_annotation_and_hidden_part_after_relink() {
 }
 
 #[test]
+fn protect_legacy_stl() {
+    let dir = scratch("legacy-renamed");
+    let path = write_bytes(&dir, "before.stl", &stl_sample());
+    let mut session = open(&path);
+    annotate_center(&mut session, "角");
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    json["model"].as_object_mut().unwrap().remove("stl_unit");
+    std::fs::write(&review, json.to_string()).unwrap();
+    let moved = dir.join("after.data");
+    std::fs::rename(path, &moved).unwrap();
+    let mut restored = Session::default();
+    restored.apply(Command::LoadReview(review.clone()));
+    restored.apply(Command::RelinkModel(moved));
+    pump_load(&mut restored);
+    assert_eq!(restored.status_text, "レビューを復元しました");
+    assert_eq!(
+        restored.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm
+        }
+    );
+    assert_eq!(
+        restored.review.as_ref().unwrap().annotations,
+        session.review.unwrap().annotations
+    );
+    assert!(!restored.review.as_ref().unwrap().visibility.own(NodeId(0)));
+    restored.apply(Command::LoadReview(review));
+    assert_eq!(restored.status_text, "レビューを復元しました");
+}
+
+#[test]
+fn protect_glb_node_name() {
+    let dir = scratch("glb-false-stl");
+    let path = write_bytes(
+        &dir,
+        "triangle.stl",
+        &model_reviewer_testdata::inputs::triangle(),
+    );
+    let mut session = open(&path);
+    session.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    json["model"]["stl_unit"] = "mm".into();
+    json["hidden_nodes"][0]["name"] = "別の部品".into();
+    std::fs::write(&review, json.to_string()).unwrap();
+    session.apply(Command::LoadReview(review));
+    assert!(failure_body(&session).contains("部品"));
+}
+
+#[test]
+fn protect_stl_unit_identity() {
+    let dir = scratch("unit-file-changed");
+    let mut bytes = stl_sample();
+    let path = write_bytes(&dir, "box.stl", &bytes);
+    let mut session = open(&path);
+    annotate_center(&mut session, "残す");
+    let model = std::sync::Arc::clone(session.model.as_ref().unwrap());
+    session.apply(Command::SetStlUnit(UnitLabel::Cm));
+    assert!(session.dialog.is_some());
+    // 同じ長さで読める別の STL に、未保存の確認中に入れ替える。
+    bytes[0] ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    session.apply(Command::ConfirmDiscard);
+    pump_load(&mut session);
+    assert!(matches!(session.load, LoadPhase::Failed(_)));
+    assert!(failure_body(&session).contains("変わ"));
+    assert!(std::sync::Arc::ptr_eq(
+        &model,
+        session.model.as_ref().unwrap()
+    ));
+    assert_eq!(
+        session.source_kind,
+        SourceKind::Stl {
+            unit: UnitLabel::Mm
+        }
+    );
+    assert_eq!(session.review.as_ref().unwrap().annotations[0].text, "残す");
+    assert!(session.review_unsaved());
+}
+
+#[test]
 fn changing_stl_unit_reopens_after_confirm() {
     let dir = scratch("unit");
     let stl = write_bytes(&dir, "box.stl", &stl_sample());

@@ -536,7 +536,7 @@ fn resolve_dialog(session: &Session, command: Command) -> Option<Command> {
             .map(Command::OpenModel),
         // 新規の文書は書き出すまで保存できない。保存先を聞かずに `Session` が断る（要件2.6）。
         Command::SaveReviewDialog
-            if session.doc_unsaved() || session.is_exporting() || session.is_new_document() =>
+            if session.doc_unsaved() || session.edits_locked() || session.is_new_document() =>
         {
             Some(Command::SaveReviewDialog)
         }

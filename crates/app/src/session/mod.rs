@@ -22,6 +22,7 @@ use model_reviewer_core::units::{UnitLabel, Units};
 use model_reviewer_render::DisplayMode;
 
 use crate::command::{Command, DialogButton, DialogRequest, PanelKind, SceneDirty};
+use crate::exporter::protection::FileHistory;
 use crate::exporter::{ExportHandle, ExportHooks, ExportStage};
 use crate::keymap::store::Store;
 use crate::keymap::{KeyLabels, Keymap};
@@ -89,7 +90,7 @@ pub const REVIEW_NEEDS_EXPORT: &str = "先に GLB を書き出すと、レビュ
 
 #[derive(Clone, Debug, PartialEq)]
 enum Pending {
-    OpenModel(PathBuf, LoadOptions),
+    OpenModel(PathBuf, LoadOptions, Option<ModelIdentity>),
     LoadReview(PathBuf),
     Quit,
     /// 新規作成（未保存の確認の後に続ける）。
@@ -191,6 +192,7 @@ pub struct Session {
     pub(super) export_failed: bool,
     /// この作業で「開く」から開いたファイル。書き出し先にできない。
     pub(super) opened_files: Vec<PathBuf>,
+    file_history: FileHistory,
     /// いまのモデルを読み込んだ後に1回以上書き出したか（`session.model` が今の土台と異なる）。
     pub(super) exported_since_load: bool,
     pub(super) egui_ctx: Option<egui::Context>,
@@ -285,6 +287,7 @@ impl Default for Session {
             export_error: None,
             export_failed: false,
             opened_files: Vec::new(),
+            file_history: FileHistory::default(),
             exported_since_load: false,
             egui_ctx: None,
             gpu_upload: false,
@@ -307,7 +310,6 @@ impl Default for Session {
 struct LoadMeta {
     generation: u64,
     source_path: PathBuf,
-    forbid_on_commit: bool,
 }
 
 pub(super) struct ExportJob {
@@ -326,7 +328,6 @@ struct Incoming {
     model_ref: Option<ModelRef>,
     source_kind: SourceKind,
     source_path: Option<PathBuf>,
-    forbid_on_commit: bool,
     file_bytes: u64,
     read: Duration,
     identity: Duration,
@@ -373,9 +374,8 @@ impl Session {
                 }
             }
             Command::SaveReviewDialog => {
-                if self.is_exporting() {
-                    self.status_text =
-                        "書き出しが終わってからレビューを保存してください".to_owned();
+                if let Some(reason) = self.review_save_block_reason() {
+                    self.status_text = reason.to_owned();
                 } else if self.doc_unsaved() {
                     self.dialog = Some(export::export_first_dialog());
                     self.status_text = "先にGLBを書き出してください".to_owned();
@@ -510,8 +510,16 @@ impl Session {
                 self.dialog = None;
             }
             Command::CancelRestore => {
+                if self.restore.take().is_some()
+                    || self
+                        .incoming
+                        .as_ref()
+                        .is_some_and(|incoming| incoming.review.is_some())
+                {
+                    self.cancel_pending_load();
+                    self.status_text = "レビューの復元をやめました".to_owned();
+                }
                 self.dialog = None;
-                self.restore = None;
                 self.discard_bypass = false;
             }
             Command::ConfirmDiscard => self.confirm_discard(),
@@ -838,7 +846,9 @@ impl Session {
         self.dialog = None;
         self.discard_bypass = true;
         match self.pending.take() {
-            Some(Pending::OpenModel(path, options)) => open::open_model(self, path, options),
+            Some(Pending::OpenModel(path, options, expected)) => {
+                open::open_model(self, path, options, expected)
+            }
             Some(Pending::LoadReview(path)) => open::load_review(self, path),
             Some(Pending::New) => open::new_document(self),
             Some(Pending::Quit) => {
@@ -901,6 +911,16 @@ impl Session {
         self.is_loading_replacement() || self.is_exporting()
     }
 
+    pub(crate) fn review_save_block_reason(&self) -> Option<&'static str> {
+        if self.is_exporting() {
+            Some("書き出しが終わってからレビューを保存してください")
+        } else if self.is_loading_replacement() {
+            Some("読み込みが終わってからレビューを保存してください")
+        } else {
+            None
+        }
+    }
+
     pub fn edit_block_reason(&self) -> Option<&'static str> {
         if self.is_exporting() {
             Some("書き出し中は編集・表示・注釈・視点を変更できません")
@@ -920,41 +940,20 @@ impl Session {
         }
     }
 
-    pub(super) fn start_model_load(&mut self, path: PathBuf, options: LoadOptions) {
-        self.start_model_load_with_expected(path, None, true, options);
-    }
-
     pub(super) fn start_model_load_for_restore(&mut self, path: PathBuf, expected: ModelIdentity) {
-        let options = self.restore_options();
-        self.start_model_load_with_expected(path, Some(expected), true, options);
-    }
-
-    /// 復元のときの読み込みの指定。レビューの `stl_unit`（無ければ mm）で STL を開く（要件8.5）。
-    fn restore_options(&self) -> LoadOptions {
-        LoadOptions {
+        let options = LoadOptions {
             stl_unit: self
                 .restore
                 .as_ref()
                 .and_then(|pending| pending.file.model.stl_unit),
-        }
-    }
-
-    /// 書き出したファイルへのレビュー復元（未書き出し編集を破棄して開き直す場合）。
-    /// 書き出したファイル自体は「開く」で開いた扱いにしない。
-    pub(super) fn start_model_load_for_exported_restore(
-        &mut self,
-        path: PathBuf,
-        expected: ModelIdentity,
-    ) {
-        let options = self.restore_options();
-        self.start_model_load_with_expected(path, Some(expected), false, options);
+        };
+        self.start_model_load_with_expected(path, Some(expected), options);
     }
 
     fn start_model_load_with_expected(
         &mut self,
         path: PathBuf,
         expected_identity: Option<ModelIdentity>,
-        forbid_on_commit: bool,
         options: LoadOptions,
     ) {
         if expected_identity.is_some() {
@@ -985,7 +984,6 @@ impl Session {
         self.load_meta = Some(LoadMeta {
             generation,
             source_path: path.clone(),
-            forbid_on_commit,
         });
         let hooks = self.load_hooks.clone();
         let ctx = self.egui_ctx.clone();
@@ -1026,7 +1024,6 @@ impl Session {
             model_ref: None,
             source_kind: SourceKind::New,
             source_path: None,
-            forbid_on_commit: false,
             file_bytes: 0,
             read: Duration::ZERO,
             identity: Duration::ZERO,
@@ -1063,6 +1060,7 @@ impl Session {
             ) {
                 self.load = LoadPhase::Idle;
             }
+            self.rebuild_shown_pick();
         }
     }
 
@@ -1094,7 +1092,15 @@ impl Session {
                 if generation != self.generation {
                     return;
                 }
-                persist::on_candidate_mismatch(self, actual);
+                if self.restore.is_some() {
+                    persist::on_candidate_mismatch(self, actual);
+                } else {
+                    self.fail_load(
+                        "STL の単位を変更できません",
+                        "STL の内容が開いたときから変わったため、元の単位で表示を続けます。"
+                            .to_owned(),
+                    );
+                }
             }
             LoadEvent::Failed {
                 generation,
@@ -1103,7 +1109,7 @@ impl Session {
                 if generation != self.generation {
                     return;
                 }
-                if self.recover_pick_after_shown(generation) {
+                if self.shown_generation == generation && self.rebuild_shown_pick() {
                     return;
                 }
                 if persist::try_next_candidate_after_error(self) {
@@ -1124,15 +1130,12 @@ impl Session {
             return;
         }
         if persist::reject_mismatch(self, &loaded.model_ref) {
-            self.open_started = None;
-            self.awaiting_present = false;
-            self.discard_bypass = false;
-            self.load = LoadPhase::Idle;
+            // 次の候補の読み込みに進んだ場合は、その工程と保存の制限を保つ。
             return;
         }
         // 転送が終わると描画器の表示が替わる。復元に失敗しうる処理は転送前に済ませる。
         let doc = Document::new(loaded.model);
-        let review = match persist::take_restored(self, &doc, &loaded.model_ref.identity) {
+        let review = match persist::take_restored(self, &doc, &loaded.model_ref) {
             persist::Restored::Absent => None,
             persist::Restored::State(state) => Some(state),
             persist::Restored::Blocked => {
@@ -1141,14 +1144,11 @@ impl Session {
                 return;
             }
         };
-        let (source_path, forbid_on_commit) = match self
+        let source_path = self
             .load_meta
             .as_ref()
             .filter(|meta| meta.generation == loaded.generation)
-        {
-            Some(meta) => (Some(meta.source_path.clone()), meta.forbid_on_commit),
-            None => (None, true),
-        };
+            .map(|meta| meta.source_path.clone());
         self.incoming = Some(Incoming {
             generation: loaded.generation,
             doc,
@@ -1156,7 +1156,6 @@ impl Session {
             model_ref: Some(loaded.model_ref),
             source_kind: loaded.source_kind,
             source_path,
-            forbid_on_commit,
             file_bytes: loaded.file_bytes,
             read: loaded.read,
             identity: loaded.identity,
@@ -1172,10 +1171,9 @@ impl Session {
         }
     }
 
-    /// 表示まで成功したあとの索引づくりが落ちたときだけ、UIスレッドで作り直す。
-    /// 読み込みそのものの失敗では呼ばない（`shown_generation` がまだ古い）。
-    fn recover_pick_after_shown(&mut self, generation: u64) -> bool {
-        if self.shown_generation != generation || self.pick_index.is_some() {
+    /// 表示後の索引作成が失敗したか、次の読み込みに中断されたときの回復。
+    fn rebuild_shown_pick(&mut self) -> bool {
+        if self.pick_index.is_some() {
             return false;
         }
         let Some(model) = self.model.as_ref().map(Arc::clone) else {
@@ -1308,12 +1306,22 @@ impl Session {
         // 投影は利用者が選んだ見方なので、モデルを開き直しても保つ。
         self.camera = initial_camera(&doc.bounds(), aspect, self.camera.projection);
         self.home_on_resize = !viewport_known;
-        if incoming.forbid_on_commit {
-            if let Some(source) = incoming.source_path.as_deref() {
-                self.remember_opened_file(source);
-            }
-            if let Some(model_ref) = incoming.model_ref.as_ref() {
-                self.remember_opened_file(&model_ref.path);
+        if let Some(loaded) = incoming.model_ref.as_ref() {
+            let own_output = restored_review
+                && self.exported_since_load
+                && self.model_ref.as_ref().is_some_and(|current| {
+                    current.identity == loaded.identity
+                        && crate::exporter::same_file(&current.path, &loaded.path)
+                        && self
+                            .file_history
+                            .is_written_output(&current.path, &loaded.identity)
+                });
+            if !own_output {
+                if let Some(source) = incoming.source_path.as_deref() {
+                    self.remember_opened_file(source);
+                }
+                self.remember_opened_file(&loaded.path);
+                self.file_history.remember_opened(&loaded.identity);
             }
         }
         self.exported_since_load = false;
@@ -1448,12 +1456,13 @@ fn set_stl_unit(session: &mut Session, unit: UnitLabel) {
     let Some(model_ref) = session.model_ref.as_ref() else {
         return;
     };
-    open::open_guarded(
+    open::open_guarded_with_identity(
         session,
         model_ref.path.clone(),
         LoadOptions {
             stl_unit: Some(unit),
         },
+        Some(model_ref.identity.clone()),
     );
 }
 

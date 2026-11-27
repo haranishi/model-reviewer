@@ -285,6 +285,125 @@ fn export_switches_target_saves_review_and_reopens_matching() {
 }
 
 #[test]
+fn protect_moved_export() {
+    for (tag, original, copy) in [
+        ("renamed-glb", sample_glb(), false),
+        ("moved-stl", model_reviewer_testdata::stl_sample(), true),
+    ] {
+        let dir = scratch(tag);
+        let (mut session, source) = open_glb(&dir, "source", &original);
+        session.apply(Command::ExportGlb(dir.join("working.glb")));
+        pump_export(&mut session);
+        assert!(session.export_error().is_none());
+        let moved = dir.join("moved.glb");
+        if copy {
+            std::fs::copy(&source, &moved).unwrap();
+            std::fs::remove_file(source).unwrap();
+        } else {
+            std::fs::rename(source, &moved).unwrap();
+        }
+        session.apply(Command::ExportGlb(moved.clone()));
+        pump_export(&mut session);
+        assert!(
+            session
+                .export_error()
+                .is_some_and(|s| s.contains("別の名前"))
+        );
+        assert_eq!(std::fs::read(moved).unwrap(), original);
+    }
+}
+
+#[test]
+fn protect_swapped_destination() {
+    let dir = scratch("swap-before-replace");
+    let original = sample_glb();
+    let (mut session, source) = open_glb(&dir, "sample.glb", &original);
+    let target = dir.join("target.glb");
+    let moved = target.clone();
+    session.set_export_hooks(ExportHooks {
+        before_verify: Some(Arc::new(move || std::fs::rename(&source, &moved).unwrap())),
+        ..Default::default()
+    });
+    session.apply(Command::ExportGlb(target.clone()));
+    pump_export(&mut session);
+    assert!(
+        session
+            .export_error()
+            .is_some_and(|s| s.contains("別の名前"))
+    );
+    assert_eq!(std::fs::read(target).unwrap(), original);
+    assert!(!has_tmp_files(&dir));
+}
+
+#[test]
+fn protect_replaced_output() {
+    let dir = scratch("replaced-output");
+    let (mut session, _) = open_glb(&dir, "sample.glb", &sample_glb());
+    let out = dir.join("out.glb");
+    session.apply(Command::ExportGlb(out.clone()));
+    pump_export(&mut session);
+    let bytes = std::fs::read(&out).unwrap();
+    let twin = write_bytes(&dir, "opened-twin.glb", &bytes);
+    session.apply(Command::OpenModel(twin.clone()));
+    pump_load(&mut session);
+
+    // 出力と同じバイト列を開いても、本物の出力には引き続き書ける。
+    session.apply(Command::ExportGlb(out.clone()));
+    pump_export(&mut session);
+    assert!(session.export_error().is_none());
+    assert_eq!(std::fs::read(&out).unwrap(), bytes);
+
+    // 同じ場所・同じ内容でも、開いたファイルと入れ替われば例外を取り消す。
+    std::fs::remove_file(&out).unwrap();
+    std::fs::rename(twin, &out).unwrap();
+    move_part(&mut session, ARM, Vec3::X);
+    session.apply(Command::ExportGlb(out.clone()));
+    pump_export(&mut session);
+    assert!(
+        session
+            .export_error()
+            .is_some_and(|s| s.contains("別の名前"))
+    );
+    assert_eq!(std::fs::read(out).unwrap(), bytes);
+    assert!(session.doc_unsaved());
+}
+
+#[test]
+fn protect_restore_candidate() {
+    let dir = scratch("restore-other-copy");
+    let (mut session, _) = open_glb(&dir, "sample.glb", &sample_glb());
+    move_part(&mut session, ARM, Vec3::X);
+    let out = dir.join("out.glb");
+    session.apply(Command::ExportGlb(out.clone()));
+    pump_export(&mut session);
+    let review = dir.join("review.json");
+    session.apply(Command::SaveReview(review.clone()));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&review).unwrap()).unwrap();
+    json["model"]["relative_path"] = "candidate.glb".into();
+    std::fs::write(&review, json.to_string()).unwrap();
+    let candidate = dir.join("candidate.glb");
+    std::fs::copy(&out, &candidate).unwrap();
+    std::fs::remove_file(out).unwrap();
+    let original = std::fs::read(&candidate).unwrap();
+    move_part(&mut session, ARM, Vec3::Y);
+    session.apply(Command::LoadReview(review));
+    session.apply(Command::ConfirmDiscard);
+    pump_load(&mut session);
+    assert_eq!(session.status_text, "レビューを復元しました");
+    move_part(&mut session, ARM, Vec3::Z);
+    session.apply(Command::ExportGlb(candidate.clone()));
+    pump_export(&mut session);
+    assert!(
+        session
+            .export_error()
+            .is_some_and(|s| s.contains("別の名前"))
+    );
+    assert_eq!(std::fs::read(candidate).unwrap(), original);
+    assert!(session.doc_unsaved());
+}
+
+#[test]
 fn re_exporting_to_own_exported_file_succeeds_while_opened_file_stays_forbidden() {
     let dir = scratch("reexport");
     let original = sample_glb();

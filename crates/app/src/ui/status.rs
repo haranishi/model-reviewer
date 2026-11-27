@@ -131,17 +131,19 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
 }
 
 fn show_middle(ui: &mut egui::Ui, session: &Session) {
-    let (text, color) = if let Some(label) = session.load.label() {
-        let joined = match session.edit_block_reason() {
+    let phase = session.load.label().or_else(|| {
+        session
+            .export_stage()
+            .map(|stage| stage.label_ja().to_owned())
+    });
+    let (text, color) = if let Some(label) = phase {
+        let reason = session
+            .review_save_block_reason()
+            .filter(|reason| *reason == session.status_text)
+            .or_else(|| session.edit_block_reason());
+        let joined = match reason {
             Some(reason) => format!("{label}  {reason}"),
             None => label,
-        };
-        (joined, None)
-    } else if let Some(stage) = session.export_stage() {
-        let label = stage.label_ja();
-        let joined = match session.edit_block_reason() {
-            Some(reason) => format!("{label}  {reason}"),
-            None => label.to_owned(),
         };
         (joined, None)
     } else if let Some(reason) = session.edit_block_reason() {

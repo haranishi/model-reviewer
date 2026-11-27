@@ -11,6 +11,9 @@ use model_reviewer_core::scene::{NodeId, SceneRead};
 
 /// インスタンスのフラグ。法線を持たない形状は、シェーダーで面法線を導く。
 pub const FLAG_DERIVE_NORMAL: u32 = 1;
+/// インスタンスのフラグ。ワールド行列の行列式が負（鏡写し）の部品。表と裏の判定が逆になるので、
+/// シェーダーが断面の切り口の色を決めるときに反転する。`instance` がワールド行列から毎回決め直す。
+pub const FLAG_MIRRORED: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -148,7 +151,9 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
 }
 
 /// 1件のインスタンス。確定した変形の部分更新でも、作り直しと同じ値になるようにここだけで作る。
+/// 鏡写しの印（`FLAG_MIRRORED`）は、渡された `flags` の値を捨てて `world` から決め直す。
 pub(crate) fn instance(world: &Affine3A, color: [f32; 4], node: u32, flags: u32) -> InstanceRaw {
+    let flags = (flags & !FLAG_MIRRORED) | if is_mirrored(world) { FLAG_MIRRORED } else { 0 };
     let m = glam::Mat4::from(*world).to_cols_array_2d();
     let n = normal_matrix(world);
     let cols = n.to_cols_array_2d();
@@ -164,6 +169,12 @@ pub(crate) fn instance(world: &Affine3A, color: [f32; 4], node: u32, flags: u32)
     }
 }
 
+/// ワールド行列の左上3×3の行列式が負か（鏡写し）。0 と有限でない値は鏡写しとしない。
+pub fn is_mirrored(world: &Affine3A) -> bool {
+    let det = world.matrix3.determinant();
+    det.is_finite() && det < 0.0
+}
+
 /// 左上3×3の逆転置。逆行列が有限でない（拡大率0など）ときは単位行列。
 pub fn normal_matrix(world: &Affine3A) -> Mat3 {
     let linear = Mat3::from(world.matrix3);
@@ -173,4 +184,28 @@ pub fn normal_matrix(world: &Affine3A) -> Mat3 {
     }
     let n = linear.inverse().transpose();
     if n.is_finite() { n } else { Mat3::IDENTITY }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn mirrored_flag_follows_the_world_not_the_given_flags() {
+        let plain = Affine3A::from_scale(Vec3::new(2.0, 1.0, 1.0));
+        let mirrored = Affine3A::from_scale(Vec3::new(-2.0, 1.0, 1.0));
+        let color = [0.5; 4];
+        let a = instance(&mirrored, color, 3, FLAG_DERIVE_NORMAL);
+        assert_eq!(a.ids[1], FLAG_DERIVE_NORMAL | FLAG_MIRRORED);
+        // 部分更新は前の印を渡す。鏡写しでなくなったら印が外れ、法線の印は残る。
+        let b = instance(&plain, color, 3, a.ids[1]);
+        assert_eq!(b.ids[1], FLAG_DERIVE_NORMAL);
+        let c = instance(&mirrored, color, 3, 0);
+        assert_eq!(c.ids[1], FLAG_MIRRORED);
+        let flat = Affine3A::from_scale(Vec3::new(0.0, 1.0, 1.0));
+        assert_eq!(instance(&flat, color, 3, FLAG_MIRRORED).ids[1], 0);
+        let nan = Affine3A::from_scale(Vec3::new(f32::NAN, 1.0, 1.0));
+        assert!(!is_mirrored(&nan));
+    }
 }

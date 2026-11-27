@@ -5,7 +5,7 @@ mod common;
 use common::{cube, model, node, tetra, trs};
 use glam::{Affine3A, Quat, Vec3};
 use model_reviewer_core::scene::NodeId;
-use model_reviewer_render::instances::{self, FLAG_DERIVE_NORMAL};
+use model_reviewer_render::instances::{self, FLAG_DERIVE_NORMAL, FLAG_MIRRORED};
 use model_reviewer_render::plan::{INSTANCE_BYTES, PAGE_TARGET_BYTES};
 use model_reviewer_render::{RenderError, plan_buffers};
 
@@ -193,4 +193,46 @@ fn normal_matrix_handles_non_uniform_and_zero_scale() {
     assert!(tangent.dot(normal).abs() < 1e-5);
     let flat = trs(Vec3::new(1.0, 0.0, 1.0), Quat::IDENTITY, Vec3::ZERO);
     assert_eq!(instances::normal_matrix(&flat), glam::Mat3::IDENTITY);
+}
+
+#[test]
+fn mirrored_parts_are_marked_when_the_determinant_is_negative() {
+    let m = model(
+        vec![cube(true), tetra()],
+        vec![
+            node("root", None, Affine3A::IDENTITY, vec![]),
+            node(
+                "plain",
+                Some(0),
+                trs(
+                    Vec3::new(2.0, 1.0, 1.0),
+                    Quat::from_rotation_y(0.4),
+                    Vec3::X,
+                ),
+                vec![(0, GREY)],
+            ),
+            node(
+                "mirrored",
+                Some(0),
+                trs(Vec3::new(-1.0, 1.0, 1.0), Quat::IDENTITY, Vec3::Y),
+                vec![(0, GREY), (1, GREY)],
+            ),
+            node(
+                "two_negative",
+                Some(0),
+                trs(Vec3::new(-1.0, -1.0, 1.0), Quat::IDENTITY, Vec3::Z),
+                vec![(0, GREY)],
+            ),
+        ],
+    );
+    let list = instances::build(&m, &|_| true);
+    // 立方体の並びは plain・mirrored・two_negative、四面体は mirrored。
+    assert_eq!(list.nodes, vec![1, 2, 3, 2]);
+    let flags: Vec<u32> = list.raw.iter().map(|raw| raw.ids[1]).collect();
+    assert_eq!(flags[0] & FLAG_MIRRORED, 0);
+    assert_eq!(flags[1] & FLAG_MIRRORED, FLAG_MIRRORED);
+    assert_eq!(flags[2] & FLAG_MIRRORED, 0, "負が2つなら鏡写しではない");
+    // 鏡写しの印と法線の印は、同じ場所に独立して立つ。
+    assert_eq!(flags[3], FLAG_MIRRORED | FLAG_DERIVE_NORMAL);
+    assert_eq!(flags[1] & FLAG_DERIVE_NORMAL, 0);
 }

@@ -63,6 +63,15 @@ pub struct FrameParams {
     pub section: Option<SectionPlane>,
 }
 
+/// 描画の定数 `params` の z（断面の位置）と w（`SectionPlane::code`）。断面なしは必ず `[0, 0]`。
+/// 位置が有限でない平面も、何も切らないように `[0, 0]` にする（0 以外が残ると画素が消える）。
+pub fn section_params(section: Option<&SectionPlane>) -> [f32; 2] {
+    match section {
+        Some(plane) if plane.offset.is_finite() => [plane.offset, plane.code()],
+        _ => [0.0, 0.0],
+    }
+}
+
 pub fn plan_buffers(model: &Model, limits: &wgpu::Limits) -> Result<BufferPlan, RenderError> {
     let max_buffer = limits.max_buffer_size;
     let target = PAGE_TARGET_BYTES.min(max_buffer);

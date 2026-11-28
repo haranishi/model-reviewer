@@ -1,6 +1,7 @@
 //! BIN を自分で読み、共有と階層を組み立てる。gltf のリーダーは使わない。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use gltf::json::accessor::{ComponentType, GenericComponentType, Type};
@@ -226,6 +227,7 @@ struct ShareKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum TexKey {
     Material(usize),
+    Unresolved(usize),
     Mask { cutoff: u32, baked_box: Option<u32> },
 }
 
@@ -630,6 +632,7 @@ impl<'a> Assembly<'a> {
         let cutoff = matches!(material.alpha_mode, Checked::Valid(AlphaMode::Mask))
             .then(|| material.alpha_cutoff.unwrap_or_default().0);
         let baked_box = self.texture_metadata.box_sizes.get(&index).copied();
+        let has_reference = base.is_some();
         let displayed = base.and_then(|base| {
             let skipped = match base {
                 BaseTexture::Embedded(texture) if has_uv => return Some(texture),
@@ -641,6 +644,8 @@ impl<'a> Assembly<'a> {
         });
         let key = if displayed.is_some() {
             TexKey::Material(index)
+        } else if has_reference {
+            TexKey::Unresolved(index)
         } else if let Some(cutoff) = cutoff {
             TexKey::Mask {
                 cutoff: cutoff.to_bits(),
@@ -660,6 +665,13 @@ impl<'a> Assembly<'a> {
                     transform: uv_transform(base.transform),
                     tex_coord: base.tex_coord,
                     info_from: Some(u32_index(index)?),
+                },
+            ),
+            None if has_reference => (
+                None,
+                Sampling::default(),
+                UvMap::Unresolved {
+                    material: u32_index(index)?,
                 },
             ),
             None => (
@@ -775,7 +787,7 @@ fn prim_info(primitive: &gltf::json::mesh::Primitive) -> Result<PrimInfo, LoadEr
 }
 
 /// UV の組の番号と、頂点ごとの値。
-pub(crate) type UvSets = Vec<(u32, Vec<[f32; 2]>)>;
+pub(crate) type UvSets = Vec<(u32, Arc<[[f32; 2]]>)>;
 
 /// 形状の `TEXCOORD_n` を組の番号順に読む。読めない組（型・範囲が不正、数が頂点と違う）は
 /// 値を返さず、番号だけを `skipped` に入れる。頂点の数は `POSITION` の数。
@@ -783,24 +795,50 @@ pub(crate) fn uv_sets(
     root: &Root,
     bin: &[u8],
     primitive: &gltf::json::mesh::Primitive,
-) -> (UvSets, Vec<u32>) {
+) -> Result<(UvSets, Vec<u32>), LoadError> {
     let vertices = find_semantic(primitive, Semantic::Positions)
         .and_then(|index| root.accessors.get(index))
-        .map(|accessor| accessor.count.0 as usize);
+        .map(|accessor| accessor.count.0);
     let mut sets = Vec::new();
     let mut skipped = Vec::new();
+    let mut sources = HashMap::new();
     for (semantic, index) in &primitive.attributes {
         let Checked::Valid(Semantic::TexCoords(set)) = semantic else {
             continue;
         };
-        match read_uvs(root, bin, index.value()) {
-            Ok(uvs) if Some(uvs.len()) == vertices => sets.push((*set, uvs)),
-            _ => skipped.push(*set),
+        let index = index.value();
+        if root
+            .accessors
+            .get(index)
+            .is_some_and(|a| Some(a.count.0) == vertices)
+        {
+            sources.entry(index).or_insert_with(Vec::new).push(*set);
+        } else {
+            skipped.push(*set);
+        }
+    }
+    // 同じ accessor は一度だけ展開する。重なるビューを別の accessor が指す場合も
+    // 全体の展開量を、確保に入る前に検査する。
+    let count = vertices.unwrap_or(0).saturating_mul(sources.len() as u64);
+    let bytes = count.saturating_mul(8);
+    if bytes > u64::from(u32::MAX) || bytes > isize::MAX as u64 {
+        return Err(LoadError::TooLarge {
+            what: "UV の組の合計".to_owned(),
+        });
+    }
+    guard_len(count as usize, 8, bin.len())?;
+    for (index, numbers) in sources {
+        match read_uvs(root, bin, index) {
+            Ok(uvs) if Some(uvs.len() as u64) == vertices => {
+                let values: Arc<[[f32; 2]]> = uvs.into();
+                sets.extend(numbers.into_iter().map(|set| (set, Arc::clone(&values))));
+            }
+            _ => skipped.extend(numbers),
         }
     }
     sets.sort_by_key(|(set, _)| *set);
     skipped.sort_unstable();
-    (sets, skipped)
+    Ok((sets, skipped))
 }
 
 /// 形状の JSON から、読み込みと同じ式で頂点と三角形を作る。三角形が無ければ `None`。

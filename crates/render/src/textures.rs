@@ -79,6 +79,7 @@ fn sampler_desc(s: Sampling) -> wgpu::SamplerDescriptor<'static> {
 
 fn uniform(device: &wgpu::Device, map: UvMap, cutoff: Option<f32>) -> wgpu::Buffer {
     let (transform, [width, height], kind) = match map {
+        UvMap::Unresolved { .. } => (IDENTITY_TRANSFORM, [1.0; 2], 0.0),
         UvMap::Vertex { transform, .. } => (transform, [1.0; 2], 0.0),
         UvMap::Box { size, aspect } => (IDENTITY_TRANSFORM, box_sides(size, aspect), 1.0),
     };

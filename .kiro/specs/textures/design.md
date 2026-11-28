@@ -31,11 +31,12 @@ pub struct ImageInfo { pub hash: ImageHash, pub mime: Mime, pub source: ImageSou
 pub enum Wrap { Repeat, Mirror, Clamp }
 pub struct Sampling { pub wrap: [Wrap; 2], pub mag_linear: bool, pub min_linear: bool, pub mip: Mip }  // Mip { None, Nearest, Linear }
 pub enum UvMap {
+    Unresolved { material: u32 },        // 表示を省いた基本色の画像。取り消しで元の参照を戻す
     Vertex { transform: [f32; 6],        // 2×3 の行列（m00 m01 tx m10 m11 ty）。無変換は単位行列
              tex_coord: u32, info_from: Option<u32> },  // UV の番号と、textureInfo を読んだ材質の番号（書き出しが写す）
     Box { size: f32, aspect: f32 },      // 形状のローカルの長さで画像の長い辺と、画像の幅 / 高さ
 }
-pub struct TexUse { pub image: Option<ImageId>, pub sampling: Sampling, pub map: UvMap,   // image が None は「MASK だけの材質」
+pub struct TexUse { pub image: Option<ImageId>, pub sampling: Sampling, pub map: UvMap,   // 表示する画像が無ければ None
                     pub cutoff: Option<f32>,          // 材質が MASK のとき。画像の有無によらず保つ
                     pub baked_box: Option<f32> }      // 箱形を UV に焼いて書いた材質の印（design-export.md）
 pub struct Textures { pub images: Vec<ImageInfo>, pub uses: Vec<TexUse>,

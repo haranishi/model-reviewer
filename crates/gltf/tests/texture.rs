@@ -58,7 +58,15 @@ fn assert_skipped(model: &Model, reason: ImageSkipReason) {
     assert_eq!(model.stats.placed_triangles, 7);
     assert!(model.textures.images.is_empty());
     assert!(model.textures.prim_uvs.is_empty());
-    assert!(model.draws.iter().all(|draw| draw.tex.is_none()));
+    // 未対応の画像は表示せず、取り消しで戻す参照だけを保持する。
+    assert!(matches!(
+        first_tex(model).map,
+        UvMap::Unresolved { material: 0 }
+    ));
+    assert!(model.draws.iter().filter_map(|draw| draw.tex).all(|id| {
+        let tex = model.tex_use(id).unwrap();
+        tex.image.is_none() && matches!(tex.map, UvMap::Unresolved { material: 0 })
+    }));
     assert!(
         model
             .warnings
@@ -161,7 +169,23 @@ fn base_color_texture_becomes_tex_use() {
         primitives.push(second);
     });
     assert_eq!(shared.textures.images.len(), 1);
-    assert_eq!(shared.textures.uses.len(), 2);
+    assert_eq!(
+        shared
+            .textures
+            .uses
+            .iter()
+            .filter(|t| t.image.is_some())
+            .count(),
+        2
+    );
+    assert_eq!(shared.textures.uses.len(), 3);
+    assert!(
+        shared
+            .textures
+            .uses
+            .iter()
+            .any(|t| t.image.is_none() && t.map == UvMap::Unresolved { material: 1 })
+    );
     assert_eq!(shared.draws[0].prim, shared.draws[1].prim);
     let second = shared.tex_use(shared.draws[1].tex.unwrap()).unwrap();
     assert_eq!(second.image, first_tex(&shared).image);
@@ -501,7 +525,11 @@ fn share_key_separates_different_uvs() {
         if textured {
             assert_eq!(ids, [0, 1, 2, 2, 0]);
             assert_eq!(draws[0].tex, draws[1].tex);
-            assert!(draws[2..4].iter().all(|d| d.tex.is_none()));
+            assert!(draws[2].tex.is_none());
+            let skipped = model.tex_use(draws[3].tex.unwrap()).unwrap();
+            assert!(
+                skipped.image.is_none() && matches!(skipped.map, UvMap::Unresolved { material: 0 })
+            );
             assert_eq!(model.prim_uvs(draws[0].prim)[2], [1.0, 1.0]);
             assert_eq!(model.prim_uvs(draws[1].prim), [[0.0, 0.0]; 4]);
             assert!(model.prim_uvs(draws[2].prim).is_empty());

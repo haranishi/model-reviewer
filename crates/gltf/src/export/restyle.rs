@@ -3,12 +3,14 @@
 use std::collections::{HashMap, HashSet};
 
 use gltf::json::Value;
-use model_reviewer_core::texture::same_look;
 
 use super::append::{Appender, Geometry, PrimRefs, SourceUvs};
 use super::base::Base;
 use super::json::{f32s, obj, push, remove};
-use super::textures::{TextureEdit, TextureWriter, box_size, can_mark, invalid, model_look};
+use super::textures::{
+    TextureEdit, TextureWriter, box_size, can_mark, color_texture, invalid, model_look,
+    same_texture,
+};
 use super::{ExportError, ExportNote, ExportScene};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,7 +108,7 @@ pub(super) fn apply(
                 let previous = scene.textures.look(old.tex)?;
                 let color_changed =
                     old.base_color.map(f32::to_bits) != draw.base_color.map(f32::to_bits);
-                let texture_changed = !same_look(previous, look);
+                let texture_changed = !same_texture(previous, look, &base.value, &base.value);
                 let material = if !color_changed && !texture_changed {
                     None
                 } else {
@@ -146,7 +148,7 @@ pub(super) fn apply(
             let color_changed = original.is_some_and(|old| {
                 old.base_color.map(f32::to_bits) != draw.base_color.map(f32::to_bits)
             });
-            let texture_changed = !same_look(previous, look);
+            let texture_changed = !same_texture(previous, look, &base.value, &base.value);
             if range.is_some() && !color_changed && !texture_changed {
                 continue;
             }
@@ -192,6 +194,14 @@ pub(super) fn apply(
                                 key: uv_accessors(first),
                                 read: Box::new(move || base.bake_uv_sets(m, slot)),
                             },
+                        )?)
+                    }
+                    (Some(s), None) if let Some((index, geometry)) = scene.added_geometry(draw) => {
+                        Some(bin.primitive(
+                            Geometry::Added(index),
+                            geometry,
+                            Some(s),
+                            SourceUvs::none(),
                         )?)
                     }
                     (Some(s), None) => {
@@ -354,6 +364,9 @@ fn material_copy(
     }
     match key.texture {
         TextureEdit::Keep => {}
+        TextureEdit::Unresolved { from } => {
+            pbr["baseColorTexture"] = color_texture(root, from).clone()
+        }
         TextureEdit::Remove => remove(pbr, "baseColorTexture"),
         TextureEdit::Vertex { texture, from } => {
             let mut info =

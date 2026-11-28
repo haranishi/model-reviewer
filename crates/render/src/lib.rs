@@ -1066,7 +1066,7 @@ fn draw_faces(
         }
         let material = batch_material(shown, batch);
         let textured = match material.map(|m| m.map) {
-            None => None,
+            None | Some(UvMap::Unresolved { .. }) => None,
             Some(UvMap::Vertex { .. }) => pipelines.scene_uv.get(),
             Some(UvMap::Box { .. }) => pipelines.scene_box.get(),
         };

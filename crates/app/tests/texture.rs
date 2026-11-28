@@ -423,6 +423,7 @@ fn paste_without_selection_is_refused() {
         Command::DroppedFiles(vec![png("none")]),
     ] {
         s.apply(cmd);
+        CountingImages::default().finish(&mut s);
         assert_eq!(s.status_text, "貼る部品を選んでから、画像を貼ってください");
         assert!(!s.is_loading() && !s.textures_busy() && s.dialog.is_none());
         assert_eq!(s.history.doc_rev(), rev);
@@ -711,17 +712,47 @@ fn size_field_accepts_typing(focused: bool) {
 
 #[test]
 fn repaste_preserves_size_and_updates_aspect() {
+    check_aspect_exports("box-aspect", Default::default());
+}
+
+#[test]
+fn aspect_test_detects_failed_export() {
+    let name = "failed-aspect-export";
+    check_aspect_exports(name, Default::default());
+    let failure = std::panic::catch_unwind(|| {
+        check_aspect_exports(
+            name,
+            app::exporter::ExportHooks {
+                after_write: Some(std::sync::Arc::new(|path| {
+                    std::fs::write(path, b"invalid").unwrap()
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let failure = failure.expect_err("前回の GLB を読んで成功扱いにした");
+    assert!(
+        failure
+            .downcast_ref::<String>()
+            .is_some_and(|text| text.contains("今回の書き出しに失敗"))
+    );
+}
+
+fn check_aspect_exports(name: &str, hooks: app::exporter::ExportHooks) {
     let mut s = cube();
+    s.set_export_hooks(hooks);
     for (w, h) in [(8, 4), (4, 8)] {
-        let path = folder("box-aspect").join(format!("{w}-{h}.png"));
+        let path = folder(name).join(format!("{w}-{h}.png"));
         image::RgbaImage::new(w, h).save(&path).unwrap();
         paste(&mut s, path);
         if w > h {
             s.apply(Command::SetTextureSize(0.25));
         }
-        let path = folder("box-aspect").join(format!("{w}-{h}.glb"));
-        export(&mut s, &path);
-        let model = model_reviewer_gltf::load_glb(&std::fs::read(path).unwrap()).unwrap();
+        let path = folder(name).join(format!("{w}-{h}.glb"));
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let model = model_reviewer_gltf::load_glb(&exported_bytes(&mut s, &path)).unwrap();
         let draw = model.draws[0];
         let p = &model.primitives[draw.prim.0 as usize];
         let uvs = model.prim_uvs(draw.prim);
@@ -771,6 +802,10 @@ fn dropped_image_pastes_dropped_glb_opens() {
     let model = folder("drop").join("actually-model.jpg");
     std::fs::write(&model, sample_glb()).unwrap();
     s.apply(Command::DroppedFiles(vec![model.clone()]));
+    until(|| {
+        s.poll_loader();
+        s.dialog.is_some()
+    });
     s.apply(Command::ConfirmDiscard);
     CountingImages::default().finish(&mut s);
     assert_eq!(
@@ -875,23 +910,30 @@ fn hung_paste_times_out_and_unblocks_writes() {
     // 読み取りは、試験が放すまで終わらない（応答しない場所のファイルの代わり）。
     let (release, held) = mpsc::channel::<()>();
     let held = Arc::new(Mutex::new(held));
-    let timeout = Duration::from_millis(300);
+    let (sent, finished) = mpsc::channel();
+    let timeout = Duration::from_secs(60);
+    let start = Instant::now();
+    let now = Arc::new(Mutex::new(start));
+    let clock = Arc::clone(&now);
     s.set_paste_hooks(app::session::texture::PasteHooks {
         before_read: Some(Arc::new(move || {
             let _ = held.lock().unwrap().recv();
         })),
+        after_send: Some(Arc::new(move || sent.send(()).unwrap())),
+        clock: Some(Arc::new(move || *clock.lock().unwrap())),
         timeout: Some(timeout),
+        ..Default::default()
     });
-    let accepted = Instant::now();
     s.apply(Command::PasteTexture(input.clone()));
     assert!(s.textures_busy());
     s.apply(Command::SaveReview(review.clone()));
     assert!(!review.exists());
-    until(|| {
-        s.poll_loader();
-        !s.textures_busy()
-    });
-    assert!(accepted.elapsed() >= timeout);
+    *now.lock().unwrap() = start + timeout - Duration::from_millis(1);
+    s.poll_loader();
+    assert!(s.textures_busy());
+    *now.lock().unwrap() = start + timeout;
+    s.poll_loader();
+    assert!(!s.textures_busy());
     assert!(s.status_text.contains("やめました"), "{}", s.status_text);
     // やめた後も、受け付けたファイルへは書き出さない。
     export(&mut s, &input);
@@ -903,8 +945,9 @@ fn hung_paste_times_out_and_unblocks_writes() {
     s.apply(Command::SaveReview(review.clone()));
     assert!(review.is_file());
     // 遅れて読み終えても、貼り付けは起きない。
+    s.set_paste_hooks(Default::default());
     release.send(()).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    finished.recv().unwrap();
     s.poll_loader();
     let doc = s.doc.as_ref().unwrap();
     assert_eq!(doc.images().count(), 0);
@@ -1216,4 +1259,215 @@ fn export_color_note_follows_recolored_parts() {
             .body
             .contains("色は画像に掛け合わされて見えます")
     );
+}
+
+fn glb_json(bytes: &[u8]) -> serde_json::Value {
+    let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    serde_json::from_slice(&bytes[20..20 + len]).unwrap()
+}
+
+fn external_quad() -> Vec<u8> {
+    use model_reviewer_gltf::export::{Built, write_container};
+    let base = textured_quad_glb(&Default::default());
+    let mut value = glb_json(&base);
+    value["images"][0] = serde_json::json!({"uri":"original.png"});
+    let built = Built {
+        json: serde_json::to_vec(&value).unwrap(),
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    write_container(&mut bytes, &base, &built).unwrap();
+    bytes
+}
+
+fn exported_bytes(s: &mut Session, path: &Path) -> Vec<u8> {
+    export(s, path);
+    if let Some(reason) = s.export_error() {
+        panic!("今回の書き出しに失敗しました（{reason}）");
+    }
+    assert_eq!(
+        s.model_ref.as_ref().unwrap().path,
+        path.canonicalize().unwrap()
+    );
+    std::fs::read(path).unwrap()
+}
+
+fn drawn_primitive(value: &serde_json::Value, file: usize) -> &serde_json::Value {
+    let mesh = value["nodes"][file]["mesh"].as_u64().unwrap() as usize;
+    &value["meshes"][mesh]["primitives"][0]
+}
+
+#[test]
+fn duplicate_undo_restores_external_reference() {
+    let base = external_quad();
+    let mut s = opened("duplicate-external", &base, 0);
+    s.apply(Command::DuplicateSelected);
+    let copy = s.selection.unwrap();
+    paste(&mut s, png("duplicate-external"));
+    let dir = folder("duplicate-external");
+    exported_bytes(&mut s, &dir.join("boxed.glb"));
+    let file = s.doc.as_ref().unwrap().file_index(copy).unwrap() as usize;
+    s.apply(Command::Undo);
+    let out = glb_json(&exported_bytes(&mut s, &dir.join("restored.glb")));
+    assert_eq!(
+        drawn_primitive(&out, file),
+        drawn_primitive(&glb_json(&base), 0)
+    );
+}
+
+#[test]
+fn removal_clears_external_reference() {
+    let mut s = opened("remove-external", &external_quad(), 0);
+    let dir = folder("remove-external");
+    paste(&mut s, png("remove-external"));
+    exported_bytes(&mut s, &dir.join("boxed.glb"));
+    s.apply(Command::RemoveTexture);
+    let out = glb_json(&exported_bytes(&mut s, &dir.join("removed.glb")));
+    let material = drawn_primitive(&out, 0)["material"].as_u64().unwrap() as usize;
+    assert!(
+        out["materials"][material]["pbrMetallicRoughness"]
+            .get("baseColorTexture")
+            .is_none()
+    );
+    s.apply(Command::Undo);
+    s.apply(Command::Undo);
+    let out = glb_json(&exported_bytes(&mut s, &dir.join("undo.glb")));
+    let material = drawn_primitive(&out, 0)["material"].as_u64().unwrap() as usize;
+    assert_eq!(
+        out["materials"][material]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
+        0
+    );
+}
+
+fn resize_and_count_uvs(mut s: Session, name: &str) {
+    paste(&mut s, png(name));
+    let dir = folder(name);
+    for (i, size) in [0.25, 0.125, 0.5].into_iter().enumerate() {
+        s.apply(Command::SetTextureSize(size));
+        let value = glb_json(&exported_bytes(&mut s, &dir.join(format!("{i}.glb"))));
+        let attrs = drawn_primitive(&value, 0)["attributes"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            attrs.keys().filter(|k| k.starts_with("TEXCOORD_")).count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn shape_reuses_box_set() {
+    resize_and_count_uvs(cube(), "shape-box-set");
+}
+
+#[test]
+fn stl_reuses_box_set() {
+    resize_and_count_uvs(opened("stl-box-set", &stl_sample(), 0), "stl-box-set");
+}
+
+#[test]
+fn restored_review_tracks_pasted_hash() {
+    let mut s = cube();
+    let dir = folder("restore-pasted");
+    let image = png("restore-pasted");
+    paste(&mut s, image.clone());
+    exported_bytes(&mut s, &dir.join("model.glb"));
+    s.apply(Command::DismissDialog);
+    let review = dir.join("saved.json");
+    s.apply(Command::SaveReview(review.clone()));
+    assert_eq!(s.status_text, "レビューを保存しました");
+    s.apply(Command::SetColor([0.3; 3]));
+    assert!(s.doc_unsaved());
+    s.apply(Command::LoadReview(review));
+    s.apply(Command::ConfirmDiscard);
+    CountingImages::default().finish(&mut s);
+    s.apply(Command::Select(Some(NodeId(0))));
+    let tex = selected_tex(&s);
+    assert!(matches!(
+        s.doc
+            .as_ref()
+            .unwrap()
+            .image(tex.image.unwrap())
+            .unwrap()
+            .source,
+        ImageSource::File { .. }
+    ));
+    let note = |s: &Session| {
+        s.dialog
+            .as_ref()
+            .map(|d| d.body.as_str())
+            .unwrap_or_default()
+            .contains("外した貼り付け画像 1 枚")
+    };
+    exported_bytes(&mut s, &dir.join("still-used.glb"));
+    assert!(!note(&s));
+    s.apply(Command::RemoveTexture);
+    let bytes = exported_bytes(&mut s, &dir.join("removed.glb"));
+    let pasted = std::fs::read(image).unwrap();
+    assert!(bytes.windows(pasted.len()).any(|part| part == pasted));
+    assert!(note(&s));
+}
+
+#[test]
+fn drop_header_waits_off_ui() {
+    use std::sync::{Arc, Mutex, mpsc};
+    let mut s = opened("drop-target", &sample_glb(), 3);
+    let ui = std::thread::current().id();
+    let (entered, thread) = mpsc::channel();
+    let (release, wait) = mpsc::channel::<()>();
+    let wait = Mutex::new(wait);
+    s.set_paste_hooks(app::session::texture::PasteHooks {
+        before_probe: Some(Arc::new(move || {
+            let id = std::thread::current().id();
+            entered.send(id).unwrap();
+            if id != ui {
+                let _ = wait.lock().unwrap().recv();
+            }
+        })),
+        ..Default::default()
+    });
+    s.apply(Command::DroppedFiles(vec![png("drop-target")]));
+    // 通知の送信側を仕事のスレッドだけに残す。照会を始め忘れた場合も受信は終了する。
+    s.set_paste_hooks(Default::default());
+    assert!(s.textures_busy());
+    assert_ne!(thread.recv().unwrap(), ui);
+    assert!(!s.poll_loader());
+    s.apply(Command::Select(Some(NodeId(4))));
+    release.send(()).unwrap();
+    CountingImages::default().finish(&mut s);
+    assert_eq!(s.selection, Some(NodeId(4)));
+    assert!(looks(&s, NodeId(3))[0].tex.is_some());
+    assert!(looks(&s, NodeId(4))[0].tex.is_none());
+}
+
+#[test]
+fn timeout_defers_alias_check_until_save() {
+    use std::sync::{Arc, Mutex, mpsc};
+    let dir = folder("timeout-alias");
+    let settings = dir.join("keys.json");
+    let input = dir.join("input.png");
+    let original = br#"{"format":"model-reviewer-keymap","version":1,"bindings":{}}"#;
+    std::fs::write(&settings, original).unwrap();
+    if input.exists() {
+        std::fs::remove_file(&input).unwrap();
+    }
+    std::fs::hard_link(&settings, &input).unwrap();
+    let mut s = cube();
+    s.store = app::keymap::store::Store::open(settings.clone()).store;
+    let (release, held) = mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    s.set_paste_hooks(app::session::texture::PasteHooks {
+        before_read: Some(Arc::new(move || {
+            let _ = held.lock().unwrap().recv();
+        })),
+        timeout: Some(std::time::Duration::ZERO),
+        ..Default::default()
+    });
+    s.apply(Command::PasteTexture(input.clone()));
+    s.poll_loader();
+    assert!(s.opened_files().contains(&input));
+    assert!(s.store.saves(), "時間切れの画面処理ではリンク先を調べない");
+    assert!(s.store.save(&s.keymap).is_err());
+    assert_eq!(std::fs::read(settings).unwrap(), original);
+    release.send(()).unwrap();
 }

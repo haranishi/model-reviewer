@@ -55,18 +55,44 @@ pub struct OriginalNode {
     pub draws: Vec<Draw>,
 }
 
-/// 開いたモデルから `ExportScene::originals` を作る。メッシュの番号が無いモデル（STL など）は空。
+/// 開いたモデルから、ファイル内のノード番号ごとの元の描画を引く。
 pub fn originals(model: &Model) -> HashMap<u32, OriginalNode> {
     model
         .nodes
         .iter()
         .enumerate()
-        .filter_map(|(at, node)| {
-            let mesh = *model.textures.source_meshes.get(&node.gltf_index)?;
-            let draws = model.draws(NodeId(at as u32)).to_vec();
-            Some((node.gltf_index, OriginalNode { mesh, draws }))
-        })
+        .filter_map(|(at, node)| Some((node.gltf_index, original_node(model, NodeId(at as u32))?)))
         .collect()
+}
+
+fn original_node(model: &Model, id: NodeId) -> Option<OriginalNode> {
+    let file = model.nodes[id.0 as usize].gltf_index;
+    Some(OriginalNode {
+        mesh: *model.textures.source_meshes.get(&file)?,
+        draws: model.draws(id).to_vec(),
+    })
+}
+
+/// 複製に割り当てたファイル番号でも、開いた時点の形状と材質を引けるようにする。
+pub fn document_originals(doc: &model_reviewer_core::doc::Document) -> HashMap<u32, OriginalNode> {
+    let mut result = HashMap::new();
+    for (at, node) in doc.nodes().iter().enumerate() {
+        if let Some(file) = doc.file_index(NodeId(at as u32)).or(node.template)
+            && let Some(opened) = node.opened_node
+            && let std::collections::hash_map::Entry::Vacant(entry) = result.entry(file)
+            && let Some(original) = original_node(doc.base(), opened)
+        {
+            entry.insert(original);
+        }
+    }
+    result
+}
+
+impl ExportScene {
+    fn added_geometry(&self, draw: &Draw) -> Option<(u32, &Primitive)> {
+        let index = draw.prim.0.checked_sub(self.base_primitive_count)?;
+        Some((index, self.added.get(index as usize)?.as_ref()))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1,11 +1,15 @@
 mod broken;
 mod glb_writer;
+pub mod metadata;
+mod pattern;
 pub mod rich;
 mod sample;
 mod shapes;
 pub mod stl;
 mod stress;
+mod textured;
 
+pub use pattern::{Pattern, jpeg_8x8, pattern_png};
 pub use rich::rich_glb;
 pub use sample::{
     EXPECTED_WORLD_POSITIONS, MESH_COUNT, NODE_COUNT, NODE_NAMES, PLACED_TRIANGLES,
@@ -15,6 +19,10 @@ pub use stl::{
     STL_SAMPLE_SIZE, STL_SAMPLE_TRIANGLES, STL_SAMPLE_VERTICES, stl_inputs, stl_sample, stl_stress,
 };
 pub use stress::{nested_descendants, placed_triangles, stress_glb, stress_nested_glb};
+pub use textured::{
+    QuadImage, SamplerOptions, TextureTransform, TexturedOptions, UvFormat, textured_quad_glb,
+    textured_scene_glb,
+};
 
 pub fn sample_glb() -> Vec<u8> {
     sample::bytes()

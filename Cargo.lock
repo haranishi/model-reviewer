@@ -1913,6 +1913,7 @@ dependencies = [
 name = "model-reviewer-testdata"
 version = "0.1.0"
 dependencies = [
+ "image",
  "model-reviewer-core",
 ]
 

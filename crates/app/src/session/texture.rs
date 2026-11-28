@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use model_reviewer_core::doc::{DocError, Document, DrawLook, NodeKey};
 use model_reviewer_core::history::{Edit, Step};
@@ -29,6 +29,18 @@ const CHANGED: &str = "貼る間に文書が変わったため、貼りません
 const FILE_LIMIT: u64 = 64 << 20;
 pub(super) const PENDING_EXPORT: &str = "画像の貼り付けが終わってから書き出してください";
 pub(super) const PENDING_REVIEW: &str = "画像の貼り付けが終わってからレビューを保存してください";
+/// 受け付けてからこの時間で読み終わらなければ貼り付けをやめ、書き出しと保存を使えるようにする。
+pub const PASTE_TIMEOUT: Duration = Duration::from_secs(60);
+const TIMED_OUT: &str = "画像の読み込みが 60 秒で終わらないため、貼り付けをやめました（応答しない場所のファイルかもしれません）";
+
+/// 試験用の関数。本番は空。
+#[derive(Clone, Default)]
+pub struct PasteHooks {
+    /// 読み取りの前に、読み取りのスレッドで呼ぶ（読み取りが終わらない場合を再現する）。
+    pub before_read: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// `PASTE_TIMEOUT` の代わりに使う時間。
+    pub timeout: Option<Duration>,
+}
 
 pub struct TextureView {
     pub key: NodeKey,
@@ -233,6 +245,8 @@ pub(super) struct PasteJob {
     pub(super) stale: bool,
     path: PathBuf,
     result: mpsc::Receiver<PasteOutcome>,
+    /// これを過ぎても結果が来なければ打ち切る。
+    deadline: Instant,
 }
 
 /// 読めた原本の識別は、貼り付けが中止になっても書き出し先から守る。
@@ -316,9 +330,14 @@ pub fn paste(session: &mut Session, path: PathBuf) {
     let (tx, result) = mpsc::channel();
     let wake = session.egui_ctx.clone();
     let input = path.clone();
+    let before_read = session.paste_hooks.before_read.clone();
+    let timeout = session.paste_hooks.timeout.unwrap_or(PASTE_TIMEOUT);
     let spawned = std::thread::Builder::new()
         .name("texture-paste".into())
         .spawn(move || {
+            if let Some(hook) = before_read {
+                hook();
+            }
             let mut seen = None;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 read_image(&input, options, available, resident, &mut seen)
@@ -341,7 +360,12 @@ pub fn paste(session: &mut Session, path: PathBuf) {
         stale: false,
         generation: session.shown_generation,
         revision: session.history.doc_rev(),
+        deadline: Instant::now() + timeout,
     });
+    // 画面が描き直されなくても、時間切れの判定が走るようにする。
+    if let Some(ctx) = &session.egui_ctx {
+        ctx.request_repaint_after(timeout);
+    }
     session.status_text = "画像を読み込んでいます".into();
 }
 
@@ -362,7 +386,22 @@ pub(super) fn poll(session: &mut Session) -> bool {
             }
             result
         }
-        Err(mpsc::TryRecvError::Empty) => return false,
+        Err(mpsc::TryRecvError::Empty) => {
+            let now = Instant::now();
+            if now < job.deadline {
+                if let Some(ctx) = &session.egui_ctx {
+                    ctx.request_repaint_after(job.deadline - now);
+                }
+                return false;
+            }
+            // 読み取りのスレッドは止められないので、結果を待たずに捨てる。受け付けたパスは、
+            // 読めたかどうか分からないので書き出し先から守る。
+            let job = session.paste_job.take().unwrap();
+            session.remember_opened_file(&job.path);
+            session.protect_document(&job.path);
+            reject(session, TIMED_OUT.into());
+            return true;
+        }
         Err(mpsc::TryRecvError::Disconnected) => Err("画像の読み込みが中断されました".into()),
     };
     let job = session.paste_job.take().unwrap();

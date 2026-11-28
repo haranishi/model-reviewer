@@ -376,6 +376,9 @@ pub fn note_ja(note: &ExportNote) -> String {
             message
         }
         ExportNote::BoxSizeUnmarked => "材質の追加情報を保つため、箱形の大きさを記録できない材質がありました。次の書き出しでも形状を作り直します。".to_owned(),
+        ExportNote::UvSetsDropped { sets } => format!(
+            "箱形の形状を作るとき、読めない UV の組 {sets} 個は写しませんでした（基本色の画像は使っていない組です）。"
+        ),
         ExportNote::DetachedNodes { count } => {
             format!(
                 "削除した部品 {count} 個はシーンから外しました。形状のデータはファイルに残っています。"

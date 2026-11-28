@@ -200,6 +200,7 @@ pub struct Session {
     /// 実行中のGLB書き出し。
     pub(super) export_job: Option<ExportJob>,
     pub(super) export_hooks: ExportHooks,
+    pub(super) paste_hooks: texture::PasteHooks,
     /// 直近の書き出しの失敗理由（自動操作の `wait_idle` 用）。次の書き出し・読み込みで消える。
     pub(super) export_error: Option<String>,
     /// 直近の状態文が書き出し失敗のものか（状態欄を赤字にするため）。
@@ -307,6 +308,7 @@ impl Default for Session {
             load_hooks: LoadHooks::default(),
             export_job: None,
             export_hooks: ExportHooks::default(),
+            paste_hooks: texture::PasteHooks::default(),
             export_error: None,
             export_failed: false,
             opened_files: Vec::new(),
@@ -653,6 +655,10 @@ impl Session {
 
     pub fn set_export_hooks(&mut self, hooks: ExportHooks) {
         self.export_hooks = hooks;
+    }
+
+    pub fn set_paste_hooks(&mut self, hooks: texture::PasteHooks) {
+        self.paste_hooks = hooks;
     }
 
     /// 書き出し中にUIスレッドで観測した常駐メモリを最大値へ反映する。

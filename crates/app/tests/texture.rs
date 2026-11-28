@@ -858,6 +858,55 @@ fn pending_paste_blocks_writes() {
 }
 
 #[test]
+fn hung_paste_times_out_and_unblocks_writes() {
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+    let mut s = opened("hung-paste", &sample_glb(), 3);
+    let dir = folder("hung-paste");
+    let input = dir.join("source.jpg");
+    let review = dir.join("saved.json");
+    let raw = annotated_jpeg(b"hung");
+    std::fs::write(&input, &raw).unwrap();
+    let _ = std::fs::remove_file(&review);
+    // 読み取りは、試験が放すまで終わらない（応答しない場所のファイルの代わり）。
+    let (release, held) = mpsc::channel::<()>();
+    let held = Arc::new(Mutex::new(held));
+    let timeout = Duration::from_millis(300);
+    s.set_paste_hooks(app::session::texture::PasteHooks {
+        before_read: Some(Arc::new(move || {
+            let _ = held.lock().unwrap().recv();
+        })),
+        timeout: Some(timeout),
+    });
+    let accepted = Instant::now();
+    s.apply(Command::PasteTexture(input.clone()));
+    assert!(s.textures_busy());
+    s.apply(Command::SaveReview(review.clone()));
+    assert!(!review.exists());
+    until(|| {
+        s.poll_loader();
+        !s.textures_busy()
+    });
+    assert!(accepted.elapsed() >= timeout);
+    assert!(s.status_text.contains("やめました"), "{}", s.status_text);
+    // やめた後も、受け付けたファイルへは書き出さない。
+    export(&mut s, &input);
+    assert!(s.export_error().unwrap().contains("別の名前"));
+    assert_eq!(std::fs::read(&input).unwrap(), raw);
+    s.apply(Command::DismissDialog);
+    export(&mut s, &dir.join("allowed.glb"));
+    assert!(s.export_error().is_none(), "{:?}", s.export_error());
+    s.apply(Command::SaveReview(review.clone()));
+    assert!(review.is_file());
+    // 遅れて読み終えても、貼り付けは起きない。
+    release.send(()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    s.poll_loader();
+    let doc = s.doc.as_ref().unwrap();
+    assert_eq!(doc.images().count(), 0);
+}
+
+#[test]
 fn interrupted_open_keeps_images() {
     for cancel in [false, true] {
         let name = if cancel {

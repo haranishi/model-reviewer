@@ -1,9 +1,9 @@
 {
   "feature_name": "textures",
   "created_at": "2026-11-28T03:00:00Z",
-  "updated_at": "2026-11-28T03:00:00Z",
+  "updated_at": "2026-11-28T07:26:00Z",
   "language": "ja",
-  "phase": "tasks-generated",
+  "phase": "implemented",
   "approvals": {
     "requirements": {
       "generated": true,

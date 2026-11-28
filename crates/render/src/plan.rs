@@ -6,24 +6,26 @@
 use std::ops::Range;
 
 use glam::{Mat4, Vec3};
-use model_reviewer_core::scene::{Model, Vertex};
+use model_reviewer_core::scene::{Model, PrimId, SceneRead, Vertex};
 use model_reviewer_core::section::SectionPlane;
 
 use crate::RenderError;
 use crate::display::{DisplayMode, DragPreview};
 use crate::grid::GridParams;
 
-/// 1ページ（頂点バッファ1本とインデックスバッファ1本）の目標の大きさ。
+/// ページ内の各バッファの目標の大きさ。
 pub const PAGE_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 /// インスタンス1件の大きさ。ワールド行列・法線行列・色・NodeId・フラグ。
 pub const INSTANCE_BYTES: u64 = 144;
 pub(crate) const VERTEX_BYTES: u64 = std::mem::size_of::<Vertex>() as u64;
 pub(crate) const INDEX_BYTES: u64 = 4;
+pub(crate) const UV_BYTES: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PagePlan {
     pub vertex_bytes: u64,
     pub index_bytes: u64,
+    pub uv_bytes: u64,
 }
 
 /// プリミティブの置き場所。`draw_indexed(first_index..first_index+index_count, base_vertex, ..)` で描く。
@@ -42,7 +44,7 @@ pub struct BufferPlan {
     pub prims: Vec<PrimSlot>,
     /// 配置された部品の数（インスタンスの最大数）。
     pub placed_instances: u32,
-    /// 頂点とインデックスの合計バイト数。インスタンスは含まない。
+    /// 頂点・インデックス・UV の合計バイト数。インスタンスは含まない。
     pub geometry_bytes: u64,
 }
 
@@ -76,15 +78,22 @@ pub fn plan_buffers(model: &Model, limits: &wgpu::Limits) -> Result<BufferPlan, 
     let max_buffer = limits.max_buffer_size;
     let target = PAGE_TARGET_BYTES.min(max_buffer);
     let mut plan = BufferPlan::default();
-    let mut current: Option<(u32, PagePlan)> = None;
+    let mut current: [Option<usize>; 2] = [None; 2];
 
-    for prim in &model.primitives {
+    for (index, prim) in model.primitives.iter().enumerate() {
         let vertex_count = prim.vertices.len() as u64;
         let index_count = prim.indices.len() as u64;
         check_u32("頂点数", vertex_count)?;
         check_u32("インデックス数", index_count)?;
         let vbytes = vertex_count * VERTEX_BYTES;
         let ibytes = index_count * INDEX_BYTES;
+        let uvs = model.prim_uvs(PrimId(index as u32));
+        if !uvs.is_empty() && uvs.len() != prim.vertices.len() {
+            return Err(RenderError::Device(format!(
+                "形状 {index} の頂点数とUVの数が一致しません"
+            )));
+        }
+        let uvbytes = uvs.len() as u64 * UV_BYTES;
         if vbytes > max_buffer {
             return Err(limit("頂点バッファ", vbytes, max_buffer));
         }
@@ -92,34 +101,34 @@ pub fn plan_buffers(model: &Model, limits: &wgpu::Limits) -> Result<BufferPlan, 
             return Err(limit("インデックスバッファ", ibytes, max_buffer));
         }
 
-        let fits = current.is_some_and(|(_, page)| {
+        let open = &mut current[usize::from(!uvs.is_empty())];
+        let existing = open.filter(|&i| {
+            let page = &plan.pages[i];
             page.vertex_bytes + vbytes <= target && page.index_bytes + ibytes <= target
         });
-        if !fits {
-            if let Some((_, page)) = current.take() {
-                plan.pages.push(page);
-            }
-            current = Some((plan.pages.len() as u32, PagePlan::default()));
-        }
-        let Some((page_index, page)) = current.as_mut() else {
-            unreachable!("直前で用意した");
+        let page_index = if let Some(i) = existing {
+            i
+        } else {
+            let i = plan.pages.len();
+            plan.pages.push(PagePlan::default());
+            *open = Some(i);
+            i
         };
+        let page = &mut plan.pages[page_index];
         let base_vertex = page.vertex_bytes / VERTEX_BYTES;
         if base_vertex > i32::MAX as u64 {
             return Err(limit("頂点の位置", base_vertex, i32::MAX as u64));
         }
         plan.prims.push(PrimSlot {
-            page: *page_index,
+            page: page_index as u32,
             base_vertex: base_vertex as i32,
             first_index: (page.index_bytes / INDEX_BYTES) as u32,
             index_count: index_count as u32,
         });
         page.vertex_bytes += vbytes;
         page.index_bytes += ibytes;
-        plan.geometry_bytes += vbytes + ibytes;
-    }
-    if let Some((_, page)) = current {
-        plan.pages.push(page);
+        page.uv_bytes += uvbytes;
+        plan.geometry_bytes += vbytes + ibytes + uvbytes;
     }
 
     let placed: u64 = model

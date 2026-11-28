@@ -25,8 +25,7 @@ struct VertexOut {
     @location(3) @interpolate(flat) ids: vec2<u32>,
 };
 
-@vertex
-fn vs_main(v: VertexIn) -> VertexOut {
+fn scene_vertex(v: VertexIn) -> VertexOut {
     var world = mat4x4<f32>(v.world0, v.world1, v.world2, v.world3);
     var normal_mat = mat3x3<f32>(v.normal0.xyz, v.normal1.xyz, v.normal2.xyz);
     if (in_drag(v.ids.x)) {
@@ -41,6 +40,11 @@ fn vs_main(v: VertexIn) -> VertexOut {
     out.color = v.color;
     out.ids = v.ids.xy;
     return out;
+}
+
+@vertex
+fn vs_main(v: VertexIn) -> VertexOut {
+    return scene_vertex(v);
 }
 
 const FLAG_DERIVE_NORMAL: u32 = 1u;
@@ -59,6 +63,10 @@ fn is_selected(node: u32) -> bool {
 fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // 微分は分岐の外で求める（一様な制御の流れの中でしか使えない）。断面で捨てるのは、その後にする。
     let face = cross(dpdx(in.world_pos), dpdy(in.world_pos));
+    return shade_face(in, front, face, in.color.rgb);
+}
+
+fn shade_face(in: VertexOut, front: bool, face: vec3<f32>, base_rgb: vec3<f32>) -> vec4<f32> {
     if (section_cut(in.world_pos)) {
         discard;
     }
@@ -86,7 +94,7 @@ fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) ve
     let light = normalize(to_eye + vec3<f32>(0.0, 0.35, 0.0));
     let diffuse = max(dot(n, light), 0.0);
     let ambient = mix(GROUND, SKY, n.y * 0.5 + 0.5);
-    var rgb = in.color.rgb * (ambient * 0.55 + vec3<f32>(diffuse * 0.75));
+    var rgb = base_rgb * (ambient * 0.55 + vec3<f32>(diffuse * 0.75));
     if (is_selected(in.ids.x)) {
         rgb = rgb * 1.35 + vec3<f32>(0.012);
     }

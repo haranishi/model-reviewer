@@ -11,6 +11,157 @@ use model_reviewer_render::{RenderError, plan_buffers};
 
 const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
+#[test]
+fn uv_pages_are_separate() {
+    let mut m = model((0..6).map(|_| tetra()).collect(), vec![]);
+    m.textures.prim_uvs = (0..6)
+        .map(|i| {
+            if i % 2 == 0 {
+                vec![[0.5; 2]; 4]
+            } else {
+                vec![]
+            }
+        })
+        .collect();
+    let limits = wgpu::Limits {
+        max_buffer_size: 200,
+        ..Default::default()
+    };
+    let plan = plan_buffers(&m, &limits).unwrap();
+    let slots: Vec<_> = plan
+        .prims
+        .iter()
+        .map(|s| (s.page, s.base_vertex, s.first_index))
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            (0, 0, 0),
+            (1, 0, 0),
+            (0, 4, 12),
+            (1, 4, 12),
+            (2, 0, 0),
+            (3, 0, 0)
+        ]
+    );
+    assert_eq!(
+        plan.pages.iter().map(|p| p.uv_bytes).collect::<Vec<_>>(),
+        [64, 0, 32, 0]
+    );
+    assert_eq!(plan.geometry_bytes, 6 * (96 + 48) + 3 * 32);
+}
+
+#[test]
+fn plan_without_uvs_is_unchanged() {
+    use model_reviewer_render::{PagePlan, PrimSlot};
+    let m = model(
+        vec![tetra(), cube(true)],
+        vec![node(
+            "両方",
+            None,
+            Affine3A::IDENTITY,
+            vec![(1, GREY), (0, GREY)],
+        )],
+    );
+    let p = plan_buffers(&m, &wgpu::Limits::default()).unwrap();
+    assert_eq!(
+        p.pages,
+        [PagePlan {
+            vertex_bytes: 672,
+            index_bytes: 192,
+            uv_bytes: 0
+        }]
+    );
+    assert_eq!(
+        p.prims,
+        [
+            PrimSlot {
+                page: 0,
+                base_vertex: 0,
+                first_index: 0,
+                index_count: 12
+            },
+            PrimSlot {
+                page: 0,
+                base_vertex: 4,
+                first_index: 12,
+                index_count: 36
+            },
+        ]
+    );
+    assert_eq!((p.geometry_bytes, p.placed_instances), (864, 2));
+}
+
+fn mixed_batches() -> instances::InstanceList {
+    use model_reviewer_core::texture::{IDENTITY_TRANSFORM, ImageId, TexId, TexUse, UvMap};
+    let draws = [
+        vec![Some(0), Some(1)],
+        vec![Some(2), None],
+        vec![Some(0), Some(2), Some(1)],
+        vec![None, Some(1)],
+    ];
+    let mut m = model(
+        vec![tetra()],
+        draws
+            .iter()
+            .map(|ids| node("部品", None, Affine3A::IDENTITY, vec![(0, GREY); ids.len()]))
+            .collect(),
+    );
+    m.textures.prim_uvs = vec![vec![[0.0; 2]; 4]];
+    let uv = UvMap::Vertex {
+        transform: IDENTITY_TRANSFORM,
+        tex_coord: 0,
+        info_from: None,
+    };
+    m.textures.uses = [UvMap::Box { size: 1.0 }, uv, uv]
+        .into_iter()
+        .enumerate()
+        .map(|(i, map)| TexUse {
+            image: Some(ImageId(i as u32)),
+            sampling: Default::default(),
+            map,
+            cutoff: None,
+            baked_box: None,
+        })
+        .collect();
+    for (draw, id) in m.draws.iter_mut().zip(draws.into_iter().flatten()) {
+        draw.tex = id.map(TexId);
+    }
+    instances::build(&m, &|_| true)
+}
+
+#[test]
+fn batches_split_by_texture_and_keep_node_order() {
+    let list = mixed_batches();
+    let groups: Vec<_> = list
+        .batches
+        .iter()
+        .map(|b| (b.prim, b.instances.clone()))
+        .collect();
+    assert_eq!(groups, [(0, 0..2), (0, 2..5), (0, 5..7), (0, 7..9)]);
+    assert_eq!(list.nodes, [1, 3, 0, 2, 3, 1, 2, 0, 2]);
+    // 部分更新で使う位置は、部品の中の描画順。
+    assert_eq!(list.node_slots(&(2..3)), [8, 6, 3]);
+}
+
+#[test]
+fn batch_order_is_plain_uv_box() {
+    let ids: Vec<_> = mixed_batches()
+        .batches
+        .iter()
+        .map(|b| b.tex.map(|id| id.0))
+        .collect();
+    assert_eq!(ids, [None, Some(1), Some(2), Some(0)]);
+}
+
+#[test]
+fn selected_ranges_work_across_texture_batches() {
+    assert_eq!(
+        mixed_batches().selected_ranges(&(1..3)),
+        [(0, 0..1), (0, 3..4), (0, 5..7), (0, 8..9)]
+    );
+}
+
 fn wheels() -> model_reviewer_core::scene::Model {
     model(
         vec![cube(true)],

@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
-use model_reviewer_core::scene::Model;
+use model_reviewer_core::scene::{Model, PrimId, SceneRead};
 
 use crate::RenderError;
-use crate::plan::{BufferPlan, INDEX_BYTES, VERTEX_BYTES};
+use crate::plan::{BufferPlan, INDEX_BYTES, UV_BYTES, VERTEX_BYTES};
 use crate::targets::scoped;
 
 /// `continue_upload` の予算の初期値。
@@ -24,6 +24,7 @@ pub struct UploadProgress {
 pub(crate) struct GpuPage {
     pub vertex: wgpu::Buffer,
     pub index: wgpu::Buffer,
+    pub uv: Option<wgpu::Buffer>,
 }
 
 /// GPUに置いた1つのモデルの形状。
@@ -38,6 +39,9 @@ impl GpuGeometry {
         for page in &self.pages {
             page.vertex.destroy();
             page.index.destroy();
+            if let Some(uv) = &page.uv {
+                uv.destroy();
+            }
         }
     }
 }
@@ -46,7 +50,7 @@ impl GpuGeometry {
 pub(crate) struct UploadJob {
     pub geometry: GpuGeometry,
     prim: usize,
-    /// 0: 頂点、1: インデックス。
+    /// 0: 頂点、1: インデックス、2: UV（あるページだけ）。
     part: u8,
     offset: u64,
     pub uploaded: u64,
@@ -74,6 +78,14 @@ impl UploadJob {
                         size: page.index_bytes.max(4),
                         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
+                    }),
+                    uv: (page.uv_bytes > 0).then(|| {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some(&format!("uv page {index}")),
+                            size: page.uv_bytes,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        })
                     }),
                 })
                 .collect::<Vec<_>>()
@@ -112,18 +124,22 @@ impl UploadJob {
             let prim = &model.primitives[self.prim];
             let slot = self.geometry.plan.prims[self.prim];
             let page = &self.geometry.pages[slot.page as usize];
-            let (bytes, buffer, base): (&[u8], &wgpu::Buffer, u64) = if self.part == 0 {
-                (
+            let (bytes, buffer, base): (&[u8], &wgpu::Buffer, u64) = match self.part {
+                0 => (
                     bytemuck::cast_slice(&prim.vertices),
                     &page.vertex,
                     slot.base_vertex as u64 * VERTEX_BYTES,
-                )
-            } else {
-                (
+                ),
+                1 => (
                     bytemuck::cast_slice(&prim.indices),
                     &page.index,
                     u64::from(slot.first_index) * INDEX_BYTES,
-                )
+                ),
+                _ => (
+                    bytemuck::cast_slice(model.prim_uvs(PrimId(self.prim as u32))),
+                    page.uv.as_ref().expect("UVのあるページ"),
+                    slot.base_vertex as u64 * UV_BYTES,
+                ),
             };
             let remaining = bytes.len() as u64 - self.offset;
             let take = remaining.min(left);
@@ -137,9 +153,8 @@ impl UploadJob {
             }
             if self.offset as usize >= bytes.len() {
                 self.offset = 0;
-                if self.part == 0 {
-                    self.part = 1;
-                } else {
+                self.part += 1;
+                if self.part == 3 || (self.part == 2 && page.uv.is_none()) {
                     self.part = 0;
                     self.prim += 1;
                 }

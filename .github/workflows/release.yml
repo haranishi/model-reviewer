@@ -132,7 +132,7 @@ jobs:
           done
           lipo -create target/{aarch64,x86_64}-apple-darwin/release/model-reviewer -output target/model-reviewer-universal
           for arch in arm64 x86_64; do
-            lipo -verify_arch "$arch" target/model-reviewer-universal
+            lipo target/model-reviewer-universal -verify_arch "$arch"
           done
       - name: Build x86-64
         if: runner.os != 'macOS'

@@ -37,7 +37,7 @@ pub struct Applied { /* … */ pub retextured: bool }     // 画像の番号が�
 - 貼った画像のバイト数の合計は 256 MiB まで。超えるときは貼らずに断る（[ux.md](ux.md) の「上限に空きがありません」と同じ扱い）。
 
 ## 付帯情報の除去（`texture::strip_metadata`）
-- **JPEG**: 区画を順に読み、`APP1`（EXIF・XMP）、`APP3`〜`APP13`、`APP15`、`COM` を落とす。`APP0`（JFIF）、`APP2`（色の設定）、`APP14`、表と画素の区画はそのまま写す。画素の始まり（`SOS`）から後ろは触らない。
+- **JPEG**（区画の並びは ITU-T T.81 の付属書 B に従う）: 始まり（`SOI`）から終わり（`EOI`）まで、区画を1つずつ読む。写すのは、`APP0`（JFIF）、`APP2`（色の設定）、`APP14`、表（`DQT`・`DHT`・`DAC`・`DRI`）、枠（`SOF`）、`DNL`、走査（`SOS` と、それに続く圧縮データ。`FF 00` と `RST` を含み、次の区画の印の手前まで）、`EOI`。落とすのは、`APP1`（EXIF・XMP）、`APP3`〜`APP13`、`APP15`、`COM`。**走査と走査の間にある区画も同じ決まりで選ぶ**（段階表示の JPEG は走査が複数あり、その間にも注釈を置ける）。`EOI` の後ろのバイトは捨てる。知らない印や長さの合わない区画があれば、写さずに断る。
 - **PNG**: 必須のチャンクと、`tRNS`・`gAMA`・`cHRM`・`sRGB`・`iCCP`・`sBIT`・`pHYs` を残す。`tEXt`・`zTXt`・`iTXt`・`eXIf`・`tIME` と、知らない補助チャンクを落とす。チャンクの中身と CRC は写すだけで、作り直さない。
 - 落とした後のバイト列が `decode` で開けることを、貼る前に確かめる。開けなければ断る。文書が持つのも、ハッシュを取るのも、落とした後のバイト列である。
 
@@ -51,13 +51,13 @@ Command::SetTextureSize(f32)           // ワールドの長さ（メートル�
 pub fn paste(session: &mut Session, path: PathBuf);
 pub fn texture_view(session: &Session) -> Option<TextureView>;   // 右のパネルの入力。選択が無ければ None
 ```
-1. `paste`: 選択・描画の有無・読み込み中と書き出し中を確かめ、だめなら理由を状態欄に出して終わる。選んだ部品の鍵（`NodeKey`）と文書の版を控え、仕事のスレッド（`texture-paste`）を起こす。
-2. スレッド: ファイルの大きさ（64 MiB まで）→ 読む → `sniff` → `strip_metadata` → `dimensions` → 残りの上限に収まる段数（`plan_levels` を1枚で呼ぶ。上限は「合計の上限 − 置いたバイト数」）→ `decode`。結果を1回だけ送る。失敗は `TexError::message_ja`。
-3. 受け取ったとき、控えた鍵の部品が残っていて、読み込み中でも書き出し中でもなければ、`add_image` → 描画ごとに `TexUse` を作って `add_tex_use` → `Step::new("画像の貼り付け", vec![Edit::SetLooks { .. }], Some(key))` を実行する。部品が消えていたら「貼る部品が無くなったため、貼りませんでした」。画像は `begin_image` で GPU へ送る（予算つき）。
-4. 描画ごとの `TexUse`: いまの `tex` が `UvMap::Vertex` なら、その `TexUse` の `image` だけを替えた写し。それ以外は `{ image, sampling: 繰り返し・線形・縮小版つき, map: Box { size }, cutoff: None, baked_box: None }`。色は赤・緑・青を 1 に、透明度はそのまま。
-5. `RemoveTexture`: 描画の `tex` を `None` にする（色はそのまま）。`SetTextureSize`: 箱形の描画だけ、`size` を替えた `TexUse` へ差し替える。どちらも `SetLooks` の1回分（名前は「画像を外す」「画像の大きさ」）。すべての描画がすでにその値なら何もしない。
+1. `paste`: 選択・描画の有無・読み込み中と書き出し中を確かめ、だめなら理由を状態欄に出して終わる。箱形になる描画を持つ部品が `no_box_nodes`（自分のノード、複製なら写す元）に当たれば断る。選んだ部品の鍵（`NodeKey`）と、**表示中の文書の世代（`shown_generation`）と文書の版（`doc_rev`）**を控え、仕事のスレッド（`texture-paste`）を起こす。
+2. スレッド: ファイルの大きさ（64 MiB まで）→ 読む → ファイルそのままの識別（長さと BLAKE3。`ModelIdentity::from_bytes`）→ `sniff` → `strip_metadata` → `dimensions` → 残りの上限に収まる段数（`plan_levels` を1枚で呼ぶ。上限は「合計の上限 − 置いたバイト数」）→ `decode`。結果を1回だけ送る。失敗は `TexError::message_ja`。
+3. 受け取ったとき、**世代と版が控えと同じ**で、読み込み中でも書き出し中でもなければ、`add_image` → 描画ごとに `TexUse` を作って `add_tex_use` → `Step::new("画像の貼り付け", vec![Edit::SetLooks { .. }], Some(key))` を実行する。違っていたら「貼る間に文書が変わったため、貼りませんでした」（部品の鍵は文書ごとに 0 から振るので、鍵だけでは別のモデルの部品に当たる。版まで見るのは、取り消しややり直しで同じ鍵の中身が替わるため）。画像は `begin_image` で GPU へ送る（予算つき）。
+4. 描画ごとの `TexUse`: いまの `tex` が `UvMap::Vertex` で、その形状が UV を持つなら、その `TexUse` の `image` だけを替えた写し。それ以外は `{ image: Some(..), sampling: 繰り返し・線形・縮小版つき, map: Box { size }, cutoff: いまの TexUse の cutoff（無ければ None）, baked_box: None }`。色は赤・緑・青を 1 に、透明度はそのまま。
+5. `RemoveTexture`: 描画の `tex` を、`cutoff` があれば `image: None` の `TexUse`、無ければ `None` にする（色はそのまま）。`SetTextureSize`: 箱形の描画だけ、`size` を替えた `TexUse` へ差し替える。どちらも `SetLooks` の1回分（名前は「画像を外す」「画像の大きさ」）。すべての描画がすでにその値なら何もしない。
 6. `after_applied`: `retextured` なら `scene_dirty.instances` を立てる。色だけが変わった範囲は、今の `recolored` の部分更新に乗せる。
-- **保護**: 貼り付けが成功したら、画像のファイル（選んだパスと、リンクを解いたパス）を `opened_files` に足す（[protect-originals](../protect-originals/requirements.md) の決まりに乗せる。内容の照合も同じ仕組みを使う）。
+- **保護**: 貼り付けが成功したら、モデルを開いたときと同じ2つを登録する。①画像のファイルのパス（選んだパスと、リンクを解いたパス）を `opened_files` に、②**ファイルそのままの識別（付帯情報を取り除く前の長さと BLAKE3）を `FileHistory::remember_opened` に**。②があるので、貼った後に画像を別名にしたり移したりしても、書き出しとレビュー保存の保存先にできない（[protect-originals](../protect-originals/design.md) の内容の照合）。文書が持つ「取り除いた後」のハッシュは、この照合には使えない（元のファイルと長さも中身も違うため）。
 - **ドロップ**（`session::open::dropped`）: 1つ目のファイルの先頭を読み、`sniff` が画像なら `PasteTexture` に回す。選択が無ければ断る（開く動作に回さない）。GLB・STL は今のまま。
 - **キー**: `Action::TexturePaste`（名前 `texture.paste`、「画像を貼る」、まとまりは編集、既定 Cmd+T）、`Action::TextureRemove`（`texture.remove`、既定なし）。表は 42 → 45 行（`DisplayTextures` を含む）。入力中・ダイアログ・ヘルプの間は働かせない（今の決まり）。
 - **画面**（`ui/texture.rs`。入力用の構造体だけを受け、`Session` を読まない）: 部品の名前は `texture.state`・`texture.paste`・`texture.remove`・`texture.size`・`texture.note`。置き場所は「色」の下。色の欄の注意（`color.note`）は、選んだ範囲に画像があるときだけ「色は画像に掛け合わされて見えます」。
@@ -66,6 +66,6 @@ pub fn texture_view(session: &Session) -> Option<TextureView>;   // 右のパネ
 ## 壊れやすい所
 1. **貼る先のずれ**。復号の間に選択が変わる。貼る先は、押したときの部品（鍵）であって、届いたときの選択ではない。
 2. **履歴と表の番号**。表を詰めたり並べ替えたりすると、履歴が持つ `TexId` が別の画像を指す。表は足すだけにする。
-3. **色を白にする範囲**。透明度まで 1 にすると、MASK の部品の抜けが変わる。赤・緑・青だけを替える。
+3. **色を白にする範囲と閾値**。透明度まで 1 にする、または箱形で貼るときに `cutoff` を落とすと、MASK の部品の抜けが変わり、書き出して開き直した値とも食い違う（写した材質は `alphaMode` を保つので）。赤・緑・青だけを替え、`cutoff` は引き継ぐ。
 4. **保護の足し忘れ**。貼った画像と同じ名前へ GLB を書き出せると、利用者の画像が消える。
 5. **大きさの換算**。`k` を掛ける側と割る側を取り違えると、mm の STL（`k = 0.001`）で絵が100万倍ずれる。STL に貼る試験で値を固定する。

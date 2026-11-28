@@ -31,14 +31,16 @@ pub struct ImageInfo { pub hash: ImageHash, pub mime: Mime, pub source: ImageSou
 pub enum Wrap { Repeat, Mirror, Clamp }
 pub struct Sampling { pub wrap: [Wrap; 2], pub mag_linear: bool, pub min_linear: bool, pub mip: Mip }  // Mip { None, Nearest, Linear }
 pub enum UvMap {
-    Vertex { transform: [f32; 6] },      // 2×3 の行列（m00 m01 tx m10 m11 ty）。無変換は単位行列
+    Vertex { transform: [f32; 6],        // 2×3 の行列（m00 m01 tx m10 m11 ty）。無変換は単位行列
+             tex_coord: u32, info_from: Option<u32> },  // UV の番号と、textureInfo を読んだ材質の番号（書き出しが写す）
     Box { size: f32 },                   // 形状のローカルの長さで、画像1枚の辺
 }
-pub struct TexUse { pub image: ImageId, pub sampling: Sampling, pub map: UvMap,
-                    pub cutoff: Option<f32>,          // MASK のときだけ
+pub struct TexUse { pub image: Option<ImageId>, pub sampling: Sampling, pub map: UvMap,   // image が None は「MASK だけの材質」
+                    pub cutoff: Option<f32>,          // 材質が MASK のとき。画像の有無によらず保つ
                     pub baked_box: Option<f32> }      // 箱形を UV に焼いて書いた材質の印（design-export.md）
 pub struct Textures { pub images: Vec<ImageInfo>, pub uses: Vec<TexUse>,
-                      pub prim_uvs: Vec<Vec<[f32; 2]>> }   // 形状の番号順。空なら UV なし。表が空なら全部なし
+                      pub prim_uvs: Vec<Vec<[f32; 2]>>,    // 形状の番号順。空なら UV なし。表が空なら全部なし
+                      pub no_box_nodes: Vec<u32> }         // スキンかモーフを持つノード（ファイルの番号。昇順）
 pub struct MipChain { pub size: [u32; 2], pub levels: Vec<Vec<u8>> }       // RGBA8（sRGB）。levels[0] が size
 pub fn plan_levels(sizes: &[[u32; 2]], max_side: u32, budget: u64) -> Vec<Option<u8>>;  // 何段縮めるか。None は出さない
 pub fn chain_bytes(size: [u32; 2]) -> u64;                                 // 縮小版を含む RGBA8 のバイト数
@@ -46,7 +48,7 @@ pub fn box_uv(p: Vec3, face_normal: Vec3, size: f32) -> [f32; 2];          // �
 pub fn bake_box(prim: &Primitive, size: f32) -> Baked;                     // Baked { vertices, uvs, indices }
 ```
 - `SceneRead` に `tex_use(TexId)`・`image(ImageId)`・`prim_uvs(PrimId)` を、既定の実装つき（`None`・空）で足す。`Document` は、土台の表の後ろに、貼った分を足した番号で返す（形状と同じ数え方）。
-- 2つの `TexUse` が「同じ見た目」かは、番号ではなく値で比べる（画像はハッシュ）。`same_look(a, b)` を `core::texture` に置き、書き出しと照合が使う。
+- 2つの `TexUse` が「同じ見た目」かは、番号ではなく値で比べる（画像はハッシュ。`info_from` は比べない）。`same_look(a, b)` を `core::texture` に置き、書き出しと照合が使う。
 
 ## クレートの境界
 | クレート | 足すもの |
@@ -61,7 +63,7 @@ pub fn bake_box(prim: &Primitive, size: f32) -> Baked;                     // Ba
 ## 依存（要件9.2）
 - 足すのは、ワークスペースの `image` の機能に `"jpeg"` を1つ（`features = ["png", "jpeg"]`）。新しいクレートは `image` と `core` を使う。`testdata` は試験用の PNG を作るために `image` を使う。ほかは足さない。
 - 理由: GLB の画像は PNG か JPEG と決まっていて、JPEG を読めないと実物のモデルの多くで絵が出ない。自前の JPEG の復号は書かない。
-- 確かめ方（WP-T2 が行い、結果を報告する）: `cargo tree -i zune-jpeg --locked` が `image` 経由だけを示す。`cargo deny check` が通る（`deny.toml` の許可は MIT・Apache-2.0・Zlib を含む）。`Cargo.lock` の差分が無いか、`zune-*` の行だけである。`cargo build --release` が 1.95 で通る。差分がそれ以外に及んだら、止めて進行役に伝える。
+- 確かめ方（WP-T2 が行い、結果を報告する）: `cargo tree -i zune-jpeg --locked` が `image` 経由だけを示す。`cargo deny check` が通る（`deny.toml` の許可は MIT・Apache-2.0・Zlib を含む）。`Cargo.lock` の差分は、新しいクレートの項目（`model-reviewer-texture`）、それを使う `model-reviewer`・`model-reviewer-testdata` の依存の行、`image` の依存の行（`zune-*`）までを認める。**外部のパッケージの追加と版の変更が1つも無いこと**を条件にする。`cargo build --release` が 1.95 で通る。条件を外れたら、止めて進行役に伝える。
 - 捨てた案: `zune-jpeg` を直に使う（`image` の PNG の道と2本になる）、`jpeg-decoder`（`image` が使わなくなった）、WebP・KTX2（依存が増え、圧縮テクスチャは装置ごとの対応が要る）。
 
 ## 検討して捨てた案
@@ -91,5 +93,6 @@ pub fn bake_box(prim: &Primitive, size: f32) -> Baked;                     // Ba
 ## 要確認（実装で確かめ、結果を報告する）
 - `image` の `jpeg` の機能だけで JPEG の書き出し（試験用の画像の生成）ができるか。できなければ、試験は自分で作った小さな JPEG のバイト列を定数で持つ。
 - `image` が、CMYK の JPEG と16ビットの PNG を RGBA8 に直せるか。直せない形式は「読めない」として断る。
+- `gltf` クレートの機能 `allow_empty_texture` を足した後、`source` の無いテクスチャを持つ GLB が開き、既存の壊れた GLB の試験が今と同じ理由で断られること（[design-display.md](design-display.md) の「読み込み」）。
 - wgpu 30 で、同じ画像を行の範囲に分けて `write_texture` できること、`Rgba8UnormSrgb` が線形補間できること（どちらも見込み。使う前に依存の実物で確かめる）。
 - 箱形の投影の、シェーダーの式と `box_uv` の一致（鏡写しの部品、平行投影を含む）。[design-testing.md](design-testing.md) の GPU の試験で決める。

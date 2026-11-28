@@ -57,6 +57,7 @@ pub use export::{NEW_EXPORT_NOTE, export_scene, note_ja, nothing_to_export, stl_
 pub use keys::{KeyConflict, KeysState};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
+pub use open::TextureProgress;
 pub use pick::ray_hit;
 pub use section::section_bounds;
 pub use snap::{SNAP_RADIUS_POINTS, find as find_snap, rest_after as snap_rest_after};
@@ -110,6 +111,9 @@ pub struct Session {
     pub display: DisplayMode,
     /// 床の格子と軸を出すか。既定は出す。
     pub grid_visible: bool,
+    pub textures_shown: bool,
+    pub textures: TextureProgress,
+    pub(crate) texture_options: loader::TextureOptions,
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
     pub selection: Option<NodeId>,
@@ -227,6 +231,9 @@ impl Default for Session {
             camera: OrbitCamera::default(),
             display: DisplayMode::Faces,
             grid_visible: true,
+            textures_shown: true,
+            textures: TextureProgress::default(),
+            texture_options: loader::TextureOptions::default(),
             lines_supported: false,
             selection: None,
             color_cache: Cell::new(None),
@@ -348,6 +355,9 @@ impl Session {
         let shown = self.shown_generation;
         let key_rev = self.keymap.rev();
         self.apply_inner(cmd);
+        if self.scene_dirty.display || self.scene_dirty.instances {
+            self.color_cache.set(None);
+        }
         if self.keymap.rev() != key_rev {
             keys::save_changes(self);
         }
@@ -534,6 +544,12 @@ impl Session {
             Command::SetProjection(projection) => view::set_projection(self, projection),
             Command::ToggleProjection => view::toggle_projection(self),
             Command::SetGrid(visible) => view::set_grid(self, visible),
+            Command::SetTexturesShown(shown) => {
+                if self.texture_options.enabled && self.textures_shown != shown {
+                    self.textures_shown = shown;
+                    self.scene_dirty.display = true;
+                }
+            }
             Command::SetTool(tool) => edit::set_tool(self, tool),
             Command::BeginTransform { handle, ndc } => edit::begin_transform(self, handle, ndc),
             Command::DragTransform { ndc } => edit::drag_transform(self, ndc),
@@ -646,6 +662,7 @@ impl Session {
     /// モデルを置き、その文書を作る。読み込み（`commit_pending`）と、読み込みを通さない試験が使う。
     /// レビュー・選択・視点には触れない。
     pub fn set_model(&mut self, model: Arc<Model>) {
+        self.reset_textures();
         self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
         self.model = Some(model);
@@ -962,9 +979,7 @@ impl Session {
         }
         self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
-        if let Some(active) = self.loader.take() {
-            active.cancel();
-        }
+        self.loader = None;
         edit::cancel_transform(self);
         self.incoming = None;
         self.staged_pick = None;
@@ -993,6 +1008,7 @@ impl Session {
             path,
             expected_identity,
             options,
+            self.texture_options,
             hooks,
             ctx,
         ));
@@ -1003,9 +1019,7 @@ impl Session {
     pub(super) fn start_new_document(&mut self) {
         self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
-        if let Some(active) = self.loader.take() {
-            active.cancel();
-        }
+        self.loader = None;
         edit::cancel_transform(self);
         self.staged_pick = None;
         self.load_meta = None;
@@ -1044,9 +1058,7 @@ impl Session {
     pub(super) fn cancel_pending_load(&mut self) {
         if self.shown_generation != self.generation {
             self.generation = self.generation.wrapping_add(1);
-            if let Some(active) = self.loader.take() {
-                active.cancel();
-            }
+            self.loader = None;
             self.incoming = None;
             self.staged_pick = None;
             self.loading_file_name = None;
@@ -1123,6 +1135,35 @@ impl Session {
                 index,
                 elapsed,
             } => self.accept_pick(generation, index, elapsed),
+            LoadEvent::TexturePlan {
+                generation,
+                total,
+                shrunk,
+                skipped,
+            } => {
+                if generation == self.generation && generation == self.shown_generation {
+                    self.textures.total = total;
+                    self.textures.planned_shrinks = shrunk;
+                    for (image, reason) in skipped {
+                        self.textures.fail(image, reason);
+                    }
+                }
+            }
+            LoadEvent::TextureFailed {
+                generation,
+                image,
+                error,
+            } => {
+                if generation == self.generation && generation == self.shown_generation {
+                    self.textures.fail(image, error);
+                    self.finish_texture_metrics();
+                }
+            }
+            LoadEvent::TexturesDone { generation } => {
+                if generation == self.generation {
+                    self.loader = None;
+                }
+            }
         }
     }
 
@@ -1266,6 +1307,11 @@ impl Session {
     pub fn close_for_gpu_error(&mut self, message: String) {
         log::error!("gpu error, stopping 3D: {message}");
         self.cancel_pending_load();
+        if self.loader.take().is_some() {
+            self.rebuild_shown_pick();
+        }
+        self.reset_textures();
+        self.color_cache.set(None);
         self.incoming = None;
         self.staged_pick = None;
         self.loading_file_name = None;
@@ -1340,6 +1386,12 @@ impl Session {
         self.shown_generation = incoming.generation;
         self.doc = Some(doc);
         self.model = Some(model);
+        self.reset_textures();
+        if from_gpu {
+            self.textures.opened = self.open_started;
+        } else {
+            self.allow_first_image();
+        }
         self.measurement.clear();
         self.snap_preview = None;
         self.snap_rest_until = None;

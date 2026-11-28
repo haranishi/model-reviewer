@@ -14,6 +14,7 @@ model-reviewer-core = { path = "../core" }
 model-reviewer-gltf = { path = "../gltf" }
 model-reviewer-render = { path = "../render" }
 model-reviewer-stl = { path = "../stl" }
+model-reviewer-texture = { path = "../texture" }
 rfd = { workspace = true }
 memory-stats = { workspace = true }
 image = { workspace = true }

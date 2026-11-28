@@ -277,6 +277,10 @@ fn view_controls(
         display: session.display,
         projection: session.camera.projection,
         grid_visible: session.grid_visible,
+        textures_shown: session
+            .texture_options
+            .enabled
+            .then_some(session.textures_shown),
         lines_supported: session.lines_supported,
         keys: session.key_labels.clone(),
     };

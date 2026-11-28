@@ -117,7 +117,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                     )
                     .on_hover_text("計測の2点の距離（保存されません）");
                 }
-                let count = model.warnings.len();
+                let count = model.warnings.len() + session.textures.warning_count();
                 if count > 0 {
                     let response = ui.add(egui::Button::new(
                         egui::RichText::new(format!("簡略表示 {count} 件")).color(theme::WARNING),
@@ -131,8 +131,14 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                                 for warning in &model.warnings {
                                     ui.label(warning.message_ja());
                                 }
+                                for warning in session.textures.warnings(session.texture_options.budget_mib) {
+                                    ui.label(warning);
+                                }
                             });
                     });
+                }
+                if let Some(progress) = session.texture_progress_label() {
+                    reg(ids::STATUS_TEXTURES, &ui.label(progress));
                 }
             }
             if let Some(name) = selected_name(session) {
@@ -233,9 +239,12 @@ fn fixed_width(ui: &egui::Ui, session: &Session) -> f32 {
     if session
         .model
         .as_ref()
-        .is_some_and(|model| !model.warnings.is_empty())
+        .is_some_and(|model| !model.warnings.is_empty() || session.textures.warning_count() > 0)
     {
         fixed += width("簡略表示 000 件", BUTTON_PAD);
+    }
+    if let Some(progress) = session.texture_progress_label() {
+        fixed += width(&progress, 0.0);
     }
     fixed
 }

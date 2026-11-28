@@ -29,6 +29,16 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
         .id_salt("details.lines")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let p = &session.textures;
+            if session.model.is_some() {
+                ui.label(format!(
+                    "テクスチャ　表示 {} 枚／対象 {} 枚、縮小 {} 枚、転送 {} バイト",
+                    p.displayed(),
+                    session.texture_counts().0,
+                    p.shrunk,
+                    p.bytes
+                ));
+            }
             for line in &lines {
                 // 値の行は短く保ち、説明は次の行に小さく薄く出す。
                 ui.add(egui::Label::new(format!("{}: {}", line.label, line.value)).wrap());

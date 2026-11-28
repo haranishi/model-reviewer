@@ -11,6 +11,7 @@ use crate::keymap::store::StoreSource;
 use crate::session::{Session, keymove};
 
 pub(in crate::automation) fn state_value(session: &Session) -> Value {
+    let (texture_count, texture_failures) = session.texture_counts();
     let hidden = session.review.as_ref().map(|review| {
         review
             .visibility
@@ -90,6 +91,14 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
         "views": views.unwrap_or_default(),
         "camera": camera_json(&session.camera),
         "display": display_name(session.display),
+        "textures": {
+            "total": texture_count,
+            "displayed": session.textures.displayed(),
+            "shrunk": session.textures.shrunk,
+            "failed": texture_failures,
+            "bytes": session.textures.bytes,
+            "shown": session.textures_shown,
+        },
         "measure": {
             "points": measure_points,
             "distance": crate::session::measure_distance(session).map(f64::from),

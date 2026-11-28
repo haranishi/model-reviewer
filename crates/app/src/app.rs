@@ -33,7 +33,9 @@ impl App {
         let mut session = Session::from_launch(&launch);
         session.set_egui_ctx(&cc.egui_ctx);
         let gpu = GpuView::new(cc);
-        if gpu.has_device() {
+        let max_side = gpu.max_texture_side();
+        session.configure_textures(&launch, max_side);
+        if max_side.is_some() {
             session.enable_gpu_upload();
         }
         session.set_lines_supported(gpu.supports_lines());
@@ -122,6 +124,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = Instant::now();
         self.session.metrics.physical_mem = metrics::sample_memory();
+        self.session
+            .observe_texture_memory(self.session.metrics.physical_mem);
         self.session
             .observe_export_memory(self.session.metrics.physical_mem);
         self.session.set_egui_ctx(ui.ctx());
@@ -457,6 +461,10 @@ fn action_command(
         Action::DisplayLines => (session.lines_supported && session.display != DisplayMode::Lines)
             .then_some(Command::SetDisplay(DisplayMode::Lines)),
         Action::DisplayGrid => Some(Command::SetGrid(!session.grid_visible)),
+        Action::DisplayTextures => session
+            .texture_options
+            .enabled
+            .then_some(Command::SetTexturesShown(!session.textures_shown)),
         // 断面はモデルがあるときだけ（第3段階の分岐と同じ）。
         Action::DisplaySection => has_model.then_some(Command::ToggleSection),
         Action::PartsHideSelected => Some(Command::HideSelected),

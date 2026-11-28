@@ -121,6 +121,8 @@ pub struct Session {
     /// 書き出しで新しいファイル番号を得た、スキン・モーフつきの複製。
     exported_no_box: std::collections::HashSet<u32>,
     export_colors: export::ExportColors,
+    /// 開いた後に、書き出したファイルへ入った貼り付け画像。外しても次のファイルに残る。
+    exported_pasted: std::collections::HashSet<model_reviewer_core::texture::ImageHash>,
     pub(crate) texture_options: loader::TextureOptions,
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
@@ -249,6 +251,7 @@ impl Default for Session {
             texture_cache: Cell::new(None),
             exported_no_box: Default::default(),
             export_colors: Default::default(),
+            exported_pasted: Default::default(),
             texture_options: loader::TextureOptions::default(),
             lines_supported: false,
             selection: None,
@@ -709,6 +712,7 @@ impl Session {
     pub fn set_model(&mut self, model: Arc<Model>) {
         self.exported_no_box.clear();
         self.export_colors = Default::default();
+        self.exported_pasted.clear();
         self.reset_textures();
         self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
@@ -1440,6 +1444,7 @@ impl Session {
         self.model = Some(model);
         self.exported_no_box.clear();
         self.export_colors = Default::default();
+        self.exported_pasted.clear();
         self.reset_textures();
         if from_gpu {
             self.textures.opened = self.open_started;

@@ -8,12 +8,13 @@
 //! - 書き出した後は `Document::set_file_indices`・`ModelRef`・`saved_doc_rev` を更新し、
 //!   レビューに内容があれば未保存にする。履歴は残す。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use model_reviewer_core::doc::Document;
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{LoadWarning, NodeId, SceneRead};
+use model_reviewer_core::texture::{ImageHash, ImageSource};
 use model_reviewer_gltf::export::{
     ExportNode, ExportNote, ExportScene, ExportTextures, empty_base, originals,
 };
@@ -269,6 +270,9 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         .map(|(_, &file)| file)
         .collect();
     session.exported_no_box.extend(blocked);
+    let in_use = pasted_in_use(doc);
+    session.exported_pasted.extend(in_use.iter().copied());
+    let left_over = session.exported_pasted.difference(&in_use).count();
     doc.set_file_indices(&done.assigned);
     // 書いたファイルを読み直した行列へそろえる（開き直したときと同じ範囲・初期視点になる）。
     // 最後の桁だけの違いなので、版は進めず、インスタンスだけ作り直す。
@@ -320,6 +324,11 @@ fn finish_export(session: &mut Session, done: ExportDone) {
             lines.push("ほかのソフトでは頂点の色も掛け合わされます。".to_owned());
         }
     }
+    if left_over > 0 {
+        lines.push(format!(
+            "外した貼り付け画像 {left_over} 枚は、ファイルの中に残っています（受け取った人が取り出せます）"
+        ));
+    }
     match session.source_kind {
         SourceKind::Stl { unit, up } => {
             lines.push(stl_export_note(unit, up));
@@ -339,6 +348,18 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     } else {
         session.dialog = Some(result_dialog(&file_name, &lines));
     }
+}
+
+/// シーンにある部品が使っている、貼り付けた画像。
+fn pasted_in_use(doc: &Document) -> HashSet<ImageHash> {
+    let images: Vec<_> = doc.images().collect();
+    (0..doc.nodes().len())
+        .flat_map(|i| doc.draws(NodeId(i as u32)).iter())
+        .filter_map(|draw| doc.tex_use(draw.tex?)?.image)
+        .filter_map(|id| images.get(id.0 as usize))
+        .filter(|image| matches!(image.source, ImageSource::Held(_)))
+        .map(|image| image.hash)
+        .collect()
 }
 
 fn fail_export(session: &mut Session, failure: ExportFailure) {

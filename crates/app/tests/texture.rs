@@ -664,7 +664,11 @@ fn size_field_accepts_typing(focused: bool) {
     use model_reviewer_core::units::UnitLabel;
 
     let mut s = cube();
-    paste(&mut s, png("field"));
+    // 2つの試験が並んで走るので、画像の置き場所を分ける。
+    paste(
+        &mut s,
+        png(if focused { "field" } else { "field-background" }),
+    );
     s.apply(Command::SetDisplayUnit(Some(UnitLabel::Cm)));
     let original = selected_tex(&s);
     let mut h = Harness::builder()
@@ -1148,6 +1152,45 @@ fn export_reopen_matches_looks() {
     ));
     assert_eq!(looks(&s, NodeId(0))[0].base_color, look.base_color);
     assert!(!texture_view(&s).unwrap().has_box);
+}
+
+// 書き出しは足すだけなので、貼って書き出した画像は、外して書き出し直してもファイルに残る。
+#[test]
+fn removed_pasted_image_stays_in_the_file_and_is_reported() {
+    let mut s = cube();
+    let image = png("leftover");
+    paste(&mut s, image.clone());
+    let dir = folder("leftover");
+    // 前の実行の出力は開くモデルと同じ中身になり、上書きが断られる。
+    let _ = std::fs::remove_file(dir.join("third.glb"));
+    export(&mut s, &dir.join("first.glb"));
+    let note = s.dialog.as_ref().unwrap().body.clone();
+    assert!(!note.contains("外した貼り付け画像"), "{note}");
+    s.apply(Command::DismissDialog);
+    s.apply(Command::Undo);
+    let second = dir.join("second.glb");
+    export(&mut s, &second);
+    assert!(s.export_error().is_none(), "{:?}", s.export_error());
+    let note = s.dialog.as_ref().unwrap().body.clone();
+    assert!(
+        note.contains("外した貼り付け画像 1 枚は、ファイルの中に残っています"),
+        "{note}"
+    );
+    let pasted = std::fs::read(image).unwrap();
+    let written = std::fs::read(&second).unwrap();
+    assert!(written.windows(pasted.len()).any(|part| part == pasted));
+    // 開き直した後は、開いたファイルの中身なので知らせない。
+    s.apply(Command::DismissDialog);
+    s.apply(Command::OpenModel(second));
+    CountingImages::default().finish(&mut s);
+    export(&mut s, &dir.join("third.glb"));
+    assert!(s.export_error().is_none(), "{:?}", s.export_error());
+    let note = s
+        .dialog
+        .as_ref()
+        .map(|d| d.body.clone())
+        .unwrap_or_default();
+    assert!(!note.contains("外した貼り付け画像"), "{note}");
 }
 
 #[test]

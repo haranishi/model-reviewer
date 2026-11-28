@@ -298,6 +298,29 @@ fn texture_button_and_progress_fit_at_960() {
     assert!(!button.intersects(progress));
 }
 
+#[test]
+fn paste_and_remove_buttons_fit_above_progress_at_960() {
+    let mut h = harness(egui::vec2(960.0, 600.0));
+    h.state_mut().panel_details = false;
+    h.state_mut().textures.total = 2;
+    for _ in 0..4 {
+        h.step();
+    }
+    let paste = widget_rect(&h, ids::TEXTURE_PASTE);
+    let remove = widget_rect(&h, ids::TEXTURE_REMOVE);
+    let progress = widget_rect(&h, ids::STATUS_TEXTURES);
+    let panel = widget_rect(&h, ids::PANEL_STATUS);
+    assert!(!paste.intersects(remove));
+    for rect in [paste, remove] {
+        assert!(rect.left() >= widget_rect(&h, ids::VIEWPORT).right());
+        assert!(
+            rect.right() <= 960.0 && rect.bottom() <= panel.top(),
+            "{rect:?} {panel:?}"
+        );
+        assert!(!rect.intersects(progress));
+    }
+}
+
 /// 2つの未保存の印と長い状態文が同時に出た状態でも、幅960で状態欄がはみ出さず重ならない。
 #[test]
 fn status_bar_with_both_unsaved_badges_fits_at_960() {

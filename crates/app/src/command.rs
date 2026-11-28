@@ -148,6 +148,11 @@ pub enum Command {
     NewDocument,
     /// 選んだ部品と子孫の基本色を変える。RGB はリニアで、透明度は各面の値を保つ。
     SetColor([f32; 3]),
+    PasteTextureDialog,
+    PasteTexture(PathBuf),
+    RemoveTexture,
+    /// 箱形の投影で画像1枚が占めるワールドの長さ（メートル）。
+    SetTextureSize(f32),
 
     // ---- 第4段階：ショートカットの設定（session/keys.rs）。どれも履歴と未保存の印に入らない ----
     /// 設定の画面の開閉。開くときはヘルプを閉じる。閉じるときは取り込み・重なり・理由・

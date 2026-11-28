@@ -1,7 +1,7 @@
 //! `--script` の手順を、本物のウィンドウの egui 入力へ注入して実行する。
 //!
 //! 手順JSONはオブジェクト。`timeout_secs`（既定30）と `steps`。各要素の `op`:
-//! `open_model` `load_review` `save_review` `export_glb` `wait_idle` `drag_view` `scroll_view`
+//! `open_model` `load_review` `save_review` `export_glb` `paste_texture` `wait_idle` `drag_view` `scroll_view`
 //! `click_view` `click_widget` `drag_widget` `type_text` `key` `screenshot` `dump_state`
 //! `assert_state_equals` `sample` `quit`。
 //! `sample`（`label`、待つフレーム数 `frames`）と、`drag_view`・`drag_widget` の `sample_every`
@@ -137,6 +137,7 @@ enum Op {
     LoadReview(PathStep),
     SaveReview(PathStep),
     ExportGlb(PathStep),
+    PasteTexture(PathStep),
     WaitIdle,
     DragView {
         from: [f32; 2],
@@ -202,6 +203,7 @@ impl Op {
             Self::LoadReview(_) => "load_review",
             Self::SaveReview(_) => "save_review",
             Self::ExportGlb(_) => "export_glb",
+            Self::PasteTexture(_) => "paste_texture",
             Self::WaitIdle => "wait_idle",
             Self::DragView { .. } => "drag_view",
             Self::ScrollView { .. } => "scroll_view",
@@ -571,11 +573,17 @@ impl Automation {
                 session.apply(Command::ExportGlb(self.resolve(&path)?));
                 self.mark_ok();
             }
+            Op::PasteTexture(path) => {
+                session.apply(Command::PasteTexture(self.resolve(&path)?));
+                if let Some(reason) = &session.paste_error {
+                    return Err(reason.clone());
+                }
+                self.mark_ok();
+            }
             Op::WaitIdle => match idle_error(session, gpu_busy) {
                 Ok(true) => self.mark_ok(),
-                Ok(false) => {
-                    self.note("読み込み・書き出し・形状と画像の転送・当たり判定の準備待ち")
-                }
+                Ok(false) => self
+                    .note("読み込み・貼り付け・書き出し・形状と画像の転送・当たり判定の準備待ち"),
                 Err(err) => return Err(err),
             },
             Op::DragView {
@@ -1116,6 +1124,9 @@ fn idle_error(session: &Session, gpu_busy: bool) -> Result<bool, String> {
     }
     if let Some(message) = session.export_error() {
         return Err(format!("書き出しに失敗しました: {message}"));
+    }
+    if let Some(reason) = &session.paste_error {
+        return Err(reason.clone());
     }
     let loading = !matches!(session.load, LoadPhase::Idle);
     let exporting = session.is_exporting();

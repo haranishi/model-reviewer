@@ -265,6 +265,8 @@ fn view_keys_do_nothing_while_typing() {
     let camera = harness.state().camera;
     let display = harness.state().display;
     seen.lock().unwrap().clear();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    harness.step();
     harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::T);
     harness.step();
     for key in [
@@ -289,6 +291,7 @@ fn view_keys_do_nothing_while_typing() {
                 | Command::ToggleProjection
                 | Command::SetDisplay(_)
                 | Command::SetTexturesShown(_)
+                | Command::PasteTextureDialog
         )),
         "入力中に見る操作が積まれた: {seen:?}"
     );

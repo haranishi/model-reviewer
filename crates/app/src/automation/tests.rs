@@ -107,6 +107,36 @@ fn wait_idle_ends_without_plan() {
 }
 
 #[test]
+fn wait_idle_reports_paste_failure_and_recovers() {
+    let mut session = Session::default();
+    let dir = open_texture_case(
+        &mut session,
+        "idle-paste-error",
+        &model_reviewer_testdata::sample_glb(),
+    );
+    let mut sink = CountingImages::default();
+    sink.finish(&mut session);
+    session.apply(crate::Command::Select(Some(
+        model_reviewer_core::scene::NodeId(3),
+    )));
+    let path = dir.join("image.png");
+    fs::write(&path, b"broken").unwrap();
+    session.apply(crate::Command::PasteTexture(path.clone()));
+    assert_eq!(super::idle_error(&session, false), Ok(false));
+    sink.finish(&mut session);
+    assert_eq!(
+        super::idle_error(&session, false),
+        Err("PNG か JPEG の画像を選んでください".into())
+    );
+    fs::write(&path, model_reviewer_testdata::jpeg_8x8()).unwrap();
+    session.apply(crate::Command::PasteTexture(path));
+    sink.finish(&mut session);
+    assert_eq!(super::idle_error(&session, false), Ok(true));
+    assert_eq!(session.textures.displayed(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn wait_idle_ends_when_images_are_skipped_or_fail() {
     use model_reviewer_testdata::{rich_glb, textured_scene_glb};
     let valid = textured_scene_glb(1, 128, 1);
@@ -195,6 +225,18 @@ fn textures_arrive_after_geometry_upload_is_done() {
     assert!(metrics["texture_present_ms"]["value"].is_number());
     assert_eq!(metrics["texture_peak_mem"]["value"], 100);
     assert!(!s.poll_images(&mut sink, 65536));
+    let opening_time = s.metrics.texture_present;
+    let paste = dir.join("new.jpg");
+    fs::write(&paste, model_reviewer_testdata::jpeg_8x8()).unwrap();
+    s.apply(crate::Command::Select(Some(
+        model_reviewer_core::scene::NodeId(0),
+    )));
+    s.apply(crate::Command::PasteTexture(paste));
+    s.observe_texture_memory(Some(200));
+    sink.finish(&mut s);
+    assert_eq!(s.textures.displayed(), 2);
+    assert_eq!(s.metrics.texture_present, opening_time);
+    assert_eq!(s.metrics.texture_peak_mem, Some(100));
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -355,6 +397,36 @@ fn state_includes_bindings_window_and_numeric_entry() {
     assert_ne!(comparable(actual), comparable(restored));
     s.apply(Command::CancelTransform);
     assert!(state_value(&s)["transform"]["key_entry"].is_null());
+}
+
+#[test]
+fn paste_texture_parses_path() {
+    let dir = scratch("paste-path");
+    let script = dir.join("steps.json");
+    let out = dir.join("out");
+    for base in [super::PathBase::Script, super::PathBase::Out] {
+        let mut step = json!({"op": "paste_texture", "path": "images/label.jpg"});
+        if base == super::PathBase::Out {
+            step["relative_to"] = json!("out");
+        }
+        fs::write(&script, json!({"steps": [step]}).to_string()).unwrap();
+        let run = load_script(&script, &out).unwrap();
+        assert!(
+            matches!(&run.steps[0].op, Op::PasteTexture(p) if p.path == "images/label.jpg" && p.base == base)
+        );
+    }
+    fs::write(
+        &script,
+        r#"{"steps":[{"op":"paste_texture","path":"/absolute.png"}]}"#,
+    )
+    .unwrap();
+    assert!(
+        load_script(&script, &out)
+            .err()
+            .unwrap()
+            .contains("相対パス")
+    );
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

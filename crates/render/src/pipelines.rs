@@ -5,7 +5,8 @@ use crate::targets::{DEPTH_FORMAT, MASK_FORMAT};
 // 描画の定数（`shaders/frame.wgsl` の `Frame`）は scene・mask・grid の先頭に付ける。
 pub const SCENE_WGSL: &str = concat!(
     include_str!("shaders/frame.wgsl"),
-    include_str!("shaders/scene.wgsl")
+    include_str!("shaders/scene.wgsl"),
+    include_str!("shaders/texture.wgsl")
 );
 pub const MASK_WGSL: &str = concat!(
     include_str!("shaders/frame.wgsl"),
@@ -77,6 +78,7 @@ const INSTANCE_ATTRS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4,
     9 => Float32x4, 10 => Uint32x4,
 ];
+const UV_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![11 => Float32x2];
 /// マスクはワールド行列と NodeId だけを読む（NodeId は変形中の範囲の判定に使う）。
 const MASK_INSTANCE_ATTRS: [wgpu::VertexAttribute; 5] = [
     wgpu::VertexAttribute {
@@ -127,6 +129,7 @@ fn instance_layout(
 /// 形式に依存しない部品（束縛の配置とシェーダー）。
 pub struct Layouts {
     pub frame: wgpu::BindGroupLayout,
+    pub texture: wgpu::BindGroupLayout,
     pub outline: wgpu::BindGroupLayout,
     scene_module: wgpu::ShaderModule,
     mask_module: wgpu::ShaderModule,
@@ -182,6 +185,7 @@ impl Layouts {
         };
         Self {
             frame,
+            texture: crate::textures::layout(device),
             outline,
             scene_module: module("scene.wgsl", SCENE_WGSL),
             mask_module: module("mask.wgsl", MASK_WGSL),
@@ -197,6 +201,8 @@ pub struct Pipelines {
     /// 線のパイプラインを作ったか（`POLYGON_MODE_LINE` を持つ装置だけ）。
     pub lines: bool,
     pub scene: wgpu::RenderPipeline,
+    pub scene_uv: wgpu::RenderPipeline,
+    pub scene_box: wgpu::RenderPipeline,
     /// 透かし。半透明で重ね、深度は比べず書かない。
     pub xray: wgpu::RenderPipeline,
     /// 「面と線」の線。深度は「同じか手前」で比べ、偏りで面より手前に寄せる。書かない。
@@ -238,22 +244,33 @@ impl Pipelines {
             bind_group_layouts: &[Some(&layouts.outline)],
             immediate_size: 0,
         });
+        let texture_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("textured scene layout"),
+            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.texture)],
+            immediate_size: 0,
+        });
         let multisample = wgpu::MultisampleState {
             count: samples,
             mask: !0,
             alpha_to_coverage_enabled: false,
         };
-        let shape = |v: ShapeVariant| {
+        let buffers = [
+            Some(vertex_layout()),
+            Some(instance_layout(&INSTANCE_ATTRS)),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: crate::plan::UV_BYTES,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &UV_ATTRS,
+            }),
+        ];
+        let shape = |v: ShapeVariant, vertex, layout, buffer_count| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(v.label),
-                layout: Some(&frame_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &layouts.scene_module,
-                    entry_point: Some("vs_main"),
-                    buffers: &[
-                        Some(vertex_layout()),
-                        Some(instance_layout(&INSTANCE_ATTRS)),
-                    ],
+                    entry_point: Some(vertex),
+                    buffers: &buffers[..buffer_count],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 // 面の向きによる間引きはしない（鏡像の変換や裏表の不揃いなモデルで面が消えないように）。
@@ -286,16 +303,25 @@ impl Pipelines {
             })
         };
         // 反転Z：クリア値0、手前ほど大きい。
-        let scene = shape(ShapeVariant {
-            label: "scene",
-            fragment: "fs_main",
+        let plain = |v| shape(v, "vs_main", &frame_layout, 2);
+        let faces = |label, fragment| ShapeVariant {
+            label,
+            fragment,
             polygon_mode: wgpu::PolygonMode::Fill,
             depth_write: true,
             depth_compare: wgpu::CompareFunction::Greater,
             bias: wgpu::DepthBiasState::default(),
             blend: None,
-        });
-        let xray = shape(ShapeVariant {
+        };
+        let scene = plain(faces("scene", "fs_main"));
+        let scene_uv = shape(faces("scene_uv", "scene_uv"), "vs_uv", &texture_layout, 3);
+        let scene_box = shape(
+            faces("scene_box", "scene_box"),
+            "vs_box",
+            &texture_layout,
+            2,
+        );
+        let xray = plain(ShapeVariant {
             label: "scene xray",
             fragment: "fs_main",
             polygon_mode: wgpu::PolygonMode::Fill,
@@ -306,7 +332,7 @@ impl Pipelines {
         });
         let (line_overlay, line_only) = if lines {
             (
-                Some(shape(ShapeVariant {
+                Some(plain(ShapeVariant {
                     label: "lines over faces",
                     fragment: "fs_line",
                     polygon_mode: wgpu::PolygonMode::Line,
@@ -315,7 +341,7 @@ impl Pipelines {
                     bias: LINE_DEPTH_BIAS,
                     blend: None,
                 })),
-                Some(shape(ShapeVariant {
+                Some(plain(ShapeVariant {
                     label: "lines only",
                     fragment: "fs_line",
                     polygon_mode: wgpu::PolygonMode::Line,
@@ -423,6 +449,8 @@ impl Pipelines {
             samples,
             lines,
             scene,
+            scene_uv,
+            scene_box,
             xray,
             line_overlay,
             line_only,
@@ -436,6 +464,82 @@ impl Pipelines {
 #[cfg(test)]
 mod tests {
     use super::SCENE_WGSL;
+
+    #[test]
+    fn textured_scene_shaders_validate() {
+        use wgpu::naga::{ShaderStage, front::wgsl, valid};
+        let module = wgsl::parse_str(SCENE_WGSL)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(SCENE_WGSL)));
+        valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty())
+            .validate(&module)
+            .expect("シェーダーを検証できる");
+        for (stage, name) in [
+            (ShaderStage::Vertex, "vs_uv"),
+            (ShaderStage::Vertex, "vs_box"),
+            (ShaderStage::Fragment, "scene_uv"),
+            (ShaderStage::Fragment, "scene_box"),
+        ] {
+            assert!(
+                module
+                    .entry_points
+                    .iter()
+                    .any(|p| p.name == name && p.stage == stage),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn box_derivative_sign_matches_projected_winding() {
+        use glam::{Vec2, Vec3, camera::rh};
+        use wgpu::naga::{Expression, Literal, front::wgsl};
+
+        let module = wgsl::parse_str(SCENE_WGSL).unwrap();
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, c)| c.name.as_deref() == Some("FRONT_DERIVATIVE_SIGN"))
+            .unwrap();
+        let Expression::Literal(Literal::F32(sign)) = module.global_expressions[constant.init]
+        else {
+            panic!("面の向きの符号");
+        };
+        assert_eq!(wgpu::FrontFace::default(), wgpu::FrontFace::Ccw);
+        let eye = Vec3::new(3.0, 2.0, 4.0);
+        let view = rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
+        let projections = [
+            (
+                rh::proj::directx::perspective_infinite_reverse(0.7, 1.0, 0.05),
+                true,
+            ),
+            (
+                rh::proj::directx::orthographic(-1.0, 1.0, -1.0, 1.0, 20.0, 0.05),
+                false,
+            ),
+        ];
+        for (proj, perspective) in projections {
+            for scale_x in [-1.0, 1.0] {
+                for n in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z] {
+                    let u = if n.x == 0.0 { Vec3::X } else { Vec3::Y };
+                    let v = n.cross(u);
+                    let world = [n, n + u, n + v].map(|p| p * Vec3::new(scale_x, 1.0, 1.0));
+                    let [a, b, c] = world;
+                    let to_eye = if perspective { eye - a } else { eye };
+                    let front = (b - a).cross(c - a).dot(to_eye) > 0.0;
+                    let [a, b, c] = world.map(|p| {
+                        let ndc = (proj * view).project_point3(p);
+                        Vec2::new(ndc.x, -ndc.y)
+                    });
+                    // ローカルの辺を画面 x,y の微分に直すと、外積に画面の符号付き面積の逆数が掛かる。
+                    let area = (b - a).perp_dot(c - a);
+                    assert!(
+                        area * (if front { sign } else { -sign }) > 0.0,
+                        "面 {n}、X倍率 {scale_x}"
+                    );
+                }
+            }
+        }
+    }
 
     fn srgb_to_linear(c: u8) -> f32 {
         let c = f32::from(c) / 255.0;

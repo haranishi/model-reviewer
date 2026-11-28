@@ -1,13 +1,15 @@
 //! 表示中の部品のインスタンス。表示状態が変わったときだけ作り直す（非表示の部品は入れない）。
 //!
-//! 同じプリミティブを参照する部品はバッファの連続した範囲にまとめ、1回の描画命令で描く。
+//! 同じプリミティブと貼り方を参照する部品は連続した範囲にまとめ、1回の描画命令で描く。
 //! ノードを番号順に走査して詰めるので、各まとまりの中は `NodeId` 順に並ぶ。輪郭線のマスクは
 //! この並びを二分探索して、選択範囲に入るインスタンスだけを描く。
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use glam::{Affine3A, Mat3};
-use model_reviewer_core::scene::{NodeId, SceneRead};
+use model_reviewer_core::scene::{Draw, NodeId, SceneRead};
+use model_reviewer_core::texture::{TexId, UvMap};
 
 /// インスタンスのフラグ。法線を持たない形状は、シェーダーで面法線を導く。
 pub const FLAG_DERIVE_NORMAL: u32 = 1;
@@ -30,6 +32,7 @@ const _: () = assert!(std::mem::size_of::<InstanceRaw>() as u64 == crate::plan::
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Batch {
     pub prim: u32,
+    pub tex: Option<TexId>,
     pub instances: Range<u32>,
 }
 
@@ -39,6 +42,9 @@ pub struct InstanceList {
     /// `raw` と同じ並びの NodeId。選択範囲の二分探索に使う。
     pub nodes: Vec<u32>,
     pub batches: Vec<Batch>,
+    /// 貼り方で順番が変わった場合の、画像なしの描画順（形状・部品・描画の順）。
+    /// 透かしの合成や、同じ深度で重なる面に使う。
+    pub(crate) plain_ranges: Vec<(u32, Range<u32>)>,
     /// 部品ごとのインスタンスの位置の表の区切り（部品の数＋1）。部品 i の位置は
     /// `slots[node_starts[i]..node_starts[i + 1]]`。非表示の部品は空。確定した変形の部分更新に使う。
     pub node_starts: Vec<u32>,
@@ -80,8 +86,22 @@ impl InstanceList {
 /// 表示されている部品のインスタンスを作る。2回の走査で数えてから詰め、部品ごとの確保をしない。
 pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> InstanceList {
     let prim_count = model.primitive_count();
-    let mut counts = vec![0u32; prim_count];
-    let each_draw = |f: &mut dyn FnMut(usize, &model_reviewer_core::scene::Draw)| {
+    let mut plain = vec![0u32; prim_count];
+    let mut textured = BTreeMap::new();
+    let texture_key = |draw: &Draw, id: TexId| {
+        let kind = match model
+            .tex_use(id)
+            .filter(|t| t.image.is_some())
+            .map(|t| t.map)
+        {
+            None => 0,
+            Some(UvMap::Vertex { .. }) if model.prim_uvs(draw.prim).is_empty() => 0,
+            Some(UvMap::Vertex { .. }) => 1,
+            Some(UvMap::Box { .. }) => 2,
+        };
+        (kind, draw.prim.0, id)
+    };
+    let each_draw = |f: &mut dyn FnMut(usize, &Draw)| {
         for index in 0..model.node_count() {
             let id = NodeId(index as u32);
             if !visible(id) {
@@ -94,20 +114,32 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
             }
         }
     };
-    each_draw(&mut |_, draw| counts[draw.prim.0 as usize] += 1);
-
-    let mut starts = vec![0u32; prim_count];
+    each_draw(&mut |_, draw| {
+        let count = match draw.tex {
+            Some(id) => textured.entry(texture_key(draw, id)).or_default(),
+            None => &mut plain[draw.prim.0 as usize],
+        };
+        *count += 1;
+    });
     let mut batches = Vec::new();
     let mut total = 0u32;
-    for (prim, count) in counts.iter().enumerate() {
-        starts[prim] = total;
+    let mut batch = |prim, tex, count: &mut u32| {
+        let start = total;
+        total += *count;
+        *count = start;
+        batches.push(Batch {
+            prim,
+            tex,
+            instances: start..total,
+        });
+    };
+    for (prim, count) in plain.iter_mut().enumerate() {
         if *count > 0 {
-            batches.push(Batch {
-                prim: prim as u32,
-                instances: total..total + count,
-            });
+            batch(prim as u32, None, count);
         }
-        total += count;
+    }
+    for (&(_, prim, tex), count) in &mut textured {
+        batch(prim, Some(tex), count);
     }
 
     let zero = InstanceRaw {
@@ -118,7 +150,12 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
     };
     let mut raw = vec![zero; total as usize];
     let mut nodes = vec![0u32; total as usize];
-    let mut cursor = starts;
+    let reordered = !textured.is_empty() && batches.windows(2).any(|w| w[0].prim >= w[1].prim);
+    let mut plain_order = if reordered {
+        vec![Vec::<Range<u32>>::new(); prim_count]
+    } else {
+        Vec::new()
+    };
     let mut per_node = vec![0u32; model.node_count()];
     let mut slots = Vec::with_capacity(total as usize);
     each_draw(&mut |index, draw| {
@@ -126,11 +163,23 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
         let has_normals = model
             .primitive(draw.prim)
             .is_none_or(|prim| prim.has_normals);
-        let slot = &mut cursor[draw.prim.0 as usize];
+        let slot = match draw.tex {
+            Some(tex) => textured.get_mut(&texture_key(draw, tex)).expect("数えた組"),
+            None => &mut plain[draw.prim.0 as usize],
+        };
         let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL };
         raw[*slot as usize] = instance(model.world(id), draw.base_color, index as u32, flags);
         nodes[*slot as usize] = index as u32;
         slots.push(*slot);
+        if let Some(ranges) = plain_order.get_mut(draw.prim.0 as usize) {
+            if let Some(last) = ranges.last_mut()
+                && last.end == *slot
+            {
+                last.end += 1;
+            } else {
+                ranges.push(*slot..*slot + 1);
+            }
+        }
         per_node[index] += 1;
         *slot += 1;
     });
@@ -145,6 +194,11 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
         raw,
         nodes,
         batches,
+        plain_ranges: plain_order
+            .into_iter()
+            .enumerate()
+            .flat_map(|(prim, ranges)| ranges.into_iter().map(move |r| (prim as u32, r)))
+            .collect(),
         node_starts,
         slots,
     }

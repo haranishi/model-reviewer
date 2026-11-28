@@ -1,6 +1,7 @@
 //! 読み込みは1回につき1本の別スレッド。UIはイベントを受け取るだけ。
 
 use std::any::Any;
+use std::collections::{HashMap, hash_map::Entry};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,9 @@ pub const NEITHER_GLB_NOR_STL: &str = "GLB でも STL でもありません";
 
 pub(crate) const DEFAULT_TEXTURE_BUDGET_MIB: u32 = 512;
 pub(crate) const MAX_TEXTURE_SIDE: u32 = 4096;
+const MAX_COMPRESSED_BYTES: usize = 512 << 20;
+
+type CompressedImage = Result<Arc<[u8]>, TexError>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct TextureOptions {
@@ -398,15 +402,15 @@ fn load_thread(
     // `load_glb`・`load_stl` の途中では止められない。届いた結果は世代番号で捨てる。
     // 読んだバイト列はここで手放す（索引を作る間に常駐させない）。
     let file_bytes = bytes.len() as u64;
-    let mut images = Vec::new();
-    if textures.options.enabled {
-        for info in &model.textures.images {
-            if cancelled() {
-                return;
-            }
-            images.push(compressed_image(&bytes, &info.source));
-        }
-    }
+    let images = if textures.options.enabled {
+        let sources = model.textures.images.iter().map(|info| &info.source);
+        let Some(images) = compressed_images(&bytes, sources, cancelled) else {
+            return;
+        };
+        images
+    } else {
+        Vec::new()
+    };
     drop(bytes);
     let model = Arc::new(model);
     let model_ref = model_ref_for(resolved_path, identity, source_kind);
@@ -447,7 +451,7 @@ fn load_thread(
 fn load_images(
     generation: u64,
     stream: ImageStream,
-    images: Vec<Result<Arc<[u8]>, TexError>>,
+    images: Vec<CompressedImage>,
     cancelled: impl Fn() -> bool,
     emit: &impl Fn(LoadEvent) -> bool,
     ctx: Option<&egui::Context>,
@@ -547,12 +551,37 @@ fn load_images(
     }
 }
 
+fn compressed_images<'a>(
+    file: &[u8],
+    sources: impl Iterator<Item = &'a ImageSource>,
+    cancelled: impl Fn() -> bool,
+) -> Option<Vec<CompressedImage>> {
+    let mut images = Vec::new();
+    let mut ranges = HashMap::new();
+    let mut remaining = file.len().min(MAX_COMPRESSED_BYTES);
+    for source in sources {
+        if cancelled() {
+            return None;
+        }
+        let bytes = match source {
+            ImageSource::Held(bytes) => Ok(Arc::clone(bytes)),
+            ImageSource::File { offset, len } => match ranges.entry((*offset, *len)) {
+                Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
+                Entry::Vacant(entry) => image_range(file, *offset, *len).and_then(|range| {
+                    remaining = remaining.checked_sub(range.len()).ok_or_else(|| {
+                        TexError::Broken("圧縮画像のコピーが合計の上限を超えます".into())
+                    })?;
+                    Ok(Arc::clone(entry.insert(Arc::from(range))))
+                }),
+            },
+        };
+        images.push(bytes);
+    }
+    Some(images)
+}
+
 /// `load_glb` が検証した JSON チャンクの次が BIN。offset はそのデータの先頭から数える。
-fn compressed_image(file: &[u8], source: &ImageSource) -> Result<Arc<[u8]>, TexError> {
-    let (offset, len) = match source {
-        ImageSource::Held(bytes) => return Ok(Arc::clone(bytes)),
-        ImageSource::File { offset, len } => (*offset, *len),
-    };
+fn image_range(file: &[u8], offset: u64, len: u64) -> Result<&[u8], TexError> {
     let range_error = || TexError::Broken("画像の範囲が不正です".into());
     let json_len = file
         .get(12..16)
@@ -565,7 +594,6 @@ fn compressed_image(file: &[u8], source: &ImageSource) -> Result<Arc<[u8]>, TexE
     let range = usize::try_from(start).ok().zip(usize::try_from(end).ok());
     range
         .and_then(|(a, b)| file.get(a..b))
-        .map(Arc::from)
         .ok_or_else(range_error)
 }
 
@@ -648,6 +676,51 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
         message.clone()
     } else {
         "unknown panic".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod compressed_tests {
+    use super::*;
+
+    #[test]
+    fn bin_ranges_share_storage() {
+        let file = [0u8; 128];
+        let sources = vec![ImageSource::File { offset: 0, len: 96 }; 64];
+        let images = compressed_images(&file, sources.iter(), || false).unwrap();
+        assert_eq!(images.len(), sources.len());
+        let first = images[0].as_ref().unwrap();
+        assert_eq!(first.len(), 96);
+        assert!(
+            images
+                .iter()
+                .all(|image| Arc::ptr_eq(image.as_ref().unwrap(), first))
+        );
+    }
+
+    #[test]
+    fn bin_copies_are_bounded() {
+        let file = [0u8; 128];
+        let sources = [
+            ImageSource::File { offset: 0, len: 96 },
+            ImageSource::File { offset: 1, len: 96 },
+            ImageSource::File { offset: 0, len: 96 },
+            ImageSource::File { offset: 96, len: 4 },
+        ];
+        let images = compressed_images(&file, sources.iter(), || false).unwrap();
+        assert!(images[0].is_ok());
+        assert!(
+            images[1]
+                .as_ref()
+                .unwrap_err()
+                .message_ja()
+                .contains("上限")
+        );
+        assert!(Arc::ptr_eq(
+            images[0].as_ref().unwrap(),
+            images[2].as_ref().unwrap()
+        ));
+        assert_eq!(images[3].as_ref().unwrap().len(), 4);
     }
 }
 

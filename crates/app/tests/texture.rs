@@ -778,6 +778,165 @@ fn renamed_pasted_file_is_still_protected() {
 }
 
 #[test]
+fn pending_paste_blocks_writes() {
+    let mut s = opened("pending-writes", &sample_glb(), 3);
+    let dir = folder("pending-writes");
+    let input = dir.join("source.jpg");
+    let moved = dir.join("renamed.jpg");
+    let review = dir.join("saved.json");
+    let raw = annotated_jpeg(b"original");
+    std::fs::write(&input, &raw).unwrap();
+    let _ = std::fs::remove_file(&review);
+    s.apply(Command::PasteTexture(input.clone()));
+    s.apply(Command::SaveReview(review.clone()));
+    assert!(!review.exists(), "貼り付け前のレビューが保存された");
+    assert!(s.status_text.contains("貼り付け"));
+    export(&mut s, &input);
+    assert_eq!(std::fs::read(&input).unwrap(), raw);
+    assert!(s.status_text.contains("貼り付け"));
+    std::fs::rename(&input, &moved).unwrap();
+    export(&mut s, &moved);
+    assert_eq!(std::fs::read(&moved).unwrap(), raw);
+    // 文書側で中止しても、受け付けた原本の識別は残る。
+    s.apply(Command::DuplicateSelected);
+    CountingImages::default().finish(&mut s);
+    export(&mut s, &moved);
+    assert!(s.export_error().unwrap().contains("別の名前"));
+    assert_eq!(std::fs::read(moved).unwrap(), raw);
+    export(&mut s, &dir.join("allowed.glb"));
+    assert!(s.export_error().is_none());
+    s.apply(Command::SaveReview(review.clone()));
+    assert!(review.is_file());
+}
+
+#[test]
+fn interrupted_open_keeps_images() {
+    for cancel in [false, true] {
+        let name = if cancel {
+            "cancel-images"
+        } else {
+            "failed-images"
+        };
+        let dir = folder(name);
+        let mut s = Session::default();
+        s.apply(Command::OpenModel(file(
+            name,
+            &textured_scene_glb(3, 16, 3),
+        )));
+        let mut sink = CountingImages::default();
+        until(|| {
+            s.poll_loader();
+            s.poll_images(&mut sink, 4);
+            s.textures.bytes == 4
+        });
+        if cancel {
+            let mut other = opened("cancel-images-review", &sample_glb(), 3);
+            let review = dir.join("other.json");
+            other.apply(Command::SaveReview(review.clone()));
+            s.apply(Command::LoadReview(review));
+            assert!(s.is_loading_replacement());
+            s.apply(Command::CancelRestore);
+        } else {
+            s.apply(Command::OpenModel(dir.join("missing.glb")));
+            until(|| {
+                s.poll_loader();
+                matches!(s.load, app::loader::LoadPhase::Failed(_))
+            });
+        }
+        sink.finish(&mut s);
+        assert_eq!(
+            sink.started,
+            [
+                (ImageId(0), [16; 2]),
+                (ImageId(1), [16; 2]),
+                (ImageId(2), [16; 2])
+            ]
+        );
+        assert_eq!(
+            (s.textures.done, s.textures.total, s.textures.displayed()),
+            (3, 3, 3)
+        );
+        assert_eq!(s.textures.bytes, 3 * chain_bytes([16; 2]));
+    }
+}
+
+#[test]
+fn discard_releases_pasted_images() {
+    for partial in [false, true] {
+        let mut s = opened("discard-images", &textured_quad_glb(&Default::default()), 0);
+        let base_bytes = s.textures.bytes;
+        let review = folder("discard-images").join("before.json");
+        s.apply(Command::SaveReview(review.clone()));
+        s.apply(Command::PasteTexture(png("discard-images")));
+        let mut sink = CountingImages::default();
+        until(|| {
+            s.poll_loader();
+            s.poll_images(&mut sink, if partial { 4 } else { 65536 });
+            s.textures.bytes > base_bytes
+        });
+        assert!(s.doc_unsaved());
+        s.apply(Command::LoadReview(review));
+        s.apply(Command::ConfirmDiscard);
+        assert_eq!(s.status_text, "レビューを復元しました");
+        assert_eq!(
+            (
+                s.textures.bytes,
+                s.textures.displayed(),
+                s.textures.total,
+                s.textures.done
+            ),
+            (base_bytes, 1, 1, 1)
+        );
+        assert!(s.textures.is_resident(ImageId(0)) && !s.textures_busy());
+    }
+}
+
+#[test]
+fn drop_rejects_directory() {
+    let mut s = cube();
+    s.apply(Command::DroppedFiles(vec![folder("drop-directory")]));
+    until(|| {
+        s.poll_loader();
+        !s.is_loading() && !s.textures_busy()
+    });
+    assert!(
+        s.status_text.contains("通常のファイル"),
+        "{}",
+        s.status_text
+    );
+    assert!(s.is_new_document() && s.doc_unsaved());
+    assert!(s.dialog.is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn drop_rejects_fifo() {
+    let pipe = folder("drop-fifo").join("input.png");
+    let _ = std::fs::remove_file(&pipe);
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = Session::default();
+        s.apply(Command::DroppedFiles(vec![pipe]));
+        until(|| {
+            s.poll_loader();
+            !s.is_loading() && !s.textures_busy()
+        });
+        let _ = tx.send(s.status_text);
+    });
+    let reason = rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("書き手を待たずに断る");
+    assert!(reason.contains("通常のファイル"), "{reason}");
+}
+
+#[test]
 fn no_file_name_in_state_or_glb() {
     use app::automation::Automation;
     let dir = folder("privacy");

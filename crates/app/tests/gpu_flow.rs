@@ -427,6 +427,83 @@ fn center_color(harness: &mut egui_kittest::Harness<'_, App>) -> [f32; 3] {
     sum
 }
 
+#[test]
+#[ignore = "GPUが必要"]
+fn discard_rebinds_box_texture() {
+    use model_reviewer::command::{ShapeKind, ViewDir};
+    use model_reviewer_core::scene::{NodeId, SceneRead};
+    use model_reviewer_testdata::{jpeg_8x8, textured_quad_glb};
+
+    let dir = scratch("discard-textures");
+    let model = dir.join("quad.glb");
+    let review = dir.join("original.json");
+    let uv = dir.join("uv.jpg");
+    let green = dir.join("box.png");
+    std::fs::write(&model, textured_quad_glb(&Default::default())).unwrap();
+    std::fs::write(&uv, jpeg_8x8()).unwrap();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([0, 255, 0, 255]))
+        .save(&green)
+        .unwrap();
+    let mut h = egui_kittest::Harness::builder()
+        .wgpu()
+        .allow_missing_glyphs()
+        .with_accessibility_check(false)
+        .with_size(egui::vec2(1100., 720.))
+        .with_context_setup(model_reviewer::fonts::install)
+        .build_eframe(|cc| App::new(cc, model_reviewer::parse_args(["model-reviewer"]).unwrap()));
+    let finish = |h: &mut egui_kittest::Harness<'_, App>| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            h.step();
+            let s = h.state().session();
+            if !s.is_loading() && !s.textures_busy() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "画像が届きません");
+            thread::yield_now();
+        }
+    };
+    h.state_mut().session_mut().apply(Command::OpenModel(model));
+    finish(&mut h);
+    let original = h.state().gpu_stats().unwrap();
+    assert_eq!(original.texture_count, 1);
+    let s = h.state_mut().session_mut();
+    s.apply(Command::SaveReview(review.clone()));
+    s.apply(Command::Select(Some(NodeId(0))));
+    s.apply(Command::PasteTexture(uv));
+    finish(&mut h);
+    assert_eq!(h.state().gpu_stats().unwrap().texture_count, 2);
+    let s = h.state_mut().session_mut();
+    let uv_id = s.scene().unwrap().draws(NodeId(0))[0].tex.unwrap();
+    s.apply(Command::LoadReview(review));
+    s.apply(Command::ConfirmDiscard);
+    h.step();
+    let restored = h.state().gpu_stats().unwrap();
+    assert_eq!(restored.texture_count, original.texture_count);
+    assert_eq!(restored.texture_bytes, original.texture_bytes);
+    let s = h.state_mut().session_mut();
+    s.apply(Command::SetVisible {
+        node: NodeId(0),
+        visible: false,
+    });
+    s.apply(Command::AddShape(ShapeKind::Cube));
+    s.apply(Command::SnapView(ViewDir::Front));
+    s.apply(Command::FitSelection);
+    s.apply(Command::SetGrid(false));
+    s.apply(Command::PasteTexture(green));
+    finish(&mut h);
+    let s = h.state().session();
+    assert_eq!(
+        s.scene().unwrap().draws(s.selection.unwrap())[0].tex,
+        Some(uv_id)
+    );
+    let rgb = center_color(&mut h);
+    assert!(
+        rgb[1] > rgb[0] + 40. && rgb[1] > rgb[2] + 40.,
+        "箱の中央の色 {rgb:?}"
+    );
+}
+
 /// 足した図形が描かれ、取り消すと消え、やり直すと形状を送り直さずに戻る。
 #[test]
 #[ignore = "GPUが必要"]

@@ -275,6 +275,15 @@ impl SceneRenderer {
         self.shown.as_ref().map(|shown| &shown.geometry.model)
     }
 
+    /// 同じモデルから文書を作り直すと、追加分の画像・貼り方の番号は再利用される。
+    pub fn discard_texture_edits(&mut self) {
+        if let Some(shown) = &mut self.shown {
+            shown
+                .textures
+                .discard_edits(shown.geometry.model.textures.images.len());
+        }
+    }
+
     /// 表示中のモデルへ1枚送る。同じ番号は置き換え、別の画像の転送中はエラーを返す。
     pub fn begin_image(
         &mut self,

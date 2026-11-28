@@ -314,6 +314,9 @@ impl GpuView {
                     .as_ref()
                     .is_some_and(|m| Arc::ptr_eq(m, &model));
                 if same_model && let Some(doc) = session.doc.as_ref() {
+                    if dirty.model && !swapped {
+                        state.renderer.discard_texture_edits();
+                    }
                     upload_added(
                         &mut state.renderer,
                         &mut state.added,

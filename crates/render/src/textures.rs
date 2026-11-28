@@ -163,6 +163,15 @@ pub(super) struct GpuTextures {
 }
 
 impl GpuTextures {
+    pub fn discard_edits(&mut self, base_images: usize) {
+        self.materials.clear();
+        self.samplers.clear();
+        self.pending
+            .take_if(|upload| upload.id.0 as usize >= base_images);
+        self.images.retain(|id, _| (id.0 as usize) < base_images);
+        self.bytes = self.images.values().map(|(_, bytes)| bytes).sum();
+    }
+
     pub fn count(&self) -> u32 {
         self.images.len() as u32
     }

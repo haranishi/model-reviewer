@@ -374,8 +374,16 @@ fn apply_in_place(session: &mut Session, file: &ReviewFile) {
                 session.tool = model_reviewer_core::gizmo::Tool::Select;
             }
             if let Some(fresh) = fresh {
+                session
+                    .textures
+                    .discard_edits(fresh.base().textures.images.len());
+                session.scene_dirty.model = true;
                 session.doc = Some(fresh);
                 session.recount_triangles();
+            }
+            session.texture_cache.set(None);
+            if let Some(job) = &mut session.paste_job {
+                job.stale = true;
             }
             session.measurement.clear();
             session.reset_history();

@@ -163,6 +163,11 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         session.block_edit_if_locked();
         return;
     }
+    if session.paste_job.is_some() {
+        // 復号の途中は原本の識別がまだ分からない。貼り付けが確定か中止になるまで断る。
+        session.status_text = super::texture::PENDING_EXPORT.to_owned();
+        return;
+    }
     if nothing_to_export(session) {
         refuse_empty(session);
         return;

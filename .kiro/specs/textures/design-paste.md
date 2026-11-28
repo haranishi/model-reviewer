@@ -58,7 +58,9 @@ pub fn texture_view(session: &Session) -> Option<TextureView>;   // 右のパネ
 5. `RemoveTexture`: 描画の `tex` を、`cutoff` があれば `image: None` の `TexUse`、無ければ `None` にする（色はそのまま）。`SetTextureSize`: 箱形の描画だけ、`size` を替えた `TexUse` へ差し替える。どちらも `SetLooks` の1回分（名前は「画像を外す」「画像の大きさ」）。すべての描画がすでにその値なら何もしない。
 6. `after_applied`: `retextured` なら `scene_dirty.instances` を立てる。色だけが変わった範囲は、今の `recolored` の部分更新に乗せる。
 - **保護**: 貼り付けが成功したら、モデルを開いたときと同じ2つを登録する。①画像のファイルのパス（選んだパスと、リンクを解いたパス）を `opened_files` に、②**ファイルそのままの識別（付帯情報を取り除く前の長さと BLAKE3）を `FileHistory::remember_opened` に**。②があるので、貼った後に画像を別名にしたり移したりしても、書き出しとレビュー保存の保存先にできない（[protect-originals](../protect-originals/design.md) の内容の照合）。文書が持つ「取り除いた後」のハッシュは、この照合には使えない（元のファイルと長さも中身も違うため）。
-- **ドロップ**（`session::open::dropped`）: 1つ目のファイルの先頭を読み、`sniff` が画像なら `PasteTexture` に回す。選択が無ければ断る（開く動作に回さない）。GLB・STL は今のまま。
+- **確定までの書き出しとレビュー保存**: 受け付けてから確定か中止までは、原本の識別がまだ分からない。この間の書き出しとレビュー保存は、「画像の貼り付けが終わってから…」を状態欄に出して断る（自動操作から元の画像の場所へ書き出されても上書きしない）。スレッドが原本を読めたら、貼り付けが中止になっても②だけは登録する（①は成功したときだけ）。
+- **文書の作り直し**: 同じモデルのレビューを読み直して編集を破棄すると、貼った画像と貼り方の番号は次の貼り付けで再び使われる。そのため画面側の置いた画像・使用量（`TextureProgress::discard_edits`）と、GPU 側の画像・材質の表（`SceneRenderer::discard_texture_edits`）を、元のモデルの分だけに作り直す。
+- **ドロップ**（`session::open::dropped`）: 通常のファイルでなければ（フォルダ・名前付きパイプなど）、中身を読まずに「通常のファイルではないため開けません」と断る（書き手のいないパイプは開くだけで画面が止まるため）。貼り付けのスレッドも同じ確かめをする。通常のファイルなら1つ目のファイルの先頭を読み、`sniff` が画像なら `PasteTexture` に回す。選択が無ければ断る（開く動作に回さない）。GLB・STL は今のまま。
 - **キー**: `Action::TexturePaste`（名前 `texture.paste`、「画像を貼る」、まとまりは編集、既定 Cmd+T）、`Action::TextureRemove`（`texture.remove`、既定なし）。表は 42 → 45 行（`DisplayTextures` を含む）。入力中・ダイアログ・ヘルプの間は働かせない（今の決まり）。
 - **画面**（`ui/texture.rs`。入力用の構造体だけを受け、`Session` を読まない）: 部品の名前は `texture.state`・`texture.paste`・`texture.remove`・`texture.size`・`texture.note`。置き場所は「色」の下。色の欄の注意（`color.note`）は、選んだ範囲に画像があるときだけ「色は画像に掛け合わされて見えます」。
 - **自動操作**: 手順 `paste_texture`（`path`、基準は今の決まり）。`dump_state` に `textures`（枚数・表示・縮小・失敗・バイト数・表示の切り替え）と `selection_texture`（描画ごとに、ハッシュの先頭16桁・`"uv"` か `"box"`・`size`。最大8件と総数）。`wait_idle` は貼り付けの仕事と画像の転送も待つ。

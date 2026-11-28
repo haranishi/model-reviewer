@@ -27,6 +27,8 @@ const BUSY: &str = "読み込み中・書き出し中は貼れません";
 const NO_BOX: &str = "スキンかモーフのある部品には、この貼り方では貼れません";
 const CHANGED: &str = "貼る間に文書が変わったため、貼りませんでした";
 const FILE_LIMIT: u64 = 64 << 20;
+pub(super) const PENDING_EXPORT: &str = "画像の貼り付けが終わってから書き出してください";
+pub(super) const PENDING_REVIEW: &str = "画像の貼り付けが終わってからレビューを保存してください";
 
 pub struct TextureView {
     pub key: NodeKey,
@@ -229,7 +231,13 @@ pub(super) struct PasteJob {
     revision: u64,
     pub(super) stale: bool,
     path: PathBuf,
-    result: mpsc::Receiver<Result<PreparedImage, String>>,
+    result: mpsc::Receiver<PasteOutcome>,
+}
+
+/// 読めた原本の識別は、貼り付けが中止になっても書き出し先から守る。
+struct PasteOutcome {
+    seen: Option<ModelIdentity>,
+    result: Result<PreparedImage, String>,
 }
 
 fn read_image(
@@ -237,10 +245,14 @@ fn read_image(
     options: TextureOptions,
     available: u64,
     resident: HashSet<ImageHash>,
+    seen: &mut Option<ModelIdentity>,
 ) -> Result<PreparedImage, String> {
     let io_message =
         |err: io::Error| TexError::Broken(crate::loader::io_error_ja(&err)).message_ja();
     let canonical = fs::canonicalize(path).map_err(io_message)?;
+    if !fs::metadata(&canonical).map_err(io_message)?.is_file() {
+        return Err(super::open::NOT_REGULAR_FILE.into());
+    }
     let file = File::open(&canonical).map_err(io_message)?;
     let length = file.metadata().map_err(io_message)?.len();
     let too_large = "画像が大きすぎます（64 MiB まで）";
@@ -255,6 +267,7 @@ fn read_image(
         return Err(too_large.into());
     }
     let original = ModelIdentity::from_bytes(&raw);
+    *seen = Some(original.clone());
     let mime = sniff(&raw).ok_or_else(|| TexError::Unsupported.message_ja())?;
     let bytes = strip_metadata(&raw, mime).map_err(|e| e.message_ja())?;
     drop(raw);
@@ -304,10 +317,12 @@ pub fn paste(session: &mut Session, path: PathBuf) {
     let spawned = std::thread::Builder::new()
         .name("texture-paste".into())
         .spawn(move || {
-            let prepared =
-                std::panic::catch_unwind(|| read_image(&input, options, available, resident))
-                    .unwrap_or_else(|_| Err("画像を読めません: 画素の復号に失敗しました".into()));
-            let _ = tx.send(prepared);
+            let mut seen = None;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                read_image(&input, options, available, resident, &mut seen)
+            }))
+            .unwrap_or_else(|_| Err("画像を読めません: 画素の復号に失敗しました".into()));
+            let _ = tx.send(PasteOutcome { seen, result });
             if let Some(ctx) = wake {
                 ctx.request_repaint();
             }
@@ -316,6 +331,7 @@ pub fn paste(session: &mut Session, path: PathBuf) {
         reject(session, "画像の読み込みを始められませんでした".into());
         return;
     }
+    // 受け付けてから確定か中止までは、書き出しとレビュー保存を断る（`PENDING_*`）。
     session.paste_job = Some(PasteJob {
         key,
         path,
@@ -337,7 +353,13 @@ pub(super) fn poll(session: &mut Session) -> bool {
         return false;
     };
     let result = match job.result.try_recv() {
-        Ok(result) => result,
+        Ok(PasteOutcome { seen, result }) => {
+            // 中止でも原本の中身の識別は残し、改名・移動の後も上書きを断る。
+            if let Some(original) = seen {
+                session.file_history.remember_opened(&original);
+            }
+            result
+        }
         Err(mpsc::TryRecvError::Empty) => return false,
         Err(mpsc::TryRecvError::Disconnected) => Err("画像の読み込みが中断されました".into()),
     };

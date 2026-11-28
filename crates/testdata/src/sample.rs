@@ -1,9 +1,9 @@
 //! 確認用の手押し車。回転はリテラルで、期待するワールド位置は同じ四元数から計算する。
 
-use crate::glb_writer::{num, vec3_json, vec4_json, write_glb};
+use crate::glb_writer::{Bank, num, store, vec3_json, vec4_json, write_glb};
 use crate::shapes::{
-    Geometry, box_extents, box_mesh, cylinder_mesh, scale_uniform, tetrahedron,
-    tetrahedron_with_normals, translate,
+    box_extents, box_mesh, cylinder_mesh, scale_uniform, tetrahedron, tetrahedron_with_normals,
+    translate,
 };
 
 pub const NODE_COUNT: u32 = 12;
@@ -149,113 +149,6 @@ const fn expected_world_positions() -> [(&'static str, [f32; 3]); 12] {
     ]
 }
 
-struct Bank {
-    bin: Vec<u8>,
-    views: Vec<(u32, u32)>,
-    accessors: Vec<String>,
-}
-
-impl Bank {
-    fn new() -> Self {
-        Self {
-            bin: Vec::new(),
-            views: Vec::new(),
-            accessors: Vec::new(),
-        }
-    }
-
-    fn add_vec3(&mut self, values: &[[f32; 3]], min_max: bool) -> usize {
-        let mut bytes = Vec::with_capacity(values.len() * 12);
-        for value in values {
-            for component in value {
-                bytes.extend_from_slice(&component.to_le_bytes());
-            }
-        }
-        let view = self.add_bytes(&bytes);
-        let mut json = format!(
-            "{{\"bufferView\":{view},\"componentType\":5126,\"count\":{},\"type\":\"VEC3\"",
-            values.len()
-        );
-        if min_max {
-            let (min, max) = bounds(values);
-            json.push_str(&format!(
-                ",\"min\":{},\"max\":{}",
-                vec3_json(min),
-                vec3_json(max)
-            ));
-        }
-        json.push('}');
-        self.accessors.push(json);
-        self.accessors.len() - 1
-    }
-
-    fn add_indices(&mut self, values: &[u32]) -> usize {
-        let mut bytes = Vec::with_capacity(values.len() * 4);
-        for value in values {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        let view = self.add_bytes(&bytes);
-        self.accessors.push(format!(
-            "{{\"bufferView\":{view},\"componentType\":5125,\"count\":{},\"type\":\"SCALAR\"}}",
-            values.len()
-        ));
-        self.accessors.len() - 1
-    }
-
-    fn add_bytes(&mut self, bytes: &[u8]) -> usize {
-        while !self.bin.len().is_multiple_of(4) {
-            self.bin.push(0);
-        }
-        let offset = self.bin.len() as u32;
-        self.bin.extend_from_slice(bytes);
-        self.views.push((offset, self.bin.len() as u32 - offset));
-        self.views.len() - 1
-    }
-}
-
-fn bounds(values: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
-    let mut min = [f32::MAX, f32::MAX, f32::MAX];
-    let mut max = [f32::MIN, f32::MIN, f32::MIN];
-    for value in values {
-        for axis in 0..3 {
-            min[axis] = min[axis].min(value[axis]);
-            max[axis] = max[axis].max(value[axis]);
-        }
-    }
-    (min, max)
-}
-
-struct Stored {
-    position: usize,
-    normal: Option<usize>,
-    indices: usize,
-}
-
-fn store(bank: &mut Bank, geometry: &Geometry) -> Stored {
-    let position = bank.add_vec3(&geometry.positions, true);
-    let normal = geometry
-        .normals
-        .as_ref()
-        .map(|normals| bank.add_vec3(normals, false));
-    let indices = bank.add_indices(&geometry.indices);
-    Stored {
-        position,
-        normal,
-        indices,
-    }
-}
-
-fn primitive(stored: &Stored, material: usize) -> String {
-    let mut attributes = format!("\"POSITION\":{}", stored.position);
-    if let Some(normal) = stored.normal {
-        attributes.push_str(&format!(",\"NORMAL\":{normal}"));
-    }
-    format!(
-        "{{\"attributes\":{{{attributes}}},\"indices\":{},\"material\":{material}}}",
-        stored.indices
-    )
-}
-
 fn material(color: [f32; 4]) -> String {
     format!(
         "{{\"pbrMetallicRoughness\":{{\"baseColorFactor\":{}}}}}",
@@ -323,7 +216,7 @@ fn node_json(spec: &NodeSpec) -> String {
 }
 
 pub fn bytes() -> Vec<u8> {
-    let mut bank = Bank::new();
+    let mut bank = Bank::default();
     let base = store(&mut bank, &box_mesh());
     let wheel = store(&mut bank, &cylinder_mesh());
     let arm = store(&mut bank, &box_extents([0.09, 0.2, 0.09]));
@@ -338,12 +231,16 @@ pub fn bytes() -> Vec<u8> {
     let lamp = store(&mut bank, &tetrahedron());
 
     let meshes = [
-        format!("[{}]", primitive(&base, 0)),
-        format!("[{}]", primitive(&wheel, 1)),
-        format!("[{}]", primitive(&arm, 2)),
-        format!("[{},{}]", primitive(&tip_box, 3), primitive(&tip_end, 4)),
-        format!("[{}]", primitive(&lamp, 5)),
-        format!("[{}]", primitive(&wheel, 6)),
+        format!("[{}]", base.primitive(Some(0), &[])),
+        format!("[{}]", wheel.primitive(Some(1), &[])),
+        format!("[{}]", arm.primitive(Some(2), &[])),
+        format!(
+            "[{},{}]",
+            tip_box.primitive(Some(3), &[]),
+            tip_end.primitive(Some(4), &[])
+        ),
+        format!("[{}]", lamp.primitive(Some(5), &[])),
+        format!("[{}]", wheel.primitive(Some(6), &[])),
     ];
     let materials = [
         material(COLOR_BASE),
@@ -475,14 +372,7 @@ pub fn bytes() -> Vec<u8> {
             ]),
         },
     ];
-    let views = bank
-        .views
-        .iter()
-        .map(|(offset, length)| {
-            format!("{{\"buffer\":0,\"byteOffset\":{offset},\"byteLength\":{length}}}")
-        })
-        .collect::<Vec<_>>()
-        .join(",");
+    let views = bank.views.join(",");
     let node_jsons = nodes.iter().map(node_json).collect::<Vec<_>>().join(",");
     let json = format!(
         "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"model-reviewer-testdata\"}},\"scene\":0,\"scenes\":[{{\"nodes\":[0]}}],\"nodes\":[{node_jsons}],\"meshes\":[{}],\"materials\":[{}],\"accessors\":[{}],\"bufferViews\":[{views}],\"buffers\":[{{\"byteLength\":{}}}]}}",

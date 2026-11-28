@@ -74,10 +74,13 @@ fn one_shape() -> ExportScene {
             vec![Draw {
                 prim: PrimId(0),
                 base_color: COLOR,
+                tex: None,
             }],
         )],
         added: vec![tetra()],
         base_primitive_count: 0,
+        textures: Default::default(),
+        originals: Default::default(),
     }
 }
 
@@ -167,6 +170,7 @@ fn exports_a_group_with_children_from_empty_base() {
     let draw = |color: [f32; 4]| Draw {
         prim: PrimId(0),
         base_color: color,
+        tex: None,
     };
     let scene = ExportScene {
         nodes: vec![
@@ -186,6 +190,8 @@ fn exports_a_group_with_children_from_empty_base() {
         ],
         added: vec![tetra()],
         base_primitive_count: 0,
+        textures: Default::default(),
+        originals: Default::default(),
     };
     let written = export(&scene);
     let model = load_glb(&written).expect("開ける");
@@ -242,6 +248,8 @@ fn empty_scene_on_empty_base_is_refused() {
         nodes: vec![added(None, "空の組", Affine3A::IDENTITY, Vec::new())],
         added: Vec::new(),
         base_primitive_count: 0,
+        textures: Default::default(),
+        originals: Default::default(),
     };
     assert!(matches!(
         build(&base, &group_only),

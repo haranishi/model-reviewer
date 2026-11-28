@@ -1,4 +1,4 @@
-use model_reviewer_core::scene::LoadWarning;
+use model_reviewer_core::scene::{ImageSkipReason, LoadWarning};
 use model_reviewer_gltf::{ExtensionKind, LoadError, load_glb};
 use model_reviewer_testdata::inputs;
 use model_reviewer_testdata::{placed_triangles, sample_glb, stress_glb};
@@ -20,7 +20,9 @@ fn load_err(bytes: &[u8]) -> LoadError {
 fn assert_order(warnings: &[LoadWarning]) {
     fn rank(warning: &LoadWarning) -> u8 {
         match warning {
-            LoadWarning::Textures { .. } => 0,
+            LoadWarning::Textures { .. }
+            | LoadWarning::OtherTextures { .. }
+            | LoadWarning::ImagesSkipped { .. } => 0,
             LoadWarning::VertexColors { .. } => 1,
             LoadWarning::AlphaBlend { .. } => 2,
             LoadWarning::Animations { .. } => 3,
@@ -184,10 +186,15 @@ fn vertex_count_above_u32_is_too_large() {
 #[test]
 fn appearance_extras_warn_and_still_load() {
     let textures = load_glb(&inputs::textures()).expect("textures");
+    assert!(textures.warnings.contains(&LoadWarning::ImagesSkipped {
+        count: 1,
+        reason: ImageSkipReason::Format,
+    }));
     assert!(
-        textures
+        !textures
             .warnings
-            .contains(&LoadWarning::Textures { count: 1 })
+            .iter()
+            .any(|warning| matches!(warning, LoadWarning::Textures { .. }))
     );
     assert_order(&textures.warnings);
 

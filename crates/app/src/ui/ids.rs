@@ -21,6 +21,7 @@ pub const VIEWPORT: &str = "viewport";
 pub const VIEWS_NAME: &str = "views.name";
 pub const VIEWS_SAVE: &str = "views.save";
 pub const STATUS_WARNINGS: &str = "status.warnings";
+pub const STATUS_TEXTURES: &str = "status.textures";
 pub const STATUS_DETAILS: &str = "status.details";
 pub const DIALOG_CONFIRM: &str = "dialog.confirm";
 pub const DIALOG_CANCEL: &str = "dialog.cancel";
@@ -55,6 +56,7 @@ pub const VIEW_DISPLAY_XRAY: &str = "view.display.xray";
 pub const VIEW_PROJECTION_PERSPECTIVE: &str = "view.projection.perspective";
 pub const VIEW_PROJECTION_ORTHOGRAPHIC: &str = "view.projection.orthographic";
 pub const VIEW_GRID: &str = "view.grid";
+pub const VIEW_TEXTURES: &str = "view.textures";
 // 向きの立方体（ui::viewcube）。見えている面だけ登録する。
 pub const VIEWCUBE_FRONT: &str = "viewcube.front";
 pub const VIEWCUBE_BACK: &str = "viewcube.back";
@@ -121,6 +123,11 @@ pub const COLOR_G: &str = "color.g";
 pub const COLOR_B: &str = "color.b";
 pub const COLOR_SWATCH: &str = "color.swatch";
 pub const COLOR_NOTE: &str = "color.note";
+pub const TEXTURE_STATE: &str = "texture.state";
+pub const TEXTURE_PASTE: &str = "texture.paste";
+pub const TEXTURE_REMOVE: &str = "texture.remove";
+pub const TEXTURE_SIZE: &str = "texture.size";
+pub const TEXTURE_NOTE: &str = "texture.note";
 
 // ---- 第4段階 ----
 // ショートカットの設定の画面（ui::keys）。行ごとの名前は `<前置き>.<操作の名前>`

@@ -85,7 +85,7 @@ fn read_u32(bytes: &[u8], at: usize) -> Result<u32, String> {
 
 /// 書き出すBINチャンクの長さ（4バイト境界にそろえた後）。足す物が無ければ元のBINの長さ
 /// （無ければ `None`）。足す物があれば、元のBINを4バイト境界まで0で詰めた後ろに足す。
-/// `appended` の長さは4の倍数（足す形状は32ビットの値だけ）。
+/// `appended` の長さは4の倍数（各ビューの末尾を0で詰める）。
 pub(crate) fn bin_chunk_len(base_bin: Option<&[u8]>, appended: &[u8]) -> Option<u64> {
     let base = base_bin.map(|bin| align4(bin.len() as u64));
     if appended.is_empty() {

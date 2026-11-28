@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use glam::Affine3A;
 
-use crate::doc::{DocError, Document, NodeKey, Place, Remap, Subtree};
+use crate::doc::{DocError, Document, DrawLook, NodeKey, Place, Remap, Subtree};
 use crate::review::{Annotation, ReviewState, SavedView};
 use crate::scene::NodeId;
 
@@ -78,6 +78,12 @@ pub enum Edit {
         before: Vec<[f32; 4]>,
         rgb: [f32; 3],
     },
+    /// 部品と子孫の描画の色と貼り方をまとめて替える。どちらも `subtree_looks` の順。
+    SetLooks {
+        key: NodeKey,
+        before: Vec<DrawLook>,
+        after: Vec<DrawLook>,
+    },
 }
 
 impl Edit {
@@ -93,6 +99,9 @@ impl Edit {
             Self::SetColors { before, .. } => {
                 (before.len() * std::mem::size_of::<[f32; 4]>()) as u64
             }
+            Self::SetLooks { before, after, .. } => {
+                (before.len() as u64 + after.len() as u64) * std::mem::size_of::<DrawLook>() as u64
+            }
         };
         std::mem::size_of::<Self>() as u64 + heap
     }
@@ -105,13 +114,17 @@ impl Edit {
                 | Self::Insert { .. }
                 | Self::Remove { .. }
                 | Self::SetColors { .. }
+                | Self::SetLooks { .. }
         )
     }
 
     /// 表示・注釈・視点を変えるか（レビューの版を進めるか）。挿入と削除は、表示の設定と
-    /// 注釈も動かすので両方を変える。変形と色はレビューを変えない。
+    /// 注釈も動かすので両方を変える。変形と見た目はレビューを変えない。
     pub fn changes_review(&self) -> bool {
-        !matches!(self, Self::SetLocal { .. } | Self::SetColors { .. })
+        !matches!(
+            self,
+            Self::SetLocal { .. } | Self::SetColors { .. } | Self::SetLooks { .. }
+        )
     }
 
     /// `key` の部分木を削除する `Edit`。`History::execute` に渡すと、取り除いた中身
@@ -185,6 +198,8 @@ pub struct Applied {
     pub touched: Vec<Range<u32>>,
     /// 色だけが変わった部品の番号の範囲（構造が変わったときは使わない）。
     pub recolored: Vec<Range<u32>>,
+    /// 貼り方の番号が変わった描画があり、インスタンスを組み直す必要がある。
+    pub retextured: bool,
     /// 部品の表の構造が変わった（インスタンスを作り直す）。
     pub structure: bool,
     /// 表示状態が変わった。
@@ -558,6 +573,22 @@ fn apply_edit(
                 doc.set_subtree_colors(*key, before)?
             };
             out.recolored.push(range);
+        }
+        Edit::SetLooks { key, before, after } => {
+            let (from, to) = if forward {
+                (before, after)
+            } else {
+                (after, before)
+            };
+            if doc.iter_subtree_looks(*key)?.ne(from.iter().copied()) {
+                return Err(DocError::InvalidPiece);
+            }
+            let range = doc.set_subtree_looks(*key, to)?;
+            if from.iter().zip(to.iter()).any(|(a, b)| a.tex != b.tex) {
+                out.retextured = true;
+            } else if from != to {
+                out.recolored.push(range);
+            }
         }
         Edit::RemoveView { index, view } => {
             if forward {

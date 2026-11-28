@@ -15,6 +15,7 @@ mod weld;
 
 use glam::Affine3A;
 use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId};
+use model_reviewer_core::texture::Textures;
 use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 pub use detect::detect;
@@ -73,8 +74,10 @@ fn assemble_model(parsed: binary::Parsed, options: &StlOptions<'_>) -> Model {
     let draw = Draw {
         prim: PrimId(0),
         base_color: STL_COLOR,
+        tex: None,
     };
     Model {
+        textures: Textures::default(),
         nodes: vec![node],
         draws: vec![draw],
         primitives: vec![parsed.primitive],

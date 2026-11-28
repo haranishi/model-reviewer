@@ -11,19 +11,23 @@ use std::time::Duration;
 
 use glam::{Affine3A, Mat4};
 use model_reviewer_core::scene::{Model, Primitive, SceneRead};
+use model_reviewer_core::texture::{ImageId, MipChain, UvMap};
 use model_reviewer_core::visibility::Visibility;
 
 pub mod display;
 pub mod grid;
+mod image_upload;
 pub mod instances;
 mod outline;
 mod pipelines;
 pub mod plan;
 pub mod targets;
+mod textures;
 pub mod upload;
 
 pub use display::{DisplayMode, DragPreview};
 pub use grid::GridParams;
+pub use image_upload::ImageProgress;
 pub use plan::{BufferPlan, FrameParams, PagePlan, PrimSlot, plan_buffers};
 pub use upload::{DEFAULT_BUDGET_BYTES, UploadProgress};
 
@@ -31,6 +35,7 @@ use instances::InstanceList;
 use outline::{OutlineResources, SelectionCache};
 use pipelines::{FrameUniform, Layouts, Pipelines, XRAY_ALPHA, display_code};
 use targets::{MSAA_SAMPLES, Targets, scoped};
+use textures::GpuTextures;
 use upload::{GpuGeometry, GpuPage, UploadJob};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,6 +50,12 @@ pub struct RenderStats {
     pub frame_bytes: u64,
     /// 確定した変形の部分更新で、インスタンスを書き直した回数（`update_instances`）。
     pub instance_patches: u64,
+    /// 表示中のモデルで転送を終えた画像の合計（全縮小版を含む RGBA8 の計算値）。
+    pub texture_bytes: u64,
+    /// 転送を終えた画像の枚数。白の代用は含まない。
+    pub texture_count: u32,
+    /// 転送済みの画像を使って発行した面の描画命令の累計。
+    pub textured_draws: u64,
 }
 
 /// `add_primitives` の1回の上限。第1段階の1フレームの転送の予算と同じ。
@@ -92,6 +103,7 @@ struct GpuInstances {
 
 struct Shown {
     geometry: GpuGeometry,
+    textures: GpuTextures,
     instances: Option<GpuInstances>,
     /// `add_primitives` で足した形状のバイト数（足したページは `geometry.pages` の末尾にある）。
     added_bytes: u64,
@@ -118,6 +130,7 @@ pub struct SceneRenderer {
     srgb_supported: bool,
     /// 装置が `POLYGON_MODE_LINE` を持つか。偽なら線のパイプラインを作らない。
     lines_supported: bool,
+    textures_shown: bool,
     frame_uniform: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     placeholder: wgpu::Texture,
@@ -171,6 +184,7 @@ impl SceneRenderer {
             targets: None,
             outline: None,
             srgb_supported: true,
+            textures_shown: true,
             lines_supported: device
                 .features()
                 .contains(wgpu::Features::POLYGON_MODE_LINE),
@@ -222,6 +236,7 @@ impl SceneRenderer {
             self.selection.clear();
             self.shown = Some(Shown {
                 geometry: job.geometry,
+                textures: GpuTextures::default(),
                 instances: None,
                 added_bytes: 0,
             });
@@ -258,6 +273,50 @@ impl SceneRenderer {
     /// 表示中のモデル。
     pub fn shown_model(&self) -> Option<&Arc<Model>> {
         self.shown.as_ref().map(|shown| &shown.geometry.model)
+    }
+
+    /// 同じモデルから文書を作り直すと、追加分の画像・貼り方の番号は再利用される。
+    pub fn discard_texture_edits(&mut self) {
+        if let Some(shown) = &mut self.shown {
+            shown
+                .textures
+                .discard_edits(shown.geometry.model.textures.images.len());
+        }
+    }
+
+    /// 表示中のモデルへ1枚送る。同じ番号は置き換え、別の画像の転送中はエラーを返す。
+    pub fn begin_image(
+        &mut self,
+        device: &wgpu::Device,
+        id: ImageId,
+        chain: MipChain,
+    ) -> Result<(), RenderError> {
+        let shown = self
+            .shown
+            .as_mut()
+            .ok_or_else(|| RenderError::Device("画像を送る先のモデルがありません".into()))?;
+        shown.textures.begin(device, id, chain)
+    }
+
+    /// 形状を送った後の残り予算で呼ぶ。4バイト未満の回は次の画素を送らない。
+    pub fn continue_images(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        budget_bytes: u64,
+    ) -> ImageProgress {
+        self.shown
+            .as_mut()
+            .map_or_else(ImageProgress::default, |shown| {
+                shown
+                    .textures
+                    .step(device, queue, &self.layouts.texture, budget_bytes)
+            })
+    }
+
+    /// 次の描画から面の画像を表示するか。GPU に置いた画像は再利用する。
+    pub fn set_textures_shown(&mut self, shown: bool) {
+        self.textures_shown = shown;
     }
 
     /// 表示状態からインスタンスを作り直す。`model` は表示中のモデル（またはそれを土台にした文書）で
@@ -298,6 +357,14 @@ impl SceneRenderer {
                 needed,
                 limit,
             });
+            return;
+        }
+        if let Err(err) =
+            shown
+                .textures
+                .prepare(device, queue, &self.layouts.texture, model, &list.batches)
+        {
+            self.last_error = Some(err);
             return;
         }
         let reuse = shown
@@ -396,6 +463,7 @@ impl SceneRenderer {
         }
         let page_index = shown.geometry.pages.len() as u32;
         let page = scoped(device, || GpuPage {
+            uv: None,
             vertex: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("added vertex page {page_index}")),
                 size: vertex_bytes.max(4),
@@ -433,6 +501,7 @@ impl SceneRenderer {
         shown.geometry.plan.pages.push(PagePlan {
             vertex_bytes,
             index_bytes,
+            uv_bytes: 0,
         });
         shown.geometry.plan.geometry_bytes += total;
         shown.geometry.pages.push(page);
@@ -601,7 +670,26 @@ impl SceneRenderer {
         let drawable = self
             .shown
             .as_ref()
-            .and_then(|shown| shown.instances.as_ref().map(|i| (&shown.geometry, i)));
+            .and_then(|shown| shown.instances.as_ref().map(|i| (shown, i)));
+        let textured = drawable.is_some_and(|(shown, _)| {
+            self.textures_shown
+                && matches!(mode, DisplayMode::Faces | DisplayMode::FacesAndLines)
+                && frame.display != DisplayMode::Lines
+                && shown.textures.count() > 0
+                && !shown.textures.materials.is_empty()
+        });
+        if let Some((shown, instances)) = drawable.filter(|_| textured) {
+            // 画像を描く描画があるときだけ、そのパイプラインを作る。
+            for batch in &instances.list.batches {
+                if let Some(material) = batch_material(shown, batch) {
+                    pipelines.textured(
+                        device,
+                        &self.layouts,
+                        matches!(material.map, UvMap::Box { .. }),
+                    );
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
@@ -631,29 +719,33 @@ impl SceneRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            if let Some((geometry, instances)) = drawable {
+            if let Some((shown, instances)) = drawable {
+                let geometry = &shown.geometry;
                 pass.set_vertex_buffer(1, instances.buffer.slice(..));
                 let batches = &instances.list.batches;
-                let line_overlay = pipelines.line_overlay.as_ref();
-                let line_only = pipelines.line_only.as_ref();
-                match (mode, line_overlay, line_only) {
-                    (DisplayMode::FacesAndLines, Some(lines), _) => {
-                        pass.set_pipeline(&pipelines.scene);
-                        draw_batches(&mut pass, geometry, batches);
-                        pass.set_pipeline(lines);
-                        draw_batches(&mut pass, geometry, batches);
+                match mode {
+                    DisplayMode::Lines => {
+                        pass.set_pipeline(pipelines.line_only.as_ref().expect("線の表示に対応"));
+                        draw_plain(&mut pass, geometry, &instances.list);
                     }
-                    (DisplayMode::Lines, _, Some(lines)) => {
-                        pass.set_pipeline(lines);
-                        draw_batches(&mut pass, geometry, batches);
-                    }
-                    (DisplayMode::XRay, _, _) => {
+                    DisplayMode::XRay => {
                         pass.set_pipeline(&pipelines.xray);
-                        draw_batches(&mut pass, geometry, batches);
+                        draw_plain(&mut pass, geometry, &instances.list);
                     }
-                    _ => {
-                        pass.set_pipeline(&pipelines.scene);
-                        draw_batches(&mut pass, geometry, batches);
+                    DisplayMode::Faces | DisplayMode::FacesAndLines => {
+                        if textured {
+                            self.stats.textured_draws +=
+                                draw_faces(&mut pass, shown, pipelines, batches);
+                        } else {
+                            pass.set_pipeline(&pipelines.scene);
+                            draw_plain(&mut pass, geometry, &instances.list);
+                        }
+                        if mode == DisplayMode::FacesAndLines {
+                            pass.set_pipeline(
+                                pipelines.line_overlay.as_ref().expect("面と線の表示に対応"),
+                            );
+                            draw_plain(&mut pass, geometry, &instances.list);
+                        }
                     }
                 }
             }
@@ -663,7 +755,7 @@ impl SceneRenderer {
                 pass.draw(0..3, 0..1);
             }
         }
-        if let (Some((geometry, instances)), Some(resources)) = (drawable, self.outline.as_ref())
+        if let (Some((shown, instances)), Some(resources)) = (drawable, self.outline.as_ref())
             && !selected.is_empty()
         {
             let ranges = self
@@ -675,7 +767,7 @@ impl SceneRenderer {
                 targets,
                 resources,
                 &self.frame_bind_group,
-                geometry,
+                &shown.geometry,
                 &instances.buffer,
                 ranges,
             );
@@ -705,7 +797,12 @@ impl SceneRenderer {
     }
 
     pub fn stats(&self) -> RenderStats {
-        self.stats
+        let mut stats = self.stats;
+        if let Some(shown) = &self.shown {
+            stats.texture_count = shown.textures.count();
+            stats.texture_bytes = shown.textures.bytes;
+        }
+        stats
     }
 
     /// 直近の、呼び出し元へ返せなかったGPUのエラー（描画先やインスタンスの確保の失敗）。
@@ -918,14 +1015,14 @@ pub(crate) fn draw_ranges(
     }
 }
 
-/// 確保せず、表示中のまとまりをそのまま描く。
-pub(crate) fn draw_batches(
-    pass: &mut wgpu::RenderPass<'_>,
-    geometry: &GpuGeometry,
-    batches: &[instances::Batch],
-) {
+/// 画像を使わないパスでは、形状・部品・描画の順を保つ。
+fn draw_plain(pass: &mut wgpu::RenderPass<'_>, geometry: &GpuGeometry, list: &InstanceList) {
+    if !list.plain_ranges.is_empty() {
+        draw_ranges(pass, geometry, &list.plain_ranges);
+        return;
+    }
     let mut bound_page = None;
-    for batch in batches {
+    for batch in &list.batches {
         draw_slot(
             pass,
             geometry,
@@ -934,6 +1031,66 @@ pub(crate) fn draw_batches(
             batch.instances.clone(),
         );
     }
+}
+
+/// 画像で描くまとまりの材質。UV で貼る材質は、形状に UV があるときだけ使う。
+fn batch_material<'a>(
+    shown: &'a Shown,
+    batch: &instances::Batch,
+) -> Option<&'a textures::Material> {
+    let slot = shown.geometry.plan.prims.get(batch.prim as usize)?;
+    batch
+        .tex
+        .and_then(|id| shown.textures.materials.get(&id))
+        .filter(|m| {
+            matches!(m.map, UvMap::Box { .. })
+                || shown.geometry.pages[slot.page as usize].uv.is_some()
+        })
+}
+
+fn draw_faces(
+    pass: &mut wgpu::RenderPass<'_>,
+    shown: &Shown,
+    pipelines: &Pipelines,
+    batches: &[instances::Batch],
+) -> u64 {
+    let mut bound_page = None;
+    let mut bound_pipeline = None;
+    let mut draws = 0;
+    for batch in batches {
+        let Some(slot) = shown.geometry.plan.prims.get(batch.prim as usize) else {
+            continue;
+        };
+        if slot.index_count == 0 {
+            continue;
+        }
+        let material = batch_material(shown, batch);
+        let textured = match material.map(|m| m.map) {
+            None => None,
+            Some(UvMap::Vertex { .. }) => pipelines.scene_uv.get(),
+            Some(UvMap::Box { .. }) => pipelines.scene_box.get(),
+        };
+        // 描く前に `Pipelines::textured` で作ってある。
+        let Some(pipeline) = textured.or(material.is_none().then_some(&pipelines.scene)) else {
+            continue;
+        };
+        if bound_pipeline != Some(pipeline) {
+            pass.set_pipeline(pipeline);
+            bound_pipeline = Some(pipeline);
+        }
+        if let Some(material) = material {
+            pass.set_bind_group(1, &material.group, &[]);
+            draws += u64::from(material.ready);
+        }
+        draw_slot(
+            pass,
+            &shown.geometry,
+            &mut bound_page,
+            batch.prim,
+            batch.instances.clone(),
+        );
+    }
+    draws
 }
 
 fn draw_slot(
@@ -955,6 +1112,9 @@ fn draw_slot(
     if *bound_page != Some(slot.page) {
         pass.set_vertex_buffer(0, page.vertex.slice(..));
         pass.set_index_buffer(page.index.slice(..), wgpu::IndexFormat::Uint32);
+        if let Some(uv) = &page.uv {
+            pass.set_vertex_buffer(2, uv.slice(..));
+        }
         *bound_page = Some(slot.page);
     }
     pass.draw_indexed(
@@ -976,6 +1136,7 @@ mod failure_tests {
     use model_reviewer_core::scene::{
         Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
     };
+    use model_reviewer_core::texture::Textures;
     use model_reviewer_core::visibility::Visibility;
 
     use super::{FrameParams, RenderError, SceneRenderer, plan};
@@ -1061,6 +1222,7 @@ mod failure_tests {
             draws.push(Draw {
                 prim: PrimId(0),
                 base_color: [0.8, 0.05, 0.04, 1.0],
+                tex: None,
             });
             nodes.push(Node {
                 name: format!("n{index}"),
@@ -1075,6 +1237,7 @@ mod failure_tests {
             });
         }
         Model {
+            textures: Textures::default(),
             nodes,
             draws,
             primitives: vec![quad()],
@@ -1166,6 +1329,58 @@ mod failure_tests {
         assert!(renderer.take_error().is_none());
         let after = center_after(&mut renderer, &device, &queue, size);
         assert_eq!(after, before);
+    }
+
+    #[test]
+    #[ignore = "GPUが必要"]
+    fn texture_pipelines_are_lazy() {
+        use model_reviewer_core::texture::{ImageId, MipChain, Sampling, TexId, TexUse, UvMap};
+        let (device, queue) = gpu_device();
+        let mut renderer = SceneRenderer::new(&device);
+        let mut model = plates(1);
+        let draw = |renderer: &mut SceneRenderer| {
+            center_after(renderer, &device, &queue, [64, 48]);
+            let pipelines = renderer.pipelines.as_ref().unwrap();
+            (
+                pipelines.scene_uv.get().is_some(),
+                pipelines.scene_box.get().is_some(),
+            )
+        };
+        let show = |renderer: &mut SceneRenderer, m| {
+            let m = Arc::new(m);
+            upload(renderer, &device, &queue, &m);
+            renderer.set_instances(&device, &queue, &m, &Visibility::all_visible(1));
+        };
+        show(&mut renderer, model.clone());
+        assert_eq!(draw(&mut renderer), (false, false));
+        model.draws[0].tex = Some(TexId(0));
+        model.textures.uses.push(TexUse {
+            image: Some(ImageId(0)),
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: None,
+            baked_box: None,
+        });
+        show(&mut renderer, model);
+        assert_eq!(draw(&mut renderer), (false, false));
+        renderer
+            .begin_image(
+                &device,
+                ImageId(0),
+                MipChain {
+                    size: [1; 2],
+                    levels: vec![vec![255; 4]],
+                },
+            )
+            .unwrap();
+        renderer.continue_images(&device, &queue, 4);
+        renderer.set_textures_shown(false);
+        assert_eq!(draw(&mut renderer), (false, false));
+        renderer.set_textures_shown(true);
+        assert_eq!(draw(&mut renderer), (false, true));
     }
 
     #[test]

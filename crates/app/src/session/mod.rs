@@ -45,6 +45,7 @@ mod persist;
 mod pick;
 mod section;
 mod snap;
+pub mod texture;
 mod view;
 
 pub use color::{ColorState, ColorView, selection_color};
@@ -57,9 +58,11 @@ pub use export::{NEW_EXPORT_NOTE, export_scene, note_ja, nothing_to_export, stl_
 pub use keys::{KeyConflict, KeysState};
 pub use measure::{delta as measure_delta, distance as measure_distance};
 pub use notes::Draft;
+pub use open::TextureProgress;
 pub use pick::ray_hit;
 pub use section::section_bounds;
 pub use snap::{SNAP_RADIUS_POINTS, find as find_snap, rest_after as snap_rest_after};
+pub use texture::{TextureView, texture_view};
 
 #[derive(Clone, Debug)]
 pub(super) struct PendingRestore {
@@ -110,6 +113,17 @@ pub struct Session {
     pub display: DisplayMode,
     /// 床の格子と軸を出すか。既定は出す。
     pub grid_visible: bool,
+    pub textures_shown: bool,
+    pub textures: TextureProgress,
+    paste_job: Option<texture::PasteJob>,
+    pub(crate) paste_error: Option<String>,
+    texture_cache: Cell<Option<texture::Selection>>,
+    /// 書き出しで新しいファイル番号を得た、スキン・モーフつきの複製。
+    exported_no_box: std::collections::HashSet<u32>,
+    export_colors: export::ExportColors,
+    /// 開いた後に、書き出したファイルへ入った貼り付け画像。外しても次のファイルに残る。
+    exported_pasted: std::collections::HashSet<model_reviewer_core::texture::ImageHash>,
+    pub(crate) texture_options: loader::TextureOptions,
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
     pub selection: Option<NodeId>,
@@ -178,7 +192,9 @@ pub struct Session {
     shown_generation: u64,
     /// モデルまたはレビューが切り替わるたびに進める世代。編集途中の一時メモリの区別に使う。
     review_generation: u64,
+    /// 候補の読み込みは、転送の成功時に表示中の受信口と入れ替える。
     loader: Option<LoadHandle>,
+    shown_loader: Option<LoadHandle>,
     load_meta: Option<LoadMeta>,
     incoming: Option<Incoming>,
     staged_pick: Option<StagedPick>,
@@ -186,6 +202,7 @@ pub struct Session {
     /// 実行中のGLB書き出し。
     pub(super) export_job: Option<ExportJob>,
     pub(super) export_hooks: ExportHooks,
+    pub(super) paste_hooks: texture::PasteHooks,
     /// 直近の書き出しの失敗理由（自動操作の `wait_idle` 用）。次の書き出し・読み込みで消える。
     pub(super) export_error: Option<String>,
     /// 直近の状態文が書き出し失敗のものか（状態欄を赤字にするため）。
@@ -227,6 +244,15 @@ impl Default for Session {
             camera: OrbitCamera::default(),
             display: DisplayMode::Faces,
             grid_visible: true,
+            textures_shown: true,
+            textures: TextureProgress::default(),
+            paste_job: None,
+            paste_error: None,
+            texture_cache: Cell::new(None),
+            exported_no_box: Default::default(),
+            export_colors: Default::default(),
+            exported_pasted: Default::default(),
+            texture_options: loader::TextureOptions::default(),
             lines_supported: false,
             selection: None,
             color_cache: Cell::new(None),
@@ -278,12 +304,14 @@ impl Default for Session {
             shown_generation: 0,
             review_generation: 0,
             loader: None,
+            shown_loader: None,
             load_meta: None,
             incoming: None,
             staged_pick: None,
             load_hooks: LoadHooks::default(),
             export_job: None,
             export_hooks: ExportHooks::default(),
+            paste_hooks: texture::PasteHooks::default(),
             export_error: None,
             export_failed: false,
             opened_files: Vec::new(),
@@ -347,7 +375,25 @@ impl Session {
         let camera = self.camera;
         let shown = self.shown_generation;
         let key_rev = self.keymap.rev();
+        let history_action = matches!(cmd, Command::Undo | Command::Redo);
+        let patch_count = self.pending_patches.len();
         self.apply_inner(cmd);
+        if history_action
+            && self.history.doc_rev() != doc_rev
+            && self.pending_patches.len() == patch_count
+        {
+            // 見た目の履歴は、画像が替わると色・行列の部分更新範囲を返さない。
+            self.scene_dirty.instances = true;
+            self.pending_patches.clear();
+        }
+        if (self.history.doc_rev() != doc_rev || self.is_loading() || self.is_exporting())
+            && let Some(job) = &mut self.paste_job
+        {
+            job.stale = true;
+        }
+        if self.scene_dirty.display || self.scene_dirty.instances {
+            self.color_cache.set(None);
+        }
         if self.keymap.rev() != key_rev {
             keys::save_changes(self);
         }
@@ -534,6 +580,12 @@ impl Session {
             Command::SetProjection(projection) => view::set_projection(self, projection),
             Command::ToggleProjection => view::toggle_projection(self),
             Command::SetGrid(visible) => view::set_grid(self, visible),
+            Command::SetTexturesShown(shown) => {
+                if self.texture_options.enabled && self.textures_shown != shown {
+                    self.textures_shown = shown;
+                    self.scene_dirty.display = true;
+                }
+            }
             Command::SetTool(tool) => edit::set_tool(self, tool),
             Command::BeginTransform { handle, ndc } => edit::begin_transform(self, handle, ndc),
             Command::DragTransform { ndc } => edit::drag_transform(self, ndc),
@@ -542,6 +594,14 @@ impl Session {
             Command::PreviewLocal(trs) => edit::preview_local(self, trs),
             Command::CommitLocal(trs) => edit::commit_local(self, trs),
             Command::SetColor(rgb) => color::set_color(self, rgb),
+            Command::PasteTextureDialog => {
+                if let Some(reason) = texture::paste_block(self) {
+                    self.status_text = reason.into();
+                }
+            }
+            Command::PasteTexture(path) => texture::paste(self, path),
+            Command::RemoveTexture => texture::adjust(self, texture::Adjustment::Remove),
+            Command::SetTextureSize(size) => texture::adjust(self, texture::Adjustment::Size(size)),
             Command::Undo => edit::undo(self),
             Command::Redo => edit::redo(self),
             Command::AddShape(kind) => edit::add_shape(self, kind),
@@ -575,17 +635,17 @@ impl Session {
     }
 
     pub fn poll_loader(&mut self) -> bool {
-        let Some(handle) = self.loader.as_ref() else {
-            return false;
-        };
-        let events = handle.drain();
-        if events.is_empty() {
-            return false;
-        }
+        let events: Vec<_> = self
+            .shown_loader
+            .iter()
+            .chain(&self.loader)
+            .flat_map(LoadHandle::drain)
+            .collect();
+        let changed = !events.is_empty();
         for event in events {
             self.apply_load_event(event);
         }
-        true
+        texture::poll(self) || changed
     }
 
     pub fn poll_exporter(&mut self) -> bool {
@@ -598,6 +658,10 @@ impl Session {
 
     pub fn set_export_hooks(&mut self, hooks: ExportHooks) {
         self.export_hooks = hooks;
+    }
+
+    pub fn set_paste_hooks(&mut self, hooks: texture::PasteHooks) {
+        self.paste_hooks = hooks;
     }
 
     /// 書き出し中にUIスレッドで観測した常駐メモリを最大値へ反映する。
@@ -646,6 +710,10 @@ impl Session {
     /// モデルを置き、その文書を作る。読み込み（`commit_pending`）と、読み込みを通さない試験が使う。
     /// レビュー・選択・視点には触れない。
     pub fn set_model(&mut self, model: Arc<Model>) {
+        self.exported_no_box.clear();
+        self.export_colors = Default::default();
+        self.exported_pasted.clear();
+        self.reset_textures();
         self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
         self.model = Some(model);
@@ -916,6 +984,8 @@ impl Session {
             Some("書き出しが終わってからレビューを保存してください")
         } else if self.is_loading_replacement() {
             Some("読み込みが終わってからレビューを保存してください")
+        } else if self.paste_job.is_some() {
+            Some(texture::PENDING_REVIEW)
         } else {
             None
         }
@@ -962,9 +1032,7 @@ impl Session {
         }
         self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
-        if let Some(active) = self.loader.take() {
-            active.cancel();
-        }
+        self.loader = None;
         edit::cancel_transform(self);
         self.incoming = None;
         self.staged_pick = None;
@@ -993,6 +1061,7 @@ impl Session {
             path,
             expected_identity,
             options,
+            self.texture_options,
             hooks,
             ctx,
         ));
@@ -1003,9 +1072,7 @@ impl Session {
     pub(super) fn start_new_document(&mut self) {
         self.keys.clear_pending();
         self.generation = self.generation.wrapping_add(1);
-        if let Some(active) = self.loader.take() {
-            active.cancel();
-        }
+        self.loader = None;
         edit::cancel_transform(self);
         self.staged_pick = None;
         self.load_meta = None;
@@ -1044,9 +1111,7 @@ impl Session {
     pub(super) fn cancel_pending_load(&mut self) {
         if self.shown_generation != self.generation {
             self.generation = self.generation.wrapping_add(1);
-            if let Some(active) = self.loader.take() {
-                active.cancel();
-            }
+            self.loader = None;
             self.incoming = None;
             self.staged_pick = None;
             self.loading_file_name = None;
@@ -1061,7 +1126,9 @@ impl Session {
             ) {
                 self.load = LoadPhase::Idle;
             }
-            self.rebuild_shown_pick();
+            if self.shown_loader.is_none() {
+                self.rebuild_shown_pick();
+            }
         }
     }
 
@@ -1107,10 +1174,10 @@ impl Session {
                 generation,
                 message,
             } => {
-                if generation != self.generation {
+                if self.shown_generation == generation && self.rebuild_shown_pick() {
                     return;
                 }
-                if self.shown_generation == generation && self.rebuild_shown_pick() {
+                if generation != self.generation {
                     return;
                 }
                 if persist::try_next_candidate_after_error(self) {
@@ -1123,6 +1190,38 @@ impl Session {
                 index,
                 elapsed,
             } => self.accept_pick(generation, index, elapsed),
+            LoadEvent::TexturePlan {
+                generation,
+                total,
+                shrunk,
+                skipped,
+            } => {
+                if generation == self.shown_generation {
+                    self.textures.total = total;
+                    self.textures.planned_shrinks = shrunk;
+                    for (image, reason) in skipped {
+                        self.textures.fail(image, reason);
+                    }
+                }
+            }
+            LoadEvent::TextureFailed {
+                generation,
+                image,
+                error,
+            } => {
+                if generation == self.shown_generation {
+                    self.textures.fail(image, error);
+                    self.finish_texture_metrics();
+                }
+            }
+            LoadEvent::TexturesDone { generation } => {
+                if generation == self.shown_generation {
+                    self.shown_loader = None;
+                    self.finish_texture_metrics();
+                } else if generation == self.generation {
+                    self.loader = None;
+                }
+            }
         }
     }
 
@@ -1203,9 +1302,6 @@ impl Session {
     }
 
     fn accept_pick(&mut self, generation: u64, index: PickIndex, elapsed: Duration) {
-        if generation != self.generation {
-            return;
-        }
         if self.shown_generation == generation && self.model.is_some() {
             let mut index = index;
             // 索引は読み込んだ形状だけで作られる。届く前に足した図形の分を足す。
@@ -1266,6 +1362,11 @@ impl Session {
     pub fn close_for_gpu_error(&mut self, message: String) {
         log::error!("gpu error, stopping 3D: {message}");
         self.cancel_pending_load();
+        if self.shown_loader.take().is_some() {
+            self.rebuild_shown_pick();
+        }
+        self.reset_textures();
+        self.color_cache.set(None);
         self.incoming = None;
         self.staged_pick = None;
         self.loading_file_name = None;
@@ -1338,8 +1439,18 @@ impl Session {
         }
         self.pick_index = None;
         self.shown_generation = incoming.generation;
+        self.shown_loader = self.loader.take();
         self.doc = Some(doc);
         self.model = Some(model);
+        self.exported_no_box.clear();
+        self.export_colors = Default::default();
+        self.exported_pasted.clear();
+        self.reset_textures();
+        if from_gpu {
+            self.textures.opened = self.open_started;
+        } else {
+            self.allow_first_image();
+        }
         self.measurement.clear();
         self.snap_preview = None;
         self.snap_rest_until = None;
@@ -1501,6 +1612,9 @@ fn interrupts_transform(cmd: &Command, transform: Option<&Transform>) -> bool {
         | Command::DeleteAnnotation(_)
         | Command::SelectAnnotation(_)
         | Command::DeleteView(_)
+        | Command::PasteTexture(_)
+        | Command::RemoveTexture
+        | Command::SetTextureSize(_)
         | Command::Undo
         | Command::Redo
         | Command::AddShape(_)

@@ -4,17 +4,23 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use gltf::json::accessor::{ComponentType, GenericComponentType, Type};
+use gltf::json::extensions::texture::TextureTransform;
 use gltf::json::material::AlphaMode;
 use gltf::json::mesh::{Mode, Semantic};
+use gltf::json::texture::{MagFilter, MinFilter, WrappingMode};
 use gltf::json::validation::Checked;
 use gltf::json::{Accessor, Root};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
-    Draw, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
+    Draw, ImageSkipReason, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
+};
+use model_reviewer_core::texture::{
+    IDENTITY_TRANSFORM, ImageHash, ImageId, ImageInfo, ImageSource, Mime, Mip, Sampling, TexId,
+    TexUse, Textures, UvMap, Wrap, sniff,
 };
 
 use crate::error::LoadError;
-use crate::inspect::{self, Opened};
+use crate::inspect::{self, Opened, TextureMetadata};
 
 pub fn assemble(opened: Opened<'_>) -> Result<Model, LoadError> {
     assemble_with_sources(opened, std::iter::empty()).map(|assembled| assembled.model)
@@ -42,8 +48,7 @@ fn assemble_with_sources(
     referenced: impl Iterator<Item = u32>,
 ) -> Result<Assembled, LoadError> {
     let root = opened.document.as_json();
-    let mut assembly = Assembly::new(root, opened.bin);
-    let mut warnings = assembly.file_warnings()?;
+    let mut assembly = Assembly::new(root, opened.bin, &opened.texture_metadata);
     let mut nodes = Vec::new();
     let mut open = Vec::new();
     let mut emitted = vec![false; root.nodes.len()];
@@ -109,6 +114,7 @@ fn assemble_with_sources(
     for node in &nodes {
         bounds = bounds.union(node.world_aabb);
     }
+    let mut warnings = assembly.file_warnings()?;
     assembly.push_runtime_warnings(&mut warnings)?;
     for name in &opened.simplified {
         warnings.push(LoadWarning::SimplifiedExtension { name: name.clone() });
@@ -117,6 +123,7 @@ fn assemble_with_sources(
         warnings.push(LoadWarning::UnsupportedOptionalExtension { name: name.clone() });
     }
     let model = Model {
+        textures: assembly.textures,
         stats: ModelStats {
             nodes: inspect::fit_u32(nodes.len() as u64, "インスタンス数")?,
             meshes: inspect::fit_u32(assembly.meshes.len() as u64, "インスタンス数")?,
@@ -187,11 +194,17 @@ fn close_open(nodes: &mut [Node], open: &mut Vec<usize>, depth: u32) -> Result<(
 struct Assembly<'a> {
     root: &'a Root,
     bin: &'a [u8],
+    texture_metadata: &'a TextureMetadata,
+    textures: Textures,
+    image_ids: HashMap<usize, ImageId>,
+    tex_ids: HashMap<TexKey, TexId>,
+    skipped: HashSet<SkippedImage>,
     primitives: Vec<Primitive>,
     draws: Vec<Draw>,
     /// `draws` と同じ並びの、描画の出どころ。
     sources: Vec<DrawSource>,
     cache: HashMap<ShareKey, PrimId>,
+    invalid_uvs: HashSet<usize>,
     meshes: HashSet<usize>,
     unique_triangles: u64,
     placed_triangles: u64,
@@ -205,7 +218,48 @@ struct ShareKey {
     position: u32,
     normal: Option<u32>,
     indices: Option<u32>,
+    uv: Option<u32>,
     mode: u8,
+}
+
+// 画像付きは textureInfo の出どころも値の一部。同じ材質の全描画で共有する。
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum TexKey {
+    Material(usize),
+    Mask { cutoff: u32, baked_box: Option<u32> },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SkippedImage {
+    SourcelessTexture(usize),
+    Format(usize),
+    External(usize),
+    NoUv(usize),
+}
+
+impl SkippedImage {
+    fn reason(self) -> ImageSkipReason {
+        match self {
+            Self::SourcelessTexture(_) | Self::Format(_) => ImageSkipReason::Format,
+            Self::External(_) => ImageSkipReason::External,
+            Self::NoUv(_) => ImageSkipReason::NoUv,
+        }
+    }
+}
+
+struct EmbeddedTexture<'a> {
+    image_index: usize,
+    offset: u64,
+    mime: Mime,
+    bytes: &'a [u8],
+    tex_coord: u32,
+    transform: Option<&'a TextureTransform>,
+    sampler: Option<&'a gltf::json::texture::Sampler>,
+}
+
+enum BaseTexture<'a> {
+    Embedded(EmbeddedTexture<'a>),
+    Skipped(SkippedImage),
 }
 
 #[derive(Clone, Copy)]
@@ -228,7 +282,11 @@ impl<'a> Assembly<'a> {
         let gltf_index = inspect::fit_u32(frame.index as u64, "インスタンス数")?;
         let start = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
         let world_aabb = match source.mesh {
-            Some(mesh) => self.add_mesh(mesh.value(), &world)?,
+            Some(mesh) => {
+                let index = u32_index(mesh.value())?;
+                self.textures.source_meshes.insert(gltf_index, index);
+                self.add_mesh(mesh.value(), &world)?
+            }
             None => Aabb::empty(),
         };
         let end = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
@@ -245,14 +303,20 @@ impl<'a> Assembly<'a> {
         })
     }
 
-    fn new(root: &'a Root, bin: &'a [u8]) -> Self {
+    fn new(root: &'a Root, bin: &'a [u8], texture_metadata: &'a TextureMetadata) -> Self {
         Self {
             root,
             bin,
+            texture_metadata,
+            textures: Textures::default(),
+            image_ids: HashMap::new(),
+            tex_ids: HashMap::new(),
+            skipped: HashSet::new(),
             primitives: Vec::new(),
             draws: Vec::new(),
             sources: Vec::new(),
             cache: HashMap::new(),
+            invalid_uvs: HashSet::new(),
             meshes: HashSet::new(),
             unique_triangles: 0,
             placed_triangles: 0,
@@ -262,14 +326,51 @@ impl<'a> Assembly<'a> {
         }
     }
 
-    fn file_warnings(&self) -> Result<Vec<LoadWarning>, LoadError> {
+    fn file_warnings(&mut self) -> Result<Vec<LoadWarning>, LoadError> {
         let mut warnings = Vec::new();
-        push_count(&mut warnings, self.root.textures.len(), |count| {
+        push_count(&mut warnings, self.textures.images.len(), |count| {
             LoadWarning::Textures { count }
         })?;
+        let other = self
+            .root
+            .materials
+            .iter()
+            .map(|m| {
+                [
+                    m.normal_texture.is_some(),
+                    m.pbr_metallic_roughness
+                        .metallic_roughness_texture
+                        .is_some(),
+                    m.occlusion_texture.is_some(),
+                    m.emissive_texture.is_some(),
+                ]
+                .into_iter()
+                .filter(|used| *used)
+                .count()
+            })
+            .sum();
+        push_count(&mut warnings, other, |count| LoadWarning::OtherTextures {
+            count,
+        })?;
+        for reason in [
+            ImageSkipReason::Format,
+            ImageSkipReason::External,
+            ImageSkipReason::NoUv,
+        ] {
+            let count = self
+                .skipped
+                .iter()
+                .filter(|image| image.reason() == reason)
+                .count();
+            push_count(&mut warnings, count, |count| LoadWarning::ImagesSkipped {
+                count,
+                reason,
+            })?;
+        }
         let mut colors = 0usize;
         let mut morphs = 0usize;
-        for mesh in &self.root.meshes {
+        let mut morph_meshes = HashSet::new();
+        for (index, mesh) in self.root.meshes.iter().enumerate() {
             for primitive in &mesh.primitives {
                 if primitive
                     .attributes
@@ -284,7 +385,17 @@ impl<'a> Assembly<'a> {
                     .is_some_and(|targets| !targets.is_empty())
                 {
                     morphs += 1;
+                    morph_meshes.insert(index);
                 }
+            }
+        }
+        for (index, node) in self.root.nodes.iter().enumerate() {
+            if node.skin.is_some()
+                || node
+                    .mesh
+                    .is_some_and(|mesh| morph_meshes.contains(&mesh.value()))
+            {
+                self.textures.no_box_nodes.push(u32_index(index)?);
             }
         }
         push_count(&mut warnings, colors, |count| LoadWarning::VertexColors {
@@ -335,18 +446,13 @@ impl<'a> Assembly<'a> {
             .meshes
             .get(mesh_index)
             .ok_or_else(|| bad("メッシュ"))?;
-        let infos = mesh
-            .primitives
-            .iter()
-            .map(prim_info)
-            .collect::<Result<Vec<_>, _>>()?;
         let mut aabb = Aabb::empty();
-        for (primitive, info) in infos.into_iter().enumerate() {
+        for (index, primitive) in mesh.primitives.iter().enumerate() {
             let source = DrawSource {
                 mesh: u32_index(mesh_index)?,
-                primitive: u32_index(primitive)?,
+                primitive: u32_index(index)?,
             };
-            if let Some(local) = self.add_primitive(mesh_index, source, info)? {
+            if let Some(local) = self.add_primitive(source, primitive)? {
                 aabb = aabb.union(local.transformed(world));
             }
         }
@@ -355,10 +461,10 @@ impl<'a> Assembly<'a> {
 
     fn add_primitive(
         &mut self,
-        mesh_index: usize,
         source: DrawSource,
-        info: PrimInfo,
+        primitive: &gltf::json::mesh::Primitive,
     ) -> Result<Option<Aabb>, LoadError> {
+        let info = prim_info(primitive)?;
         match info.mode {
             Mode::Points => {
                 self.points = bump(self.points)?;
@@ -370,20 +476,58 @@ impl<'a> Assembly<'a> {
             }
             Mode::Triangles | Mode::TriangleStrip | Mode::TriangleFan => {}
         }
-        let key = ShareKey {
+        let material = info.material.map(|index| &self.root.materials[index]);
+        let base = material
+            .and_then(|m| m.pbr_metallic_roughness.base_color_texture.as_ref())
+            .map(|info| self.base_texture(info))
+            .transpose()?;
+        let uv = match &base {
+            Some(BaseTexture::Embedded(texture)) => {
+                find_semantic(primitive, Semantic::TexCoords(texture.tex_coord))
+            }
+            _ => None,
+        };
+        let Some(prim) = self.geometry(info, uv)? else {
+            return Ok(None);
+        };
+        let has_uv = self
+            .textures
+            .prim_uvs
+            .get(prim.0 as usize)
+            .is_some_and(|uvs| !uvs.is_empty());
+        let draw = Draw {
+            prim,
+            base_color: material.map_or([1.0; 4], |m| m.pbr_metallic_roughness.base_color_factor.0),
+            tex: self.tex_use(info.material, base, has_uv)?,
+        };
+        self.place(source, draw).map(Some)
+    }
+
+    fn geometry(&mut self, info: PrimInfo, uv: Option<usize>) -> Result<Option<PrimId>, LoadError> {
+        let uv = uv.filter(|index| {
+            self.root.accessors[*index].count.0 == self.root.accessors[info.position].count.0
+                && !self.invalid_uvs.contains(index)
+        });
+        let mut key = ShareKey {
             position: u32_index(info.position)?,
             normal: info.normal.map(u32_index).transpose()?,
             indices: info.indices.map(u32_index).transpose()?,
+            uv: uv.map(u32_index).transpose()?,
             mode: mode_tag(info.mode),
         };
-        let color = base_color(self.root, info.material)?;
-        if let Some(prim) = self.cache.get(&key).copied() {
-            let stored = &self.primitives[prim.0 as usize];
-            let triangles = triangle_len(stored.indices.len())?;
-            let local = stored.local_aabb;
-            let has_normals = stored.has_normals;
-            self.place(mesh_index, source, prim, color, has_normals, triangles)?;
-            return Ok(Some(local));
+        if let Some(&prim) = self.cache.get(&key) {
+            return Ok(Some(prim));
+        }
+        let mut uvs = Vec::new();
+        if let Some(index) = uv {
+            uvs = read_uvs(self.root, self.bin, index)?;
+            if uvs.is_empty() {
+                self.invalid_uvs.insert(index);
+                key.uv = None;
+                if let Some(&plain) = self.cache.get(&key) {
+                    return Ok(Some(plain));
+                }
+            }
         }
         let Some(built) = decode(self.root, self.bin, info)? else {
             return Ok(None);
@@ -392,59 +536,209 @@ impl<'a> Assembly<'a> {
             self.primitives.len() as u64,
             "インスタンス数",
         )?);
-        let local = built.primitive.local_aabb;
-        let has_normals = built.primitive.has_normals;
         self.unique_triangles = self
             .unique_triangles
             .checked_add(built.triangles)
             .ok_or_else(|| LoadError::TooLarge {
                 what: "頂点数".to_owned(),
             })?;
+        if !uvs.is_empty() || !self.textures.prim_uvs.is_empty() {
+            self.textures
+                .prim_uvs
+                .resize_with(self.primitives.len(), Vec::new);
+            self.textures.prim_uvs.push(uvs);
+        }
         self.primitives.push(built.primitive);
         self.cache.insert(key, prim);
-        self.place(
-            mesh_index,
-            source,
-            prim,
-            color,
-            has_normals,
-            built.triangles,
-        )?;
-        Ok(Some(local))
+        Ok(Some(prim))
     }
 
-    fn place(
-        &mut self,
-        mesh_index: usize,
-        source: DrawSource,
-        prim: PrimId,
-        color: [f32; 4],
-        has_normals: bool,
-        triangles: u64,
-    ) -> Result<(), LoadError> {
+    fn place(&mut self, source: DrawSource, draw: Draw) -> Result<Aabb, LoadError> {
         let len = self.draws.len();
         if len >= u32::MAX as usize {
             return Err(LoadError::TooLarge {
                 what: "インスタンス数".to_owned(),
             });
         }
-        self.draws.push(Draw {
-            prim,
-            base_color: color,
-        });
+        let prim = &self.primitives[draw.prim.0 as usize];
+        self.draws.push(draw);
         self.sources.push(source);
-        self.meshes.insert(mesh_index);
+        self.meshes.insert(source.mesh as usize);
         self.placed_triangles = self
             .placed_triangles
-            .checked_add(triangles)
+            .checked_add(triangle_len(prim.indices.len())?)
             .ok_or_else(|| LoadError::TooLarge {
                 what: "頂点数".to_owned(),
             })?;
-        if !has_normals {
+        if !prim.has_normals {
             self.derived = bump(self.derived)?;
         }
-        Ok(())
+        Ok(prim.local_aabb)
     }
+
+    fn base_texture(
+        &self,
+        info: &'a gltf::json::texture::Info,
+    ) -> Result<BaseTexture<'a>, LoadError> {
+        let index = info.index.value();
+        let texture = &self.root.textures[index];
+        if self.texture_metadata.sourceless.contains(&index) {
+            return Ok(BaseTexture::Skipped(SkippedImage::SourcelessTexture(index)));
+        }
+        let image_index = texture.source.value();
+        let image = &self.root.images[image_index];
+        if image.uri.is_some() {
+            return Ok(BaseTexture::Skipped(SkippedImage::External(image_index)));
+        }
+        let declared = image.mime_type.as_ref().map(|mime| mime.0.as_str());
+        let (Some(view), Some("image/png" | "image/jpeg")) = (image.buffer_view, declared) else {
+            return Ok(BaseTexture::Skipped(SkippedImage::Format(image_index)));
+        };
+        let view = &self.root.buffer_views[view.value()];
+        let offset = view.byte_offset.map_or(0, |v| v.0);
+        let bytes = read_bytes(self.bin, offset, view.byte_length.0)?;
+        let Some(mime) = sniff(bytes) else {
+            return Ok(BaseTexture::Skipped(SkippedImage::Format(image_index)));
+        };
+        let transform = info
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.texture_transform.as_ref());
+        Ok(BaseTexture::Embedded(EmbeddedTexture {
+            image_index,
+            offset,
+            bytes,
+            mime,
+            tex_coord: transform
+                .and_then(|t| t.tex_coord)
+                .unwrap_or(info.tex_coord),
+            transform,
+            sampler: texture.sampler.map(|s| &self.root.samplers[s.value()]),
+        }))
+    }
+
+    fn tex_use(
+        &mut self,
+        material: Option<usize>,
+        base: Option<BaseTexture<'a>>,
+        has_uv: bool,
+    ) -> Result<Option<TexId>, LoadError> {
+        let Some(index) = material else {
+            return Ok(None);
+        };
+        let material = &self.root.materials[index];
+        let cutoff = matches!(material.alpha_mode, Checked::Valid(AlphaMode::Mask))
+            .then(|| material.alpha_cutoff.unwrap_or_default().0);
+        let baked_box = self.texture_metadata.box_sizes.get(&index).copied();
+        let displayed = base.and_then(|base| {
+            let skipped = match base {
+                BaseTexture::Embedded(texture) if has_uv => return Some(texture),
+                BaseTexture::Embedded(texture) => SkippedImage::NoUv(texture.image_index),
+                BaseTexture::Skipped(reason) => reason,
+            };
+            self.skipped.insert(skipped);
+            None
+        });
+        let key = if displayed.is_some() {
+            TexKey::Material(index)
+        } else if let Some(cutoff) = cutoff {
+            TexKey::Mask {
+                cutoff: cutoff.to_bits(),
+                baked_box: baked_box.map(f32::to_bits),
+            }
+        } else {
+            return Ok(None);
+        };
+        if let Some(&id) = self.tex_ids.get(&key) {
+            return Ok(Some(id));
+        }
+        let (image, sampling, map) = match displayed {
+            Some(base) => (
+                Some(self.image_id(&base)?),
+                sampling(base.sampler),
+                UvMap::Vertex {
+                    transform: uv_transform(base.transform),
+                    tex_coord: base.tex_coord,
+                    info_from: Some(u32_index(index)?),
+                },
+            ),
+            None => (
+                None,
+                Sampling::default(),
+                UvMap::Vertex {
+                    transform: IDENTITY_TRANSFORM,
+                    tex_coord: 0,
+                    info_from: None,
+                },
+            ),
+        };
+        let id = TexId(u32_index(self.textures.uses.len())?);
+        self.textures.uses.push(TexUse {
+            image,
+            sampling,
+            map,
+            cutoff,
+            baked_box,
+        });
+        self.tex_ids.insert(key, id);
+        Ok(Some(id))
+    }
+
+    fn image_id(&mut self, texture: &EmbeddedTexture<'_>) -> Result<ImageId, LoadError> {
+        if let Some(&id) = self.image_ids.get(&texture.image_index) {
+            return Ok(id);
+        }
+        let id = ImageId(u32_index(self.textures.images.len())?);
+        self.textures.images.push(ImageInfo {
+            hash: ImageHash::of(texture.bytes),
+            mime: texture.mime,
+            source: ImageSource::File {
+                offset: texture.offset,
+                len: texture.bytes.len() as u64,
+            },
+        });
+        self.image_ids.insert(texture.image_index, id);
+        Ok(id)
+    }
+}
+
+fn sampling(sampler: Option<&gltf::json::texture::Sampler>) -> Sampling {
+    let Some(sampler) = sampler else {
+        return Sampling::default();
+    };
+    // inspect::open で検証済みの列挙値。
+    let wrap = |mode: Checked<WrappingMode>| match mode.unwrap() {
+        WrappingMode::ClampToEdge => Wrap::Clamp,
+        WrappingMode::MirroredRepeat => Wrap::Mirror,
+        WrappingMode::Repeat => Wrap::Repeat,
+    };
+    let (min_linear, mip) = match sampler.min_filter.map(Checked::unwrap) {
+        Some(MinFilter::Nearest) => (false, Mip::None),
+        Some(MinFilter::Linear) => (true, Mip::None),
+        Some(MinFilter::NearestMipmapNearest) => (false, Mip::Nearest),
+        Some(MinFilter::LinearMipmapNearest) => (true, Mip::Nearest),
+        Some(MinFilter::NearestMipmapLinear) => (false, Mip::Linear),
+        Some(MinFilter::LinearMipmapLinear) | None => (true, Mip::Linear),
+    };
+    Sampling {
+        wrap: [wrap(sampler.wrap_s), wrap(sampler.wrap_t)],
+        mag_linear: !matches!(sampler.mag_filter, Some(Checked::Valid(MagFilter::Nearest))),
+        min_linear,
+        mip,
+    }
+}
+
+fn uv_transform(transform: Option<&TextureTransform>) -> [f32; 6] {
+    let Some(t) = transform else {
+        return IDENTITY_TRANSFORM;
+    };
+    let [sx, sy] = t.scale.0;
+    let [tx, ty] = t.offset.0;
+    if t.rotation.0 == 0.0 {
+        return [sx, 0.0, tx, 0.0, sy, ty];
+    }
+    let (sin, cos) = t.rotation.0.sin_cos();
+    [cos * sx, -sin * sy, tx, sin * sx, cos * sy, ty]
 }
 
 fn push_count(
@@ -480,6 +774,51 @@ fn prim_info(primitive: &gltf::json::mesh::Primitive) -> Result<PrimInfo, LoadEr
     })
 }
 
+/// UV の組の番号と、頂点ごとの値。
+pub(crate) type UvSets = Vec<(u32, Vec<[f32; 2]>)>;
+
+/// 形状の `TEXCOORD_n` を組の番号順に読む。読めない組（型・範囲が不正、数が頂点と違う）は
+/// 値を返さず、番号だけを `skipped` に入れる。頂点の数は `POSITION` の数。
+pub(crate) fn uv_sets(
+    root: &Root,
+    bin: &[u8],
+    primitive: &gltf::json::mesh::Primitive,
+) -> (UvSets, Vec<u32>) {
+    let vertices = find_semantic(primitive, Semantic::Positions)
+        .and_then(|index| root.accessors.get(index))
+        .map(|accessor| accessor.count.0 as usize);
+    let mut sets = Vec::new();
+    let mut skipped = Vec::new();
+    for (semantic, index) in &primitive.attributes {
+        let Checked::Valid(Semantic::TexCoords(set)) = semantic else {
+            continue;
+        };
+        match read_uvs(root, bin, index.value()) {
+            Ok(uvs) if Some(uvs.len()) == vertices => sets.push((*set, uvs)),
+            _ => skipped.push(*set),
+        }
+    }
+    sets.sort_by_key(|(set, _)| *set);
+    skipped.sort_unstable();
+    (sets, skipped)
+}
+
+/// 形状の JSON から、読み込みと同じ式で頂点と三角形を作る。三角形が無ければ `None`。
+pub(crate) fn decode_primitive(
+    root: &Root,
+    bin: &[u8],
+    primitive: &gltf::json::mesh::Primitive,
+) -> Result<Option<Primitive>, LoadError> {
+    let info = prim_info(primitive)?;
+    if matches!(
+        info.mode,
+        Mode::Points | Mode::Lines | Mode::LineLoop | Mode::LineStrip
+    ) {
+        return Ok(None);
+    }
+    Ok(decode(root, bin, info)?.map(|built| built.primitive))
+}
+
 fn find_semantic(primitive: &gltf::json::mesh::Primitive, want: Semantic) -> Option<usize> {
     primitive.attributes.iter().find_map(|(semantic, index)| {
         let found = match semantic.as_ref() {
@@ -504,14 +843,6 @@ fn mode_tag(mode: Mode) -> u8 {
 
 fn u32_index(index: usize) -> Result<u32, LoadError> {
     u32::try_from(index).map_err(|_| bad("アクセサ"))
-}
-
-fn base_color(root: &Root, material: Option<usize>) -> Result<[f32; 4], LoadError> {
-    let Some(index) = material else {
-        return Ok([1.0, 1.0, 1.0, 1.0]);
-    };
-    let material = root.materials.get(index).ok_or_else(|| bad("マテリアル"))?;
-    Ok(material.pbr_metallic_roughness.base_color_factor.0)
 }
 
 struct Built {
@@ -660,6 +991,37 @@ fn read_normals(
         return Ok((values, true));
     }
     Ok((vec![[0.0; 3]; values.len()], false))
+}
+
+fn read_uvs(root: &Root, bin: &[u8], index: usize) -> Result<Vec<[f32; 2]>, LoadError> {
+    let uv = accessor(root, index)?;
+    if uv.buffer_view.is_none() || accessor_type(uv)? != Type::Vec2 {
+        return Ok(Vec::new());
+    }
+    let width = match (component_type(uv)?, uv.normalized) {
+        (ComponentType::U8, true) => 1,
+        (ComponentType::U16, true) => 2,
+        (ComponentType::F32, false) => 4,
+        _ => return Ok(Vec::new()),
+    };
+    let (start, stride, count) = layout(root, uv)?;
+    let component = |offset| match width {
+        1 => Ok(read_index(bin, offset, 1)? as f32 / f32::from(u8::MAX)),
+        2 => Ok(read_index(bin, offset, 2)? as f32 / f32::from(u16::MAX)),
+        _ => read_f32(bin, offset),
+    };
+    guard_len(count as usize, std::mem::size_of::<[f32; 2]>(), bin.len())?;
+    let mut uvs = Vec::with_capacity(count as usize);
+    for item in 0..count {
+        let offset = element_offset(start, stride, item)?;
+        let u = component(offset)?;
+        let v = component(offset.checked_add(width).ok_or_else(|| bad("範囲"))?)?;
+        if !u.is_finite() || !v.is_finite() {
+            return Ok(Vec::new());
+        }
+        uvs.push([u, v]);
+    }
+    Ok(uvs)
 }
 
 fn normal_length_squared(normal: &[f32; 3]) -> f32 {

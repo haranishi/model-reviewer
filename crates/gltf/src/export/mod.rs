@@ -1,6 +1,6 @@
 //! GLBの書き出し。元のファイルのバイト列を土台にし、JSONは値（`gltf::json::Value`。
 //! `serde_json::Value` の再公開）として変えた所だけを直し、足す物は配列の末尾に追記する。
-//! 既存の要素の番号は1つも変えない。BINは元のバイト列をそのまま置き、足した形状だけを末尾に足す。
+//! 既存の要素の番号は1つも変えない。BINは元のバイト列をそのまま置き、形状と画像を末尾に足す。
 //!
 //! 約束（呼び出し側が頼ること）:
 //! - `build` は `base` を変えない。`assigned[i]` は `scene.nodes[i]` のファイル内のノード番号で、
@@ -19,15 +19,19 @@ mod base;
 mod container;
 mod json;
 mod patch;
-mod recolor;
+mod restyle;
 mod synth;
+mod textures;
 mod verify;
 
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
 use glam::Affine3A;
-use model_reviewer_core::scene::{Draw, Primitive};
+use model_reviewer_core::scene::{Draw, Model, NodeId, Primitive, SceneRead};
+
+pub use textures::{ExportImage, ExportTextures};
 
 /// 書き出しの入力。`core::doc::Document` から接合（WP-J4）が作る、部品の表の写し。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,6 +42,31 @@ pub struct ExportScene {
     /// `prim - base_primitive_count` 番を指す。
     pub added: Vec<Arc<Primitive>>,
     pub base_primitive_count: u32,
+    pub textures: ExportTextures,
+    /// 文書を開いた時点の部品（ファイル内のノード番号）。箱形で焼いて書き出した描画が取り消しで
+    /// 開いた時点の見た目に戻ったとき、元の形状の参照（UV の組を含む）へ戻すのに使う。
+    pub originals: HashMap<u32, OriginalNode>,
+}
+
+/// 開いた時点のノードのメッシュと描画。描画の `tex` は `ExportScene::textures` の番号。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginalNode {
+    pub mesh: u32,
+    pub draws: Vec<Draw>,
+}
+
+/// 開いたモデルから `ExportScene::originals` を作る。メッシュの番号が無いモデル（STL など）は空。
+pub fn originals(model: &Model) -> HashMap<u32, OriginalNode> {
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(at, node)| {
+            let mesh = *model.textures.source_meshes.get(&node.gltf_index)?;
+            let draws = model.draws(NodeId(at as u32)).to_vec();
+            Some((node.gltf_index, OriginalNode { mesh, draws }))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,12 +97,24 @@ pub struct Built {
 /// 書き出しの結果の一覧に出すこと。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExportNote {
-    /// 色を変えた部品。元の材質とメッシュを写して基本色と材質の番号だけを替え、末尾に足した
-    /// （元の材質とメッシュはファイルに残る）。
+    /// 色を変えた部品数と、そのために写した材質・メッシュの数。
     Recolored {
         nodes: u32,
         materials: u32,
         meshes: u32,
+    },
+    /// 画像を変えた部品数、追加画像の枚数と圧縮バイト数、UV を焼いた形状数。
+    Retextured {
+        nodes: u32,
+        images: u32,
+        image_bytes: u64,
+        baked: u32,
+    },
+    /// 元の extras の値を保つため、箱形の大きさを記録できなかった。
+    BoxSizeUnmarked,
+    /// 箱形で焼くとき、読めない UV の組（基本色が使わない組）を写さなかった数。
+    UvSetsDropped {
+        sets: u32,
     },
     /// シーンから外した部品（データはファイルに残る）。
     DetachedNodes {
@@ -197,16 +238,9 @@ fn write_fill(out: &mut dyn io::Write, byte: u8, count: u64) -> io::Result<()> {
 /// 書いたバイト列を読み直して照合する。1つでも外れたら `Verify`（呼び出し側は書いたファイルを消す）。
 /// 確かめること:
 /// 1. 容器の長さ、JSONチャンクが `built.json`、元のBINが同じ位置に同じバイト、足したBINが末尾。
-/// 2. 最上位の項目のうち8つ（`nodes`・`scenes`・`scene`・`meshes`・`materials`・`accessors`・
-///    `bufferViews`・`buffers`）以外が値として元と等しい。8つも、元からあった要素は、`scene` から
-///    決まる書き換えてよい所（変形・名前・子を変えたノード、外したノードの親、使うシーンの根、
-///    `buffers[0].byteLength`）を除いて等しい。足した要素は末尾にあり、足したBINの範囲を指す。
-///    色を変えた部品のノードの `mesh` は、足したメッシュが元のメッシュの `material` だけを替えた
-///    写しのときだけ違ってよく、足した材質は「元の材質の基本色だけを替えた写し」「材質の無い
-///    プリミティブの、基本色だけの材質」「足した図形の材質（基本色と `metallicFactor: 0`）」の
-///    どれかとして使われていること。材質とメッシュは BIN なしで増えてよい。
-/// 3. `load_glb` で開け、部品の数・ファイル内の番号・親・名前・ワールド行列（許容差つき）・
-///    描画ごとの形状と色・配置後の三角形数が `scene` と一致する。
+/// 2. 既存の配列の番号、元の材質やメッシュ、変更対象外の JSON が保たれている。
+///    写した材質の色・画像・箱形の印、追記した画像のバイト列と形状の参照を確かめる。
+/// 3. 開き直した部品の階層・変形・三角形・見た目が文書と一致し、箱形の UV が投影の式に合う。
 pub fn verify(
     written: &[u8],
     base: &[u8],

@@ -5,6 +5,7 @@ use std::ops::Range;
 use glam::Affine3A;
 
 use crate::math::Aabb;
+use crate::texture::{ImageId, ImageInfo, TexId, TexUse, Textures};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
@@ -31,6 +32,7 @@ pub struct Primitive {
 pub struct Draw {
     pub prim: PrimId,
     pub base_color: [f32; 4],
+    pub tex: Option<TexId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +67,16 @@ pub trait SceneRead {
     /// 形状。読み込んだ分の後に、足した図形の分が続く番号で並ぶ。
     fn primitive(&self, id: PrimId) -> Option<&Primitive>;
     fn primitive_count(&self) -> usize;
+    fn tex_use(&self, _id: TexId) -> Option<&TexUse> {
+        None
+    }
+    fn image(&self, _id: ImageId) -> Option<&ImageInfo> {
+        None
+    }
+    /// 形状の頂点と同じ順の UV。読み込んだ UV が無ければ空。
+    fn prim_uvs(&self, _id: PrimId) -> &[[f32; 2]] {
+        &[]
+    }
     /// GLBの中のノード番号。まだファイルに無い部品（足した図形・複製）は `None`。
     fn file_index(&self, id: NodeId) -> Option<u32>;
     fn find_file_index(&self, gltf_index: u32) -> Option<NodeId>;
@@ -106,6 +118,15 @@ impl<T: SceneRead + ?Sized> SceneRead for std::sync::Arc<T> {
     fn primitive_count(&self) -> usize {
         (**self).primitive_count()
     }
+    fn tex_use(&self, id: TexId) -> Option<&TexUse> {
+        (**self).tex_use(id)
+    }
+    fn image(&self, id: ImageId) -> Option<&ImageInfo> {
+        (**self).image(id)
+    }
+    fn prim_uvs(&self, id: PrimId) -> &[[f32; 2]] {
+        (**self).prim_uvs(id)
+    }
     fn file_index(&self, id: NodeId) -> Option<u32> {
         (**self).file_index(id)
     }
@@ -125,6 +146,7 @@ pub struct Model {
     pub nodes: Vec<Node>,
     pub draws: Vec<Draw>,
     pub primitives: Vec<Primitive>,
+    pub textures: Textures,
     pub bounds: Aabb,
     pub stats: ModelStats,
     pub warnings: Vec<LoadWarning>,
@@ -139,10 +161,24 @@ pub struct ModelStats {
     pub placed_triangles: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageSkipReason {
+    Format,
+    External,
+    NoUv,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadWarning {
     Textures {
         count: u32,
+    },
+    OtherTextures {
+        count: u32,
+    },
+    ImagesSkipped {
+        count: u32,
+        reason: ImageSkipReason,
     },
     VertexColors {
         count: u32,
@@ -186,7 +222,20 @@ impl LoadWarning {
     pub fn message_ja(&self) -> String {
         match self {
             Self::Textures { count } => {
-                format!("テクスチャ {count} 件は読まず、色は baseColorFactor だけで表示します")
+                format!(
+                    "基本色の画像 {count} 枚は、表示時に基本色（baseColorFactor）と掛け合わせます"
+                )
+            }
+            Self::OtherTextures { count } => {
+                format!("基本色以外の画像 {count} 件（法線・粗さなど）は表示しません")
+            }
+            Self::ImagesSkipped { count, reason } => {
+                let reason = match reason {
+                    ImageSkipReason::Format => "PNG・JPEG 以外の形式です",
+                    ImageSkipReason::External => "外部ファイルまたはデータ URI を参照しています",
+                    ImageSkipReason::NoUv => "画像を貼るための座標がありません",
+                };
+                format!("画像 {count} 枚は読めないため、色だけで表示します（{reason}）")
             }
             Self::VertexColors { count } => {
                 format!("頂点色 {count} 件は読まず、色は baseColorFactor だけで表示します")
@@ -230,6 +279,7 @@ impl Model {
     /// 警告は無い。読み込み（`load_glb`）からは出てこない（メッシュの無いファイルは断る）。
     pub fn empty() -> Model {
         Model {
+            textures: Textures::default(),
             nodes: Vec::new(),
             draws: Vec::new(),
             primitives: Vec::new(),
@@ -307,6 +357,21 @@ impl SceneRead for Model {
         self.primitives.len()
     }
 
+    fn tex_use(&self, id: TexId) -> Option<&TexUse> {
+        self.textures.uses.get(id.0 as usize)
+    }
+
+    fn image(&self, id: ImageId) -> Option<&ImageInfo> {
+        self.textures.images.get(id.0 as usize)
+    }
+
+    fn prim_uvs(&self, id: PrimId) -> &[[f32; 2]] {
+        self.textures
+            .prim_uvs
+            .get(id.0 as usize)
+            .map_or(&[], Vec::as_slice)
+    }
+
     fn file_index(&self, id: NodeId) -> Option<u32> {
         Some(self.node(id).gltf_index)
     }
@@ -330,8 +395,9 @@ mod tests {
 
     use glam::{Affine3A, Vec3};
 
-    use super::{LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Vertex};
+    use super::{ImageSkipReason, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Vertex};
     use crate::math::Aabb;
+    use crate::texture::Textures;
 
     fn box_at(min: f32, max: f32) -> Aabb {
         Aabb {
@@ -356,6 +422,7 @@ mod tests {
 
     fn sample() -> Model {
         Model {
+            textures: Textures::default(),
             nodes: vec![
                 node("root", 0, None, 3, Aabb::empty()),
                 node("arm", 4, Some(NodeId(0)), 2, box_at(0.0, 1.0)),
@@ -376,11 +443,13 @@ mod tests {
     fn empty_model_makes_empty_document() {
         use super::SceneRead;
         use crate::doc::Document;
+        use crate::texture::{ImageId, TexId};
 
         let model = Model::empty();
         assert!(model.nodes.is_empty());
         assert!(model.draws.is_empty());
         assert!(model.primitives.is_empty());
+        assert_eq!(model.textures, Textures::default());
         assert!(model.bounds.is_empty());
         assert_eq!(model.stats, ModelStats::default());
         assert!(model.warnings.is_empty());
@@ -392,9 +461,55 @@ mod tests {
         let doc = Document::new(model.clone());
         assert_eq!(doc.node_count(), 0);
         assert_eq!(doc.primitive_count(), 0);
+        assert!(doc.tex_use(TexId(0)).is_none());
+        assert!(doc.image(ImageId(0)).is_none());
+        assert!(doc.prim_uvs(PrimId(0)).is_empty());
         assert!(doc.bounds().is_empty());
         assert_eq!(doc.find_file_index(0), None);
         assert!(doc.shares_geometry_with(&model));
+    }
+
+    #[test]
+    fn model_and_arc_read_the_same_texture_tables() {
+        use super::SceneRead;
+        use crate::shapes::{self, ShapeKind};
+        use crate::texture::{
+            ImageHash, ImageId, ImageInfo, ImageSource, Mime, Sampling, TexId, TexUse, UvMap,
+        };
+        use std::sync::Arc;
+
+        let mut model = Model::empty();
+        let image = ImageInfo {
+            hash: ImageHash::of(b"image"),
+            mime: Mime::Png,
+            source: ImageSource::File { offset: 4, len: 5 },
+        };
+        let tex = TexUse {
+            image: Some(ImageId(0)),
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: None,
+            baked_box: None,
+        };
+        model.textures.images.push(image.clone());
+        model.textures.uses.push(tex);
+        let plane = shapes::build(ShapeKind::Plane, 1.0);
+        let uvs = vec![[0.0, 1.0]; plane.vertices.len()];
+        model.primitives = vec![plane.clone(), plane];
+        model.textures.prim_uvs = vec![Vec::new(), uvs.clone()];
+        let model = Arc::new(model);
+        for scene in [model.as_ref() as &dyn SceneRead, &model] {
+            assert_eq!(scene.tex_use(TexId(0)), Some(&tex));
+            assert_eq!(scene.image(ImageId(0)), Some(&image));
+            assert_eq!(scene.prim_uvs(PrimId(1)), uvs.as_slice());
+            assert_eq!(scene.tex_use(TexId(1)), None);
+            assert_eq!(scene.image(ImageId(1)), None);
+            assert!(scene.prim_uvs(PrimId(0)).is_empty());
+            assert!(scene.prim_uvs(PrimId(2)).is_empty());
+        }
     }
 
     #[test]
@@ -446,8 +561,27 @@ mod tests {
     #[test]
     fn warning_messages_name_the_simplification() {
         let texture = LoadWarning::Textures { count: 2 };
-        assert!(texture.message_ja().contains("baseColorFactor"));
-        assert!(texture.message_ja().contains('2'));
+        assert_eq!(
+            texture.message_ja(),
+            "基本色の画像 2 枚は、表示時に基本色（baseColorFactor）と掛け合わせます"
+        );
+        assert_eq!(
+            LoadWarning::OtherTextures { count: 3 }.message_ja(),
+            "基本色以外の画像 3 件（法線・粗さなど）は表示しません"
+        );
+        for (reason, detail) in [
+            (ImageSkipReason::Format, "PNG・JPEG 以外の形式です"),
+            (
+                ImageSkipReason::External,
+                "外部ファイルまたはデータ URI を参照しています",
+            ),
+            (ImageSkipReason::NoUv, "画像を貼るための座標がありません"),
+        ] {
+            assert_eq!(
+                LoadWarning::ImagesSkipped { count: 2, reason }.message_ja(),
+                format!("画像 2 枚は読めないため、色だけで表示します（{detail}）")
+            );
+        }
         assert!(
             LoadWarning::VertexColors { count: 1 }
                 .message_ja()

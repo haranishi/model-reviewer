@@ -1,6 +1,7 @@
 //! 読み込みは1回につき1本の別スレッド。UIはイベントを受け取るだけ。
 
 use std::any::Any;
+use std::collections::{HashMap, hash_map::Entry};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -13,9 +14,11 @@ use std::time::{Duration, Instant};
 use model_reviewer_core::identity::{ModelIdentity, ModelRef};
 use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::scene::Model;
+use model_reviewer_core::texture::{ImageId, ImageSource, MipChain, plan_levels};
 use model_reviewer_core::units::{UnitLabel, UpAxis};
 use model_reviewer_gltf::{LoadError, load_glb};
 use model_reviewer_stl::{StlOptions, detect as detect_stl, load_stl};
+use model_reviewer_texture::{TexError, decode, dimensions};
 
 use crate::session::SourceKind;
 
@@ -68,6 +71,29 @@ impl LoadOptions {
 /// GLB でも STL でもないファイルの知らせ（要件5.2）。
 pub const NEITHER_GLB_NOR_STL: &str = "GLB でも STL でもありません";
 
+pub(crate) const DEFAULT_TEXTURE_BUDGET_MIB: u32 = 512;
+pub(crate) const MAX_TEXTURE_SIDE: u32 = 4096;
+const MAX_COMPRESSED_BYTES: usize = 512 << 20;
+
+type CompressedImage = Result<Arc<[u8]>, TexError>;
+
+#[derive(Clone, Copy)]
+pub(crate) struct TextureOptions {
+    pub enabled: bool,
+    pub max_side: u32,
+    pub budget_mib: u32,
+}
+
+impl Default for TextureOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_side: MAX_TEXTURE_SIDE,
+            budget_mib: DEFAULT_TEXTURE_BUDGET_MIB,
+        }
+    }
+}
+
 /// 各工程の前に呼ぶ試験用の関数。本番は空。
 #[derive(Clone, Default)]
 pub struct LoadHooks {
@@ -108,16 +134,39 @@ pub(crate) enum LoadEvent {
         index: PickIndex,
         elapsed: Duration,
     },
+    TexturePlan {
+        generation: u64,
+        total: usize,
+        shrunk: Vec<ImageId>,
+        skipped: Vec<(ImageId, String)>,
+    },
+    TextureFailed {
+        generation: u64,
+        image: ImageId,
+        error: String,
+    },
+    TexturesDone {
+        generation: u64,
+    },
+}
+
+pub(crate) struct TextureReady {
+    pub generation: u64,
+    pub image: ImageId,
+    pub chain: MipChain,
 }
 
 pub(crate) struct LoadHandle {
     cancel: Arc<AtomicBool>,
     rx: Receiver<LoadEvent>,
+    pub images: Receiver<TextureReady>,
+    next_image: mpsc::Sender<()>,
 }
 
 impl LoadHandle {
-    pub(crate) fn cancel(&self) {
-        self.cancel.store(true, Ordering::Release);
+    /// 最初は形状の表示後、以後は画像を待ち行列から取り出したときに1枚だけ許す。
+    pub(crate) fn allow_image(&self) {
+        let _ = self.next_image.send(());
     }
 
     pub(crate) fn drain(&self) -> Vec<LoadEvent> {
@@ -129,22 +178,38 @@ impl LoadHandle {
     }
 }
 
+impl Drop for LoadHandle {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+}
+
 pub(crate) fn spawn(
     generation: u64,
     path: PathBuf,
     expected_identity: Option<ModelIdentity>,
     options: LoadOptions,
+    textures: TextureOptions,
     hooks: LoadHooks,
     ctx: Option<egui::Context>,
 ) -> LoadHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
+    let (image_tx, images) = mpsc::sync_channel(1);
+    let (next_image, permits) = mpsc::channel();
     let flag = Arc::clone(&cancel);
     let sender = tx.clone();
     let ctx_if_unspawned = ctx.clone();
     let spawned = thread::Builder::new()
         .name("model-load".to_owned())
         .spawn(move || {
+            let emit = |event| {
+                let sent = sender.send(event).is_ok();
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
+                sent
+            };
             let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 load_thread(
                     generation,
@@ -152,24 +217,27 @@ pub(crate) fn spawn(
                         path,
                         expected_identity,
                         options,
+                        textures: ImageStream {
+                            options: textures,
+                            sender: image_tx,
+                            permits,
+                        },
                     },
                     hooks,
                     flag,
-                    &sender,
-                    &ctx,
+                    &emit,
+                    ctx.as_ref(),
                 );
             }));
             if let Err(payload) = panicked {
                 let detail = panic_text(payload);
                 log::error!("load thread panicked: {detail}");
-                let _ = sender.send(LoadEvent::Failed {
+                emit(LoadEvent::Failed {
                     generation,
                     message: LoadError::Internal(detail).message_ja(),
                 });
-                if let Some(ctx) = &ctx {
-                    ctx.request_repaint();
-                }
             }
+            emit(LoadEvent::TexturesDone { generation });
         });
     if let Err(err) = spawned {
         log::error!("failed to spawn load thread: {err}");
@@ -177,11 +245,17 @@ pub(crate) fn spawn(
             generation,
             message: LoadError::Internal(err.to_string()).message_ja(),
         });
+        let _ = tx.send(LoadEvent::TexturesDone { generation });
         if let Some(ctx) = &ctx_if_unspawned {
             ctx.request_repaint();
         }
     }
-    LoadHandle { cancel, rx }
+    LoadHandle {
+        cancel,
+        rx,
+        images,
+        next_image,
+    }
 }
 
 /// 読み込む物（読み込みのスレッドへ渡す）。
@@ -189,6 +263,13 @@ struct Request {
     path: PathBuf,
     expected_identity: Option<ModelIdentity>,
     options: LoadOptions,
+    textures: ImageStream,
+}
+
+struct ImageStream {
+    options: TextureOptions,
+    sender: mpsc::SyncSender<TextureReady>,
+    permits: Receiver<()>,
 }
 
 fn load_thread(
@@ -196,24 +277,16 @@ fn load_thread(
     request: Request,
     hooks: LoadHooks,
     cancel: Arc<AtomicBool>,
-    tx: &mpsc::Sender<LoadEvent>,
-    ctx: &Option<egui::Context>,
+    emit: &impl Fn(LoadEvent) -> bool,
+    ctx: Option<&egui::Context>,
 ) {
     let Request {
         path,
         expected_identity,
         options,
+        textures,
     } = request;
     let cancelled = || cancel.load(Ordering::Acquire);
-    let emit = |event: LoadEvent| -> bool {
-        if tx.send(event).is_err() {
-            return false;
-        }
-        if let Some(ctx) = ctx {
-            ctx.request_repaint();
-        }
-        true
-    };
 
     if cancelled() {
         return;
@@ -329,6 +402,15 @@ fn load_thread(
     // `load_glb`・`load_stl` の途中では止められない。届いた結果は世代番号で捨てる。
     // 読んだバイト列はここで手放す（索引を作る間に常駐させない）。
     let file_bytes = bytes.len() as u64;
+    let images = if textures.options.enabled {
+        let sources = model.textures.images.iter().map(|info| &info.source);
+        let Some(images) = compressed_images(&bytes, sources, cancelled) else {
+            return;
+        };
+        images
+    } else {
+        Vec::new()
+    };
     drop(bytes);
     let model = Arc::new(model);
     let model_ref = model_ref_for(resolved_path, identity, source_kind);
@@ -350,20 +432,169 @@ fn load_thread(
 
     call_hook(&hooks.before_pick);
     let started = Instant::now();
-    let cancel_for_pick = Arc::clone(&cancel);
-    let index =
-        PickIndex::build_cancellable(&model, &move || cancel_for_pick.load(Ordering::Acquire));
+    let index = PickIndex::build_cancellable(&model, &cancelled);
     let elapsed = started.elapsed();
+    drop(model);
     if cancelled() {
         return;
     }
     if let Some(index) = index {
-        let _ = emit(LoadEvent::Pick {
+        emit(LoadEvent::Pick {
             generation,
             index,
             elapsed,
         });
     }
+    load_images(generation, textures, images, cancelled, emit, ctx);
+}
+
+fn load_images(
+    generation: u64,
+    stream: ImageStream,
+    images: Vec<CompressedImage>,
+    cancelled: impl Fn() -> bool,
+    emit: &impl Fn(LoadEvent) -> bool,
+    ctx: Option<&egui::Context>,
+) {
+    if images.is_empty() || stream.permits.recv().is_err() || cancelled() {
+        return;
+    }
+
+    let mut sizes = Vec::with_capacity(images.len());
+    let mut skipped = Vec::new();
+    for (i, bytes) in images.iter().enumerate() {
+        if cancelled() {
+            return;
+        }
+        match bytes
+            .as_deref()
+            .map_err(TexError::message_ja)
+            .and_then(|bytes| dimensions(bytes).map_err(|e| e.message_ja()))
+        {
+            Ok(size) => sizes.push(size),
+            Err(reason) => {
+                sizes.push([0, 0]);
+                skipped.push((ImageId(i as u32), reason));
+            }
+        }
+    }
+    let plan = plan_levels(
+        &sizes,
+        stream.options.max_side,
+        u64::from(stream.options.budget_mib) << 20,
+    );
+    let mut shrunk = Vec::new();
+    for (i, (&size, &skip)) in sizes.iter().zip(&plan).enumerate() {
+        let id = ImageId(i as u32);
+        match skip {
+            Some(1..) => shrunk.push(id),
+            None if size != [0, 0] => skipped.push((
+                id,
+                format!(
+                    "画像の上限（長辺 {} 画素・合計 {} MiB）",
+                    stream.options.max_side, stream.options.budget_mib
+                ),
+            )),
+            _ => {}
+        }
+    }
+    if !emit(LoadEvent::TexturePlan {
+        generation,
+        total: images.len(),
+        shrunk,
+        skipped,
+    }) {
+        return;
+    }
+    for (i, (bytes, skip)) in images.into_iter().zip(plan).enumerate() {
+        if cancelled() {
+            return;
+        }
+        let (Ok(bytes), Some(skip)) = (bytes, skip) else {
+            continue;
+        };
+        let image = ImageId(i as u32);
+        let decoded = std::panic::catch_unwind(|| decode(&bytes, skip))
+            .unwrap_or_else(|_| Err(TexError::Broken("画素の復号に失敗しました".into())));
+        drop(bytes);
+        match decoded {
+            Ok(chain) => {
+                if cancelled()
+                    || stream
+                        .sender
+                        .send(TextureReady {
+                            generation,
+                            image,
+                            chain,
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
+                }
+                if stream.permits.recv().is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                if !emit(LoadEvent::TextureFailed {
+                    generation,
+                    image,
+                    error: error.message_ja(),
+                }) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn compressed_images<'a>(
+    file: &[u8],
+    sources: impl Iterator<Item = &'a ImageSource>,
+    cancelled: impl Fn() -> bool,
+) -> Option<Vec<CompressedImage>> {
+    let mut images = Vec::new();
+    let mut ranges = HashMap::new();
+    let mut remaining = file.len().min(MAX_COMPRESSED_BYTES);
+    for source in sources {
+        if cancelled() {
+            return None;
+        }
+        let bytes = match source {
+            ImageSource::Held(bytes) => Ok(Arc::clone(bytes)),
+            ImageSource::File { offset, len } => match ranges.entry((*offset, *len)) {
+                Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
+                Entry::Vacant(entry) => image_range(file, *offset, *len).and_then(|range| {
+                    remaining = remaining.checked_sub(range.len()).ok_or_else(|| {
+                        TexError::Broken("圧縮画像のコピーが合計の上限を超えます".into())
+                    })?;
+                    Ok(Arc::clone(entry.insert(Arc::from(range))))
+                }),
+            },
+        };
+        images.push(bytes);
+    }
+    Some(images)
+}
+
+/// `load_glb` が検証した JSON チャンクの次が BIN。offset はそのデータの先頭から数える。
+fn image_range(file: &[u8], offset: u64, len: u64) -> Result<&[u8], TexError> {
+    let range_error = || TexError::Broken("画像の範囲が不正です".into());
+    let json_len = file
+        .get(12..16)
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(range_error)?;
+    let start = (28 + u64::from(u32::from_le_bytes(json_len)))
+        .checked_add(offset)
+        .ok_or_else(range_error)?;
+    let end = start.checked_add(len).ok_or_else(range_error)?;
+    let range = usize::try_from(start).ok().zip(usize::try_from(end).ok());
+    range
+        .and_then(|(a, b)| file.get(a..b))
+        .ok_or_else(range_error)
 }
 
 fn call_hook(hook: &Option<Arc<dyn Fn() + Send + Sync>>) {
@@ -445,6 +676,51 @@ fn panic_text(payload: Box<dyn Any + Send>) -> String {
         message.clone()
     } else {
         "unknown panic".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod compressed_tests {
+    use super::*;
+
+    #[test]
+    fn bin_ranges_share_storage() {
+        let file = [0u8; 128];
+        let sources = vec![ImageSource::File { offset: 0, len: 96 }; 64];
+        let images = compressed_images(&file, sources.iter(), || false).unwrap();
+        assert_eq!(images.len(), sources.len());
+        let first = images[0].as_ref().unwrap();
+        assert_eq!(first.len(), 96);
+        assert!(
+            images
+                .iter()
+                .all(|image| Arc::ptr_eq(image.as_ref().unwrap(), first))
+        );
+    }
+
+    #[test]
+    fn bin_copies_are_bounded() {
+        let file = [0u8; 128];
+        let sources = [
+            ImageSource::File { offset: 0, len: 96 },
+            ImageSource::File { offset: 1, len: 96 },
+            ImageSource::File { offset: 0, len: 96 },
+            ImageSource::File { offset: 96, len: 4 },
+        ];
+        let images = compressed_images(&file, sources.iter(), || false).unwrap();
+        assert!(images[0].is_ok());
+        assert!(
+            images[1]
+                .as_ref()
+                .unwrap_err()
+                .message_ja()
+                .contains("上限")
+        );
+        assert!(Arc::ptr_eq(
+            images[0].as_ref().unwrap(),
+            images[2].as_ref().unwrap()
+        ));
+        assert_eq!(images[3].as_ref().unwrap().len(), 4);
     }
 }
 

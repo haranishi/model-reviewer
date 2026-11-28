@@ -4,6 +4,7 @@ use glam::Affine3A;
 
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{Model, ModelStats, Node, NodeId};
+use model_reviewer_core::texture::Textures;
 use model_reviewer_core::visibility::Visibility;
 
 fn node(name: &str, gltf_index: u32, parent: Option<NodeId>, end: u32) -> Node {
@@ -23,6 +24,7 @@ fn node(name: &str, gltf_index: u32, parent: Option<NodeId>, end: u32) -> Node {
 /// 0 根、1 子A、2 孫、3 子B。
 fn family() -> Model {
     Model {
+        textures: Textures::default(),
         nodes: vec![
             node("根", 0, None, 4),
             node("子A", 4, Some(NodeId(0)), 3),
@@ -98,6 +100,7 @@ fn out_of_range_ids_do_not_panic_or_change_flags() {
 /// 0 根、1 子A、2 孫、3 子B から子A（1..3）を切り取った形。
 fn without_child_a() -> Model {
     Model {
+        textures: Textures::default(),
         nodes: vec![node("根", 0, None, 2), node("子B", 6, Some(NodeId(0)), 2)],
         draws: Vec::new(),
         primitives: Vec::new(),

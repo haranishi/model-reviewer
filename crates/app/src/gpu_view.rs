@@ -11,9 +11,11 @@ use std::time::Instant;
 use egui_wgpu::RenderState;
 use model_reviewer_core::camera::grid_spacing;
 use model_reviewer_core::scene::{Model, SceneRead};
+use model_reviewer_core::texture::{ImageId, MipChain};
 use model_reviewer_core::visibility::Visibility;
 use model_reviewer_render::{
-    DEFAULT_BUDGET_BYTES, DragPreview, FrameParams, GridParams, SceneRenderer, UploadProgress,
+    DEFAULT_BUDGET_BYTES, DragPreview, FrameParams, GridParams, ImageProgress, SceneRenderer,
+    UploadProgress,
 };
 
 use crate::session::Session;
@@ -77,12 +79,34 @@ struct GpuState {
     rejected: Option<Arc<Model>>,
     /// `poll` で表示中が入れ替わった。次の `frame` でインスタンスを作り、描き直す。
     swapped: bool,
+    /// この回の形状の転送後、画像に使えるバイト数。
+    image_budget: u64,
+    images_need_repaint: bool,
     progress: Option<UploadProgress>,
     device_errors: Arc<Mutex<Vec<String>>>,
     /// 表示中のモデルへ送った、足した図形の形状（送った順）。モデルが替わると空にする。
     added: Vec<Arc<model_reviewer_core::scene::Primitive>>,
     /// 足した形状を送れなかった理由（次のフレームで3Dビューに出す）。
     add_error: Option<String>,
+}
+
+/// 画像を1枚ずつ送る受け口。転送量はそのフレームで送った分だけを返す。
+pub trait ImageSink {
+    fn begin_image(&mut self, image: ImageId, chain: MipChain) -> Result<(), String>;
+    fn continue_images(&mut self, budget: u64) -> ImageProgress;
+}
+
+impl ImageSink for GpuState {
+    fn begin_image(&mut self, image: ImageId, chain: MipChain) -> Result<(), String> {
+        self.renderer
+            .begin_image(&self.render_state.device, image, chain)
+            .map_err(|e| e.message_ja())
+    }
+
+    fn continue_images(&mut self, budget: u64) -> ImageProgress {
+        self.renderer
+            .continue_images(&self.render_state.device, &self.render_state.queue, budget)
+    }
 }
 
 pub struct GpuView {
@@ -119,6 +143,8 @@ impl GpuView {
                 pending: None,
                 rejected: None,
                 swapped: false,
+                image_budget: 0,
+                images_need_repaint: false,
                 progress: None,
                 device_errors,
                 added: Vec::new(),
@@ -128,8 +154,10 @@ impl GpuView {
         }
     }
 
-    pub(crate) fn has_device(&self) -> bool {
-        self.state.is_some()
+    pub(crate) fn max_texture_side(&self) -> Option<u32> {
+        self.state
+            .as_ref()
+            .map(|s| s.render_state.device.limits().max_texture_dimension_2d)
     }
 
     /// 線の表示（「面と線」「線」）が使えるか。GPUが無ければ偽。
@@ -175,6 +203,7 @@ impl GpuView {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        state.images_need_repaint = false;
         if session.take_cancel_upload() {
             state.renderer.cancel_upload();
             state.pending = None;
@@ -190,6 +219,7 @@ impl GpuView {
                 match state.renderer.begin_upload(device, Arc::clone(&model)) {
                     Ok(()) => {
                         state.pending = Some(model);
+                        state.progress = None;
                         state.rejected = None;
                         self.reason = None;
                     }
@@ -205,35 +235,39 @@ impl GpuView {
                 }
             }
         }
-        if state.pending.is_none() {
-            return;
+        let mut budget = DEFAULT_BUDGET_BYTES;
+        if state.pending.is_some() {
+            let before = state.progress.map_or(0, |p| p.uploaded_bytes);
+            let started = Instant::now();
+            let progress = state
+                .renderer
+                .continue_upload(&state.render_state.queue, budget);
+            session.record_upload_step(started.elapsed());
+            budget -= progress.uploaded_bytes - before;
+            if progress.done {
+                state.shown = state.pending.take();
+                state.added.clear();
+                state.swapped = true;
+                state.progress = None;
+                session.commit_pending(true);
+            } else {
+                state.progress = Some(progress);
+                session.set_upload_progress(progress.uploaded_bytes, progress.total_bytes);
+            }
         }
-        let queue = &state.render_state.queue;
-        let started = Instant::now();
-        let progress = state.renderer.continue_upload(queue, DEFAULT_BUDGET_BYTES);
-        session.record_upload_step(started.elapsed());
-        if progress.done {
-            state.shown = state.pending.take();
-            state.added.clear();
-            state.swapped = true;
-            state.progress = None;
-            session.commit_pending(true);
-        } else {
-            state.progress = Some(progress);
-            session.set_upload_progress(progress.uploaded_bytes, progress.total_bytes);
-        }
+        state.image_budget = budget;
     }
 
     /// 転送が残っている、または入れ替えた直後で描き直しが要る。
     pub fn needs_repaint(&self) -> bool {
-        self.state
-            .as_ref()
-            .is_some_and(|state| state.pending.is_some() || state.swapped)
+        self.state.as_ref().is_some_and(|state| {
+            state.pending.is_some() || state.swapped || state.images_need_repaint
+        })
     }
 
     /// `ui` の最後に呼ぶ。モデルの切り替え・インスタンスの更新・描き直しをして、画像を登録する。
     pub fn frame(&mut self, ctx: &egui::Context, session: &mut Session) {
-        let dirty = session.take_scene_dirty();
+        let mut dirty = session.take_scene_dirty();
         // 確定した変形で動いた範囲。全体を作り直すフレームでは使わない。
         let patches = session.take_instance_patches();
         let (device_fault, alloc_message) = {
@@ -268,7 +302,7 @@ impl GpuView {
                 log::error!("表示中のモデルと Session のモデルが一致しません");
             }
 
-            let draws_before = state.renderer.stats().draw_count;
+            let before = state.renderer.stats();
             let swapped = std::mem::take(&mut state.swapped);
             if let Some(model) = state.shown.clone()
                 && (swapped || dirty.instances || dirty.model)
@@ -280,6 +314,9 @@ impl GpuView {
                     .as_ref()
                     .is_some_and(|m| Arc::ptr_eq(m, &model));
                 if same_model && let Some(doc) = session.doc.as_ref() {
+                    if dirty.model && !swapped {
+                        state.renderer.discard_texture_edits();
+                    }
                     upload_added(
                         &mut state.renderer,
                         &mut state.added,
@@ -318,9 +355,19 @@ impl GpuView {
                 changed = true;
             }
 
+            if aligned && state.shown.is_some() {
+                // このフレームで利用者が足した形状や、更新したインスタンスの転送も先に数える。
+                let sent = state.renderer.stats().uploaded_bytes - before.uploaded_bytes;
+                let budget = std::mem::take(&mut state.image_budget).saturating_sub(sent);
+                state.images_need_repaint = session.poll_images(state, budget);
+                dirty.display |= std::mem::take(&mut session.scene_dirty.display);
+            }
             let should_draw = changed || swapped || dirty.any() || state.texture.is_none();
             if should_draw {
+                let device = &state.render_state.device;
+                let queue = &state.render_state.queue;
                 let params = frame_params(session, state.shown.as_ref());
+                state.renderer.set_textures_shown(session.textures_shown);
                 let output = state.renderer.render(device, queue, &params);
                 let recreated = output.recreated;
                 let mut egui_renderer = state.render_state.renderer.write();
@@ -343,8 +390,11 @@ impl GpuView {
                 // 描画中の未捕捉エラーは、次の poll まで届かない。ここで取り出して次のフレームで見せる。
                 let _ = device.poll(egui_wgpu::wgpu::PollType::Poll);
             }
-            if state.renderer.stats().draw_count > draws_before && aligned {
+            if state.renderer.stats().draw_count > before.draw_count && aligned {
                 session.note_presented();
+            }
+            if swapped && aligned {
+                session.allow_first_image();
             }
             let device_fault = state
                 .device_errors
@@ -406,6 +456,7 @@ impl GpuView {
             state.rejected = None;
             state.progress = None;
             state.swapped = true;
+            state.images_need_repaint = false;
         }
         self.reason = Some(message.clone());
         session.close_for_gpu_error(message);
@@ -596,6 +647,8 @@ mod tests {
                 pending: None,
                 rejected: None,
                 swapped: false,
+                image_budget: 0,
+                images_need_repaint: false,
                 progress: None,
                 device_errors,
                 added: Vec::new(),

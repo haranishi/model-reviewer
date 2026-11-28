@@ -11,6 +11,7 @@ use model_reviewer_core::scene::{
 };
 use model_reviewer_core::section::{Axis, SectionPlane};
 use model_reviewer_core::snap::{SnapKind, SnapQuery, SnapSettings, SnapTarget, snap};
+use model_reviewer_core::texture::Textures;
 use model_reviewer_core::visibility::Visibility;
 
 const VIEWPORT: [f32; 2] = [800.0, 800.0];
@@ -86,6 +87,7 @@ fn plate() -> Primitive {
 fn model_of(prim: Primitive, world: Affine3A) -> Model {
     let world_aabb = prim.local_aabb.transformed(&world);
     Model {
+        textures: Textures::default(),
         nodes: vec![Node {
             name: "n0".into(),
             gltf_index: 0,
@@ -100,6 +102,7 @@ fn model_of(prim: Primitive, world: Affine3A) -> Model {
         draws: vec![Draw {
             prim: PrimId(0),
             base_color: [1.0; 4],
+            tex: None,
         }],
         primitives: vec![prim],
         bounds: world_aabb,

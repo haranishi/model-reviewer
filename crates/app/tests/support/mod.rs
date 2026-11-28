@@ -18,6 +18,7 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::pick::PickIndex;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId, Primitive, Vertex};
+use model_reviewer_core::texture::Textures;
 
 pub const VIEW: [u32; 2] = [800, 800];
 pub const NEAR_CENTER: Vec3 = Vec3::new(0.0, 0.0, 2.0);
@@ -83,15 +84,18 @@ pub fn two_cubes() -> Model {
     let nodes = vec![node("手前", 0, NEAR_CENTER), node("奥", 1, FAR_CENTER)];
     let bounds = nodes[0].world_aabb.union(nodes[1].world_aabb);
     Model {
+        textures: Textures::default(),
         nodes,
         draws: vec![
             Draw {
                 prim: PrimId(0),
                 base_color: [0.8, 0.8, 0.8, 1.0],
+                tex: None,
             },
             Draw {
                 prim: PrimId(0),
                 base_color: [0.6, 0.7, 0.9, 1.0],
+                tex: None,
             },
         ],
         primitives: vec![prim],

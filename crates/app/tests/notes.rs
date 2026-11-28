@@ -11,9 +11,11 @@ use model_reviewer::session::{Draft, Session};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{Model, ModelStats, Node, NodeId};
+use model_reviewer_core::texture::Textures;
 
 fn install(session: &mut Session, name: &str) {
     let model = Arc::new(Model {
+        textures: Textures::default(),
         nodes: vec![Node {
             name: name.to_owned(),
             gltf_index: 0,
@@ -288,7 +290,7 @@ fn missing_metrics_say_unmeasured_and_memory_is_omitted() {
     assert!(lines.iter().any(|line| {
         line.label == "ノード数／メッシュ数／三角形数" && line.value == "未計測"
     }));
-    assert!(lines.iter().all(|line| line.label != "メモリ"));
+    assert!(lines.iter().all(|line| line.label != "常駐メモリ"));
 
     let harness = egui_kittest::Harness::builder()
         .allow_missing_glyphs()
@@ -319,7 +321,10 @@ fn missing_metrics_say_unmeasured_and_memory_is_omitted() {
         .as_ref()
         .map(|model| metrics::Counts::from_stats(model.stats));
     let lines = metrics::report_lines(&session.metrics, counts);
-    let memory = lines.iter().find(|line| line.label == "メモリ").unwrap();
+    let memory = lines
+        .iter()
+        .find(|line| line.label == "常駐メモリ")
+        .unwrap();
     assert_eq!(memory.value, "1234 バイト");
     assert!(memory.about.contains("physical_mem"));
     let counts = lines

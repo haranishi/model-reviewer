@@ -1,9 +1,11 @@
 //! 容器、JSON、必須拡張、範囲、ノード階層を、形状を読む前に検査する。
 
-use gltf::json::Root;
+use std::collections::{HashMap, HashSet};
+
 use gltf::json::accessor::{ComponentType, Type};
 use gltf::json::mesh::Semantic;
 use gltf::json::validation::Checked;
+use gltf::json::{Root, Value};
 
 use crate::error::{ExtensionKind, LoadError};
 
@@ -16,11 +18,21 @@ const ALLOWED: &[&str] = &[
     "KHR_lights_punctual",
 ];
 
+// 画像だけを省いて形状を開ける拡張。元ファイルの拡張宣言は書き出しで保持する。
+const SKIPPED_IMAGE_EXTENSIONS: &[&str] = &["KHR_texture_basisu", "EXT_texture_webp"];
+
+#[derive(Default)]
+pub(crate) struct TextureMetadata {
+    pub box_sizes: HashMap<usize, f32>,
+    pub sourceless: HashSet<usize>,
+}
+
 pub struct Opened<'a> {
     pub document: gltf::Document,
     pub bin: &'a [u8],
     pub simplified: Vec<String>,
     pub unknown_optional: Vec<String>,
+    pub texture_metadata: TextureMetadata,
 }
 
 pub fn open(bytes: &[u8]) -> Result<Opened<'_>, LoadError> {
@@ -35,8 +47,9 @@ pub fn open(bytes: &[u8]) -> Result<Opened<'_>, LoadError> {
 
     let mut value: gltf::json::Value = gltf::json::deserialize::from_slice(&json)
         .map_err(|error| LoadError::Json(error.to_string()))?;
+    let texture_metadata = texture_metadata(&value)?;
     strip_unknown_extensions(&mut value, 0)?;
-    let root: Root = gltf::json::deserialize::from_value(value)
+    let mut root: Root = gltf::json::deserialize::from_value(value)
         .map_err(|error| LoadError::Json(error.to_string()))?;
 
     check_required(&root)?;
@@ -45,6 +58,8 @@ pub fn open(bytes: &[u8]) -> Result<Opened<'_>, LoadError> {
     check_accessors(&root, bin)?;
     check_nodes(&root)?;
     let (simplified, unknown_optional) = extension_warnings(&root);
+    root.extensions_required
+        .retain(|name| !SKIPPED_IMAGE_EXTENSIONS.contains(&name.as_str()));
 
     // gltf-json は範囲外の参照を検証中に panic する。壊れたGLBではエラーにする。
     let document = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -62,7 +77,45 @@ pub fn open(bytes: &[u8]) -> Result<Opened<'_>, LoadError> {
         bin,
         simplified,
         unknown_optional,
+        texture_metadata,
     })
+}
+
+fn texture_metadata(root: &Value) -> Result<TextureMetadata, LoadError> {
+    let mut metadata = TextureMetadata::default();
+    for (index, material) in root["materials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if let Some(value) = material["extras"]["model_reviewer"]["box_size"].as_f64() {
+            let size = value as f32;
+            if size.is_finite() && size > 0.0 {
+                metadata.box_sizes.insert(index, size);
+            }
+        }
+    }
+    for (index, texture) in root["textures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        match texture.get("source") {
+            None => {
+                metadata.sourceless.insert(index);
+            }
+            // 型へ直すと大きな番号は u32 に丸まり、u32::MAX は省略と区別できない。
+            Some(source) if source.as_u64().is_some_and(|n| n >= u64::from(u32::MAX)) => {
+                return Err(LoadError::Invalid(format!(
+                    "textures[{index}].source の画像番号が範囲外です"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(metadata)
 }
 
 pub(crate) fn fit_u32(value: u64, what: &str) -> Result<u32, LoadError> {
@@ -177,7 +230,7 @@ fn extension_kind(name: &str) -> ExtensionKind {
 
 fn check_required(root: &Root) -> Result<(), LoadError> {
     for name in &root.extensions_required {
-        if ALLOWED.iter().any(|allowed| *allowed == name) {
+        if ALLOWED.contains(&name.as_str()) || SKIPPED_IMAGE_EXTENSIONS.contains(&name.as_str()) {
             continue;
         }
         return Err(LoadError::UnsupportedRequiredExtension {
@@ -477,7 +530,10 @@ fn extension_warnings(root: &Root) -> (Vec<String>, Vec<String>) {
             continue;
         }
         seen.push(name.clone());
-        if ALLOWED.iter().any(|allowed| *allowed == name) {
+        if name == "KHR_texture_transform" {
+            continue;
+        }
+        if ALLOWED.contains(&name.as_str()) || SKIPPED_IMAGE_EXTENSIONS.contains(&name.as_str()) {
             simplified.push(name.clone());
         } else if !root
             .extensions_required

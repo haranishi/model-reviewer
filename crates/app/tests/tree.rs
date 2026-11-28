@@ -11,6 +11,7 @@ use model_reviewer::session::Session;
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{Model, ModelStats, Node, NodeId};
+use model_reviewer_core::texture::Textures;
 
 fn node(name: &str, parent: Option<NodeId>, subtree_end: u32, depth: u32) -> Node {
     Node {
@@ -29,6 +30,7 @@ fn node(name: &str, parent: Option<NodeId>, subtree_end: u32, depth: u32) -> Nod
 fn install(session: &mut Session, nodes: Vec<Node>) {
     let count = nodes.len() as u32;
     let model = Arc::new(Model {
+        textures: Textures::default(),
         nodes,
         draws: Vec::new(),
         primitives: Vec::new(),

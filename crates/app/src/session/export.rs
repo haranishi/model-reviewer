@@ -8,12 +8,16 @@
 //! - 書き出した後は `Document::set_file_indices`・`ModelRef`・`saved_doc_rev` を更新し、
 //!   レビューに内容があれば未保存にする。履歴は残す。
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use model_reviewer_core::doc::Document;
 use model_reviewer_core::identity::ModelIdentity;
-use model_reviewer_core::scene::{NodeId, SceneRead};
-use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene, empty_base};
+use model_reviewer_core::scene::{LoadWarning, NodeId, SceneRead};
+use model_reviewer_core::texture::{ImageHash, ImageSource};
+use model_reviewer_gltf::export::{
+    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base, originals,
+};
 
 use crate::command::{Command, DialogButton, DialogRequest};
 use crate::exporter::{self, ExportDone, ExportEvent, ExportFailure, ExportRequest, ExportStage};
@@ -45,6 +49,56 @@ pub fn export_scene(doc: &Document) -> ExportScene {
         nodes,
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
+        textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
+        originals: originals(doc.base()),
+    }
+}
+
+/// 直前に書いた土台で、開いたモデルと色が異なる描画。シーンから外した部品も土台には残る。
+#[derive(Default)]
+pub(super) struct ExportColors(HashMap<(u32, usize), [f32; 4]>);
+
+impl ExportColors {
+    fn advance(&mut self, doc: &Document, assigned: &[u32]) -> bool {
+        let original: HashMap<_, _> = doc
+            .base()
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.gltf_index, doc.base().draws(NodeId(i as u32))))
+            .collect();
+        let original_color =
+            |file: u32, slot: usize| original.get(&file)?.get(slot).map(|draw| draw.base_color);
+        // 複製も書き出し前の元の色と比べるので、全件の比較後に控えを更新する。
+        let colored_image = doc.nodes().iter().enumerate().any(|(i, node)| {
+            let id = NodeId(i as u32);
+            let Some(file) = doc.file_index(id).or(node.template) else {
+                return false;
+            };
+            let draws = doc.draws(id);
+            draws.iter().any(|draw| {
+                draw.tex
+                    .and_then(|t| doc.tex_use(t))
+                    .and_then(|t| t.image)
+                    .is_some()
+            }) && draws.iter().enumerate().any(|(slot, draw)| {
+                self.0
+                    .get(&(file, slot))
+                    .copied()
+                    .or_else(|| original_color(file, slot))
+                    .is_some_and(|color| color != draw.base_color)
+            })
+        });
+        for (i, &file) in assigned.iter().enumerate() {
+            for (slot, draw) in doc.draws(NodeId(i as u32)).iter().enumerate() {
+                if original_color(file, slot) == Some(draw.base_color) {
+                    self.0.remove(&(file, slot));
+                } else {
+                    self.0.insert((file, slot), draw.base_color);
+                }
+            }
+        }
+        colored_image
     }
 }
 
@@ -109,6 +163,11 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     }
     if session.is_loading_replacement() {
         session.block_edit_if_locked();
+        return;
+    }
+    if session.paste_job.is_some() {
+        // 復号の途中は原本の識別がまだ分からない。貼り付けが確定か中止になるまで断る。
+        session.status_text = super::texture::PENDING_EXPORT.to_owned();
         return;
     }
     if nothing_to_export(session) {
@@ -200,10 +259,25 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     let Some(doc) = session.doc.as_mut() else {
         return;
     };
+    let colored_image = session.export_colors.advance(doc, &done.assigned);
+    let blocked: Vec<_> = done
+        .assigned
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            super::texture::forbids_box(doc, NodeId(*i as u32), &session.exported_no_box)
+        })
+        .map(|(_, &file)| file)
+        .collect();
+    session.exported_no_box.extend(blocked);
+    let in_use = pasted_in_use(doc);
+    session.exported_pasted.extend(in_use.iter().copied());
+    let left_over = session.exported_pasted.difference(&in_use).count();
     doc.set_file_indices(&done.assigned);
     // 書いたファイルを読み直した行列へそろえる（開き直したときと同じ範囲・初期視点になる）。
     // 最後の桁だけの違いなので、版は進めず、インスタンスだけ作り直す。
     if doc.adopt_file_locals(&done.locals) {
+        session.texture_cache.set(None);
         session.scene_dirty.instances = true;
         session.pending_patches.clear();
     }
@@ -235,9 +309,25 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         .notes
         .iter()
         .any(|note| matches!(note, ExportNote::Recolored { nodes, .. } if *nodes > 0))
-        && let Some(note) = super::color::model_note(doc.base())
     {
-        lines.push(note.to_owned());
+        let model = doc.base();
+        if colored_image && model.textures.images.is_empty() {
+            lines.push("色は画像に掛け合わされて見えます".to_owned());
+        }
+        if colored_image || model.textures.images.is_empty() {
+            lines.extend(super::color::model_note(model).map(str::to_owned));
+        } else if model
+            .warnings
+            .iter()
+            .any(|w| matches!(w, LoadWarning::VertexColors { .. }))
+        {
+            lines.push("ほかのソフトでは頂点の色も掛け合わされます。".to_owned());
+        }
+    }
+    if left_over > 0 {
+        lines.push(format!(
+            "外した貼り付け画像 {left_over} 枚は、ファイルの中に残っています（受け取った人が取り出せます）"
+        ));
     }
     match session.source_kind {
         SourceKind::Stl { unit, up } => {
@@ -258,6 +348,18 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     } else {
         session.dialog = Some(result_dialog(&file_name, &lines));
     }
+}
+
+/// シーンにある部品が使っている、貼り付けた画像。
+fn pasted_in_use(doc: &Document) -> HashSet<ImageHash> {
+    let images: Vec<_> = doc.images().collect();
+    (0..doc.nodes().len())
+        .flat_map(|i| doc.draws(NodeId(i as u32)).iter())
+        .filter_map(|draw| doc.tex_use(draw.tex?)?.image)
+        .filter_map(|id| images.get(id.0 as usize))
+        .filter(|image| matches!(image.source, ImageSource::Held(_)))
+        .map(|image| image.hash)
+        .collect()
 }
 
 fn fail_export(session: &mut Session, failure: ExportFailure) {
@@ -282,6 +384,22 @@ pub fn note_ja(note: &ExportNote) -> String {
                 "色を変えた部品 {nodes} 個: 材質 {materials} 個とメッシュ {meshes} 個を足しました。元の材質とメッシュは、ファイルに残しています。"
             )
         }
+        ExportNote::Retextured { nodes, images, image_bytes, baked } => {
+            let amount = if image_bytes < 1000 {
+                format!("{image_bytes} バイト")
+            } else {
+                format!("{:.0} KB", image_bytes as f64 / 1000.0)
+            };
+            let mut message = format!("画像を変えた部品 {nodes} 個: 画像 {images} 枚（{amount}）を足しました。元の画像と材質は、ファイルに残しています");
+            if baked > 0 {
+                message.push_str(&format!("\n箱形の投影の部品 {baked} 個は、UV 付きの形状を作って足しました（頂点の色と接線は写していません）"));
+            }
+            message
+        }
+        ExportNote::BoxSizeUnmarked => "材質の追加情報を保つため、箱形の大きさを記録できない材質がありました。次の書き出しでも形状を作り直します。".to_owned(),
+        ExportNote::UvSetsDropped { sets } => format!(
+            "箱形の形状を作るとき、読めない UV の組 {sets} 個は写しませんでした（基本色の画像は使っていない組です）。"
+        ),
         ExportNote::DetachedNodes { count } => {
             format!(
                 "削除した部品 {count} 個はシーンから外しました。形状のデータはファイルに残っています。"

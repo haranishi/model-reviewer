@@ -9,6 +9,7 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
     Draw, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
 };
+use model_reviewer_core::texture::Textures;
 use model_reviewer_gltf::export::{
     Built, ExportError, ExportNode, ExportNote, ExportScene, build, glb_length, synthesize_base,
     verify, write_container,
@@ -38,6 +39,11 @@ fn scene_of(model: &Model) -> ExportScene {
             .collect(),
         added: Vec::new(),
         base_primitive_count: model.primitives.len() as u32,
+        textures: model_reviewer_gltf::export::ExportTextures::from_tables(
+            &model.textures.images,
+            &model.textures.uses,
+        ),
+        originals: Default::default(),
     }
 }
 
@@ -510,6 +516,7 @@ fn added_shapes_append_geometry_and_round_trip() {
                 vec![Draw {
                     prim,
                     base_color: red,
+                    tex: None,
                 }],
             ),
             added_node(
@@ -519,6 +526,7 @@ fn added_shapes_append_geometry_and_round_trip() {
                 vec![Draw {
                     prim,
                     base_color: red,
+                    tex: None,
                 }],
             ),
             added_node(
@@ -528,6 +536,7 @@ fn added_shapes_append_geometry_and_round_trip() {
                 vec![Draw {
                     prim,
                     base_color: blue,
+                    tex: None,
                 }],
             ),
         ],
@@ -615,6 +624,7 @@ fn a_node_without_children_can_get_a_child_and_an_empty_group_needs_no_mesh() {
                 vec![Draw {
                     prim,
                     base_color: [1.0; 4],
+                    tex: None,
                 }],
             ),
         ],
@@ -663,6 +673,7 @@ fn deleting_a_root_rewrites_only_the_scene_in_use() {
         vec![Draw {
             prim,
             base_color: [1.0; 4],
+            tex: None,
         }],
     ));
     let at = position(&scene, ROOT);
@@ -702,6 +713,7 @@ fn re_export_after_undo_detaches_and_redo_restores() {
             vec![Draw {
                 prim,
                 base_color: [0.5, 0.5, 0.5, 1.0],
+                tex: None,
             }],
         )],
     );
@@ -767,6 +779,7 @@ fn a_file_without_scenes_gets_a_scene_only_when_the_roots_change() {
         vec![Draw {
             prim,
             base_color: [1.0; 4],
+            tex: None,
         }],
     ));
     let (built, written) = export(&base, &grown);
@@ -825,6 +838,7 @@ fn only_the_default_scene_is_rewritten_when_there_are_several() {
         vec![Draw {
             prim,
             base_color: [1.0; 4],
+            tex: None,
         }],
     ));
     let (_, written) = export(&base, &scene);
@@ -919,6 +933,7 @@ fn scenes_that_do_not_fit_the_file_are_refused() {
         vec![Draw {
             prim: PrimId(0),
             base_color: [1.0; 4],
+            tex: None,
         }],
     ));
     cases.push(("added points at the file", bad));
@@ -940,6 +955,7 @@ fn scenes_that_do_not_fit_the_file_are_refused() {
         vec![Draw {
             prim,
             base_color: [1.0; 4],
+            tex: None,
         }],
     ));
     cases.push(("index past vertices", bad));
@@ -1021,6 +1037,7 @@ fn edited() -> (Vec<u8>, ExportScene, Built, Vec<u8>) {
             vec![Draw {
                 prim,
                 base_color: [1.0; 4],
+                tex: None,
             }],
         )],
     );
@@ -1374,6 +1391,7 @@ fn external_glb_round_trip() {
             vec![Draw {
                 prim,
                 base_color: [0.2, 0.8, 0.2, 1.0],
+                tex: None,
             }],
         ));
         if let Some(child) = edited.nodes.iter().position(|node| node.parent.is_some()) {
@@ -1452,6 +1470,7 @@ fn stl_like_model(scale: f32) -> Model {
     let local = Affine3A::from_scale(Vec3::splat(scale));
     let world_aabb = local_aabb.transformed(&local);
     Model {
+        textures: Textures::default(),
         nodes: vec![Node {
             name: "箱".to_owned(),
             gltf_index: 0,
@@ -1466,6 +1485,7 @@ fn stl_like_model(scale: f32) -> Model {
         draws: vec![Draw {
             prim: PrimId(0),
             base_color: [0.72, 0.72, 0.72, 1.0],
+            tex: None,
         }],
         primitives: vec![Primitive {
             vertices,
@@ -1616,6 +1636,7 @@ fn export_on_synth_base_verifies() {
         vec![Draw {
             prim,
             base_color: [0.2, 0.6, 0.9, 1.0],
+            tex: None,
         }],
     ));
     let (built, written) = export(&base, &scene);

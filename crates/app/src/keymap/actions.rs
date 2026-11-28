@@ -35,7 +35,7 @@ impl Group {
     }
 }
 
-/// 割り当てられる操作（42個）。並びは設定の画面の並び。
+/// 割り当てられる操作。並びは設定の画面の並び。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Action {
     FileNew,
@@ -46,6 +46,8 @@ pub enum Action {
     EditUndo,
     EditRedo,
     EditDuplicate,
+    TexturePaste,
+    TextureRemove,
     ToolSelect,
     ToolMove,
     ToolRotate,
@@ -73,6 +75,7 @@ pub enum Action {
     DisplayXray,
     DisplayFaces,
     DisplayLines,
+    DisplayTextures,
     DisplayGrid,
     DisplaySection,
     PartsHideSelected,
@@ -109,7 +112,7 @@ const fn shift_cmd(key: egui::Key) -> Option<(egui::Key, bool, bool)> {
 
 use egui::Key as K;
 
-const TABLE: [Row; 42] = [
+const TABLE: [Row; 45] = [
     (
         Action::FileNew,
         "file.new",
@@ -165,6 +168,20 @@ const TABLE: [Row; 42] = [
         "複製",
         Group::Edit,
         cmd(K::D),
+    ),
+    (
+        Action::TexturePaste,
+        "texture.paste",
+        "画像を貼る",
+        Group::Edit,
+        cmd(K::T),
+    ),
+    (
+        Action::TextureRemove,
+        "texture.remove",
+        "画像を外す",
+        Group::Edit,
+        None,
     ),
     (
         Action::ToolSelect,
@@ -350,6 +367,13 @@ const TABLE: [Row; 42] = [
         None,
     ),
     (
+        Action::DisplayTextures,
+        "display.textures",
+        "画像の表示",
+        Group::Display,
+        shift(K::T),
+    ),
+    (
         Action::DisplayGrid,
         "display.grid",
         "格子",
@@ -400,23 +424,23 @@ const TABLE: [Row; 42] = [
     ),
 ];
 
-const fn all() -> [Action; 42] {
-    let mut out = [Action::FileNew; 42];
+const fn all() -> [Action; TABLE.len()] {
+    let mut out = [Action::FileNew; TABLE.len()];
     let mut i = 0;
-    while i < 42 {
+    while i < TABLE.len() {
         out[i] = TABLE[i].0;
         i += 1;
     }
     out
 }
 
-const ALL_ACTIONS: [Action; 42] = all();
+const ALL_ACTIONS: [Action; TABLE.len()] = all();
 
 impl Action {
     /// すべての操作。並びは設定の画面の並び（`index` と同じ順）。
     pub const ALL: &'static [Action] = &ALL_ACTIONS;
 
-    /// 一覧の中の位置（0〜41）。
+    /// 一覧の中の位置。
     pub fn index(self) -> usize {
         self as usize
     }
@@ -461,7 +485,7 @@ mod tests {
 
     #[test]
     fn table_order_matches_the_enum() {
-        assert_eq!(Action::ALL.len(), 42);
+        assert_eq!(Action::ALL.len(), 45);
         for (i, action) in Action::ALL.iter().enumerate() {
             assert_eq!(action.index(), i, "{action:?}");
         }
@@ -495,14 +519,14 @@ mod tests {
                 assert_eq!(Chord::parse(&chord.to_file()), Ok(chord), "{action:?}");
             }
         }
-        assert_eq!(ids.len(), 42);
+        assert_eq!(ids.len(), 45);
         assert_eq!(Action::from_id("tool.unknown"), None);
     }
 
     /// 第3段階の既定（足した4つと Cmd+N を含む）を書き写して固定する。
     #[test]
     fn defaults_match_stage_three() {
-        let expected: [(&str, Option<&str>); 42] = [
+        let expected: [(&str, Option<&str>); 45] = [
             ("file.new", Some("Command+N")),
             ("file.open", Some("Command+O")),
             ("file.save_review", Some("Command+S")),
@@ -511,6 +535,8 @@ mod tests {
             ("edit.undo", Some("Command+Z")),
             ("edit.redo", Some("Shift+Command+Z")),
             ("edit.duplicate", Some("Command+D")),
+            ("texture.paste", Some("Command+T")),
+            ("texture.remove", None),
             ("tool.select", Some("V")),
             ("tool.move", Some("G")),
             ("tool.rotate", Some("R")),
@@ -538,6 +564,7 @@ mod tests {
             ("display.xray", Some("Shift+Z")),
             ("display.faces", None),
             ("display.lines", None),
+            ("display.textures", Some("Shift+T")),
             ("display.grid", None),
             ("display.section", Some("C")),
             ("parts.hide_selected", Some("H")),

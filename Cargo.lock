@@ -1531,6 +1531,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1852,6 +1854,7 @@ dependencies = [
  "model-reviewer-render",
  "model-reviewer-stl",
  "model-reviewer-testdata",
+ "model-reviewer-texture",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "rfd",
@@ -1911,6 +1914,15 @@ dependencies = [
 name = "model-reviewer-testdata"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "model-reviewer-core",
+]
+
+[[package]]
+name = "model-reviewer-texture"
+version = "0.1.0"
+dependencies = [
+ "image",
  "model-reviewer-core",
 ]
 

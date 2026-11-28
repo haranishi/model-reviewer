@@ -14,6 +14,7 @@ use model_reviewer_core::review_file::{parse, restore, to_json};
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
+use model_reviewer_core::texture::Textures;
 use model_reviewer_core::units::{UnitLabel, UpAxis};
 
 const TEXT: &str = "ここを\n直して「角」";
@@ -37,6 +38,7 @@ fn node(name: &str, gltf_index: u32, parent: Option<NodeId>, end: u32) -> Node {
 
 fn review_model() -> Model {
     Model {
+        textures: Textures::default(),
         nodes: vec![
             node("台車", 0, None, 4),
             node("腕", 4, Some(NodeId(0)), 3),

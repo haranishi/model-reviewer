@@ -7,4 +7,5 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+image = { workspace = true }
 model-reviewer-core = { path = "../core" }

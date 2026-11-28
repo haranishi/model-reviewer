@@ -27,6 +27,10 @@ pub struct Metrics {
     /// 開く操作を受けてから、そのモデルの最初の描画命令を送り終えるまで。
     /// 画面に出た瞬間（提示）そのものは含まない。
     pub first_present: Option<Duration>,
+    /// 開く操作から最後の画像の全段を送るまで。
+    pub texture_present: Option<Duration>,
+    /// 画像を読み込む間にフレームごとに測った常駐メモリの最大。
+    pub texture_peak_mem: Option<u64>,
     /// `PickIndex::build` の経過時間。表示とは並行。
     pub pick: Option<Duration>,
     /// `App::ui` の直近最大120回の平均。
@@ -126,6 +130,11 @@ pub fn report_lines(metrics: &Metrics, counts: Option<Counts>) -> Vec<ReportLine
             about: "開く操作から最初の描画命令を送り終えるまで。画面に出た瞬間は含まない",
         },
         ReportLine {
+            label: "テクスチャ表示まで",
+            value: fmt_ms(metrics.texture_present),
+            about: "開く操作から最後の画像を送り終えるまで",
+        },
+        ReportLine {
             label: "当たり判定の準備",
             value: fmt_ms(metrics.pick),
             about: "PickIndex::build の経過時間。表示とは並行",
@@ -171,6 +180,14 @@ pub fn report_lines(metrics: &Metrics, counts: Option<Counts>) -> Vec<ReportLine
             about: "初版では計らない",
         },
     ];
+    // メモリは測れたときだけ出す。
+    if let Some(bytes) = metrics.texture_peak_mem {
+        lines.push(ReportLine {
+            label: "読み込み中の最大の常駐メモリ",
+            value: format!("{bytes} バイト"),
+            about: "画像を読み込む間にフレームごとに測ったプロセスの常駐メモリの最大",
+        });
+    }
     if let Some(bytes) = metrics.export_peak_mem {
         lines.push(ReportLine {
             label: "書き出し中の最大メモリ",
@@ -180,9 +197,9 @@ pub fn report_lines(metrics: &Metrics, counts: Option<Counts>) -> Vec<ReportLine
     }
     if let Some(bytes) = metrics.physical_mem {
         lines.push(ReportLine {
-            label: "メモリ",
+            label: "常駐メモリ",
             value: format!("{bytes} バイト"),
-            about: "memory_stats の physical_mem（プロセスの常駐メモリ）",
+            about: "memory_stats の physical_mem（プロセスの常駐メモリ。GPU に置いた画像などは含まないことがあります）",
         });
     }
     lines
@@ -204,6 +221,8 @@ pub fn report_value(metrics: &Metrics) -> serde_json::Value {
         "frame_interval_ms": slot(metrics.frame_interval.map(ms), "ui の開始から次の開始まで。直近120回の平均。100ms以上の空きは除く"),
         "frame_interval_max_ms": slot(metrics.frame_interval_max.map(ms), "ui の開始から次の開始まで。直近120回の最大。100ms以上の空きは除く"),
         "physical_mem": slot(metrics.physical_mem.map(|bytes| serde_json::json!(bytes)), "memory_stats の physical_mem（プロセスの常駐メモリ）"),
+        "texture_present_ms": slot(metrics.texture_present.map(ms), "開く操作から最後の画像を送り終えるまで"),
+        "texture_peak_mem": slot(metrics.texture_peak_mem.map(|bytes| serde_json::json!(bytes)), "画像を読み込む間に測った常駐メモリの最大"),
         "edit_commit_ms": slot(metrics.edit_commit.map(ms), "直近の変形・数値の確定で、文書と履歴を書き換えた時間"),
         "undo_redo_ms": slot(metrics.undo_redo.map(ms), "直近の取り消し・やり直しで、文書とレビューを書き換えた時間"),
         "history_bytes": slot(metrics.history_bytes.map(|bytes| serde_json::json!(bytes)), "履歴が持つ操作の大きさの見積もり"),

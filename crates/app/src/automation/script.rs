@@ -110,6 +110,10 @@ fn parse_step(value: &Value) -> Result<Step, String> {
             reject_unknown(map, &["op", "timeout_secs", "path", "relative_to"])?;
             Op::SaveReview(parse_path(map, PathBase::Out)?)
         }
+        "paste_texture" => {
+            reject_unknown(map, &["op", "timeout_secs", "path", "relative_to"])?;
+            Op::PasteTexture(parse_path(map, PathBase::Script)?)
+        }
         "export_glb" => {
             reject_unknown(map, &["op", "timeout_secs", "path", "relative_to"])?;
             Op::ExportGlb(parse_path(map, PathBase::Out)?)

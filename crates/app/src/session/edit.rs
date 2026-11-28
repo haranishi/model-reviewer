@@ -654,6 +654,7 @@ pub(super) fn add_shape(session: &mut Session, kind: ShapeKind) {
     let draw = Draw {
         prim,
         base_color: SHAPE_COLOR,
+        tex: None,
     };
     let Ok((place, piece)) = doc.shape_piece(shapes::name_ja(kind), local, draw) else {
         session.status_text = "図形を置けませんでした".to_owned();

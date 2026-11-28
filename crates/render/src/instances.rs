@@ -1,19 +1,24 @@
 //! 表示中の部品のインスタンス。表示状態が変わったときだけ作り直す（非表示の部品は入れない）。
 //!
-//! 同じプリミティブを参照する部品はバッファの連続した範囲にまとめ、1回の描画命令で描く。
+//! 同じプリミティブと貼り方を参照する部品は連続した範囲にまとめ、1回の描画命令で描く。
 //! ノードを番号順に走査して詰めるので、各まとまりの中は `NodeId` 順に並ぶ。輪郭線のマスクは
 //! この並びを二分探索して、選択範囲に入るインスタンスだけを描く。
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use glam::{Affine3A, Mat3};
-use model_reviewer_core::scene::{NodeId, SceneRead};
+use model_reviewer_core::scene::{Draw, NodeId, SceneRead};
+use model_reviewer_core::texture::{TexId, UvMap};
 
 /// インスタンスのフラグ。法線を持たない形状は、シェーダーで面法線を導く。
 pub const FLAG_DERIVE_NORMAL: u32 = 1;
 /// インスタンスのフラグ。ワールド行列の行列式が負（鏡写し）の部品。表と裏の判定が逆になるので、
 /// シェーダーが断面の切り口の色を決めるときに反転する。`instance` がワールド行列から毎回決め直す。
 pub const FLAG_MIRRORED: u32 = 2;
+/// インスタンスのフラグ。MASK の材質で基本色の透明度が閾値より小さい描画。画像の有無に
+/// かかわらず（画像の透明度は 1 以下なので）どの画素も閾値に届かず、シェーダーが描かない。
+pub const FLAG_CUT_OUT: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,6 +35,7 @@ const _: () = assert!(std::mem::size_of::<InstanceRaw>() as u64 == crate::plan::
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Batch {
     pub prim: u32,
+    pub tex: Option<TexId>,
     pub instances: Range<u32>,
 }
 
@@ -39,6 +45,9 @@ pub struct InstanceList {
     /// `raw` と同じ並びの NodeId。選択範囲の二分探索に使う。
     pub nodes: Vec<u32>,
     pub batches: Vec<Batch>,
+    /// 貼り方で順番が変わった場合の、画像なしの描画順（形状・部品・描画の順）。
+    /// 透かしの合成や、同じ深度で重なる面に使う。
+    pub(crate) plain_ranges: Vec<(u32, Range<u32>)>,
     /// 部品ごとのインスタンスの位置の表の区切り（部品の数＋1）。部品 i の位置は
     /// `slots[node_starts[i]..node_starts[i + 1]]`。非表示の部品は空。確定した変形の部分更新に使う。
     pub node_starts: Vec<u32>,
@@ -80,8 +89,22 @@ impl InstanceList {
 /// 表示されている部品のインスタンスを作る。2回の走査で数えてから詰め、部品ごとの確保をしない。
 pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> InstanceList {
     let prim_count = model.primitive_count();
-    let mut counts = vec![0u32; prim_count];
-    let each_draw = |f: &mut dyn FnMut(usize, &model_reviewer_core::scene::Draw)| {
+    let mut plain = vec![0u32; prim_count];
+    let mut textured = BTreeMap::new();
+    let texture_key = |draw: &Draw, id: TexId| {
+        let kind = match model
+            .tex_use(id)
+            .filter(|t| t.image.is_some())
+            .map(|t| t.map)
+        {
+            None => 0,
+            Some(UvMap::Vertex { .. }) if model.prim_uvs(draw.prim).is_empty() => 0,
+            Some(UvMap::Vertex { .. }) => 1,
+            Some(UvMap::Box { .. }) => 2,
+        };
+        (kind, draw.prim.0, id)
+    };
+    let each_draw = |f: &mut dyn FnMut(usize, &Draw)| {
         for index in 0..model.node_count() {
             let id = NodeId(index as u32);
             if !visible(id) {
@@ -94,20 +117,32 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
             }
         }
     };
-    each_draw(&mut |_, draw| counts[draw.prim.0 as usize] += 1);
-
-    let mut starts = vec![0u32; prim_count];
+    each_draw(&mut |_, draw| {
+        let count = match draw.tex {
+            Some(id) => textured.entry(texture_key(draw, id)).or_default(),
+            None => &mut plain[draw.prim.0 as usize],
+        };
+        *count += 1;
+    });
     let mut batches = Vec::new();
     let mut total = 0u32;
-    for (prim, count) in counts.iter().enumerate() {
-        starts[prim] = total;
+    let mut batch = |prim, tex, count: &mut u32| {
+        let start = total;
+        total += *count;
+        *count = start;
+        batches.push(Batch {
+            prim,
+            tex,
+            instances: start..total,
+        });
+    };
+    for (prim, count) in plain.iter_mut().enumerate() {
         if *count > 0 {
-            batches.push(Batch {
-                prim: prim as u32,
-                instances: total..total + count,
-            });
+            batch(prim as u32, None, count);
         }
-        total += count;
+    }
+    for (&(_, prim, tex), count) in &mut textured {
+        batch(prim, Some(tex), count);
     }
 
     let zero = InstanceRaw {
@@ -118,7 +153,12 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
     };
     let mut raw = vec![zero; total as usize];
     let mut nodes = vec![0u32; total as usize];
-    let mut cursor = starts;
+    let reordered = !textured.is_empty() && batches.windows(2).any(|w| w[0].prim >= w[1].prim);
+    let mut plain_order = if reordered {
+        vec![Vec::<Range<u32>>::new(); prim_count]
+    } else {
+        Vec::new()
+    };
     let mut per_node = vec![0u32; model.node_count()];
     let mut slots = Vec::with_capacity(total as usize);
     each_draw(&mut |index, draw| {
@@ -126,11 +166,30 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
         let has_normals = model
             .primitive(draw.prim)
             .is_none_or(|prim| prim.has_normals);
-        let slot = &mut cursor[draw.prim.0 as usize];
-        let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL };
-        raw[*slot as usize] = instance(model.world(id), draw.base_color, index as u32, flags);
+        let slot = match draw.tex {
+            Some(tex) => textured.get_mut(&texture_key(draw, tex)).expect("数えた組"),
+            None => &mut plain[draw.prim.0 as usize],
+        };
+        let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL } | cut_out(model, draw);
+        let mut raw_instance = instance(model.world(id), draw.base_color, index as u32, flags);
+        raw_instance.color[3] = instance_alpha(model, draw);
+        if let Some(center) = box_center(model, draw) {
+            for (row, value) in raw_instance.normal.iter_mut().zip(center) {
+                row[3] = value;
+            }
+        }
+        raw[*slot as usize] = raw_instance;
         nodes[*slot as usize] = index as u32;
         slots.push(*slot);
+        if let Some(ranges) = plain_order.get_mut(draw.prim.0 as usize) {
+            if let Some(last) = ranges.last_mut()
+                && last.end == *slot
+            {
+                last.end += 1;
+            } else {
+                ranges.push(*slot..*slot + 1);
+            }
+        }
         per_node[index] += 1;
         *slot += 1;
     });
@@ -145,6 +204,11 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
         raw,
         nodes,
         batches,
+        plain_ranges: plain_order
+            .into_iter()
+            .enumerate()
+            .flat_map(|(prim, ranges)| ranges.into_iter().map(move |r| (prim as u32, r)))
+            .collect(),
         node_starts,
         slots,
     }
@@ -189,17 +253,53 @@ pub(crate) fn patch(
         let world = model.world(id);
         for (i, &slot) in list.slots[at].iter().enumerate() {
             let old = list.raw[slot as usize];
-            let color = if matched {
-                draws[i].base_color
+            let (color, alpha, flags) = if matched {
+                let flags = (old.ids[1] & !FLAG_CUT_OUT) | cut_out(model, &draws[i]);
+                (draws[i].base_color, instance_alpha(model, &draws[i]), flags)
             } else {
-                old.color
+                (old.color, old.color[3], old.ids[1])
             };
-            list.raw[slot as usize] = instance(world, color, node, old.ids[1]);
+            let mut next = instance(world, color, node, flags);
+            next.color[3] = alpha;
+            // 形状は変わらないので、箱形の中心は前の値のまま。
+            for (row, old) in next.normal.iter_mut().zip(old.normal) {
+                row[3] = old[3];
+            }
+            list.raw[slot as usize] = next;
             out.slots.push(slot);
         }
     }
     out.slots.sort_unstable();
     out
+}
+
+/// 切り抜き（MASK）の材質の描画だけ、基本色の透明度を判定に渡す。画面へ書く透明度は表示方法で
+/// 決めるので、ほかの描画は 1 のままにする。
+fn cut_out(model: &impl SceneRead, draw: &Draw) -> u32 {
+    match draw
+        .tex
+        .and_then(|tex| model.tex_use(tex))
+        .and_then(|t| t.cutoff)
+    {
+        Some(cutoff) if draw.base_color[3] < cutoff => FLAG_CUT_OUT,
+        _ => 0,
+    }
+}
+
+/// 箱形で貼る描画の、形状のローカルの外形の中心。シェーダーが画像の中心をここに置く。
+fn box_center(model: &impl SceneRead, draw: &Draw) -> Option<[f32; 3]> {
+    let tex = model.tex_use(draw.tex?)?;
+    if tex.image.is_none() || !matches!(tex.map, UvMap::Box { .. }) {
+        return None;
+    }
+    Some(model.primitive(draw.prim)?.local_aabb.center().to_array())
+}
+
+fn instance_alpha(model: &impl SceneRead, draw: &Draw) -> f32 {
+    match draw.tex.and_then(|tex| model.tex_use(tex)) {
+        Some(usage) if usage.cutoff.is_some() => draw.base_color[3],
+        _ => 1.0,
+    }
 }
 
 /// 1件のインスタンス。確定した変形の部分更新でも、作り直しと同じ値になるようにここだけで作る。
@@ -245,6 +345,7 @@ mod tests {
     use model_reviewer_core::doc::{Document, NodeKey};
     use model_reviewer_core::math::Aabb;
     use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId, Primitive};
+    use model_reviewer_core::texture::Textures;
     use std::sync::Arc;
 
     fn prim() -> Primitive {
@@ -274,6 +375,7 @@ mod tests {
                 draws.push(Draw {
                     prim: PrimId((n + k) % 2),
                     base_color: shade(n, k),
+                    tex: None,
                 });
             }
             let local = Affine3A::from_translation(Vec3::new(n as f32, 0.0, 0.0));
@@ -290,6 +392,7 @@ mod tests {
             });
         }
         Arc::new(Model {
+            textures: Textures::default(),
             nodes,
             draws,
             primitives: vec![prim(), prim()],
@@ -297,6 +400,77 @@ mod tests {
             stats: ModelStats::default(),
             warnings: Vec::new(),
         })
+    }
+
+    #[test]
+    fn only_masked_draws_keep_the_base_alpha() {
+        use model_reviewer_core::texture::{ImageId, Sampling, TexId, TexUse, UvMap};
+
+        let mut model = (*scattered()).clone();
+        model.textures.uses = vec![TexUse {
+            image: Some(ImageId(0)),
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: Some(0.5),
+            baked_box: None,
+        }];
+        model.draws[0].tex = Some(TexId(0));
+        let mut doc = Document::new(Arc::new(model));
+        let mut list = build(&doc, &|_| true);
+        let alphas = |list: &InstanceList, node: u32| -> Vec<f32> {
+            let slots = list.node_slots(&(node..node + 1));
+            slots
+                .iter()
+                .map(|&slot| list.raw[slot as usize].color[3])
+                .collect()
+        };
+        assert_eq!(alphas(&list, 0), [0.75]);
+        assert_eq!(alphas(&list, 1), [1.0, 1.0]);
+        let count = doc.subtree_colors(NodeKey(0)).unwrap().len();
+        let range = doc
+            .set_subtree_colors(NodeKey(0), &vec![[0.2, 0.4, 0.6, 0.25]; count])
+            .unwrap();
+        patch(&mut list, &doc, &range);
+        assert_eq!(alphas(&list, 0), [0.25]);
+        assert_eq!(list, build(&doc, &|_| true));
+    }
+
+    #[test]
+    fn mask_below_cutoff_is_cut_out_and_box_keeps_center() {
+        use model_reviewer_core::texture::{Sampling, TexId, TexUse, UvMap};
+
+        let mut model = (*scattered()).clone();
+        // 画像の無い MASK の材質。
+        model.textures.uses = vec![TexUse {
+            image: None,
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: Some(0.5),
+            baked_box: None,
+        }];
+        model.draws[0].tex = Some(TexId(0));
+        model.draws[0].base_color[3] = 0.25;
+        let mut doc = Document::new(Arc::new(model));
+        let first = |list: &InstanceList| list.raw[list.node_slots(&(0..1))[0] as usize];
+        let mut list = build(&doc, &|_| true);
+        assert_eq!(first(&list).ids[1] & FLAG_CUT_OUT, FLAG_CUT_OUT);
+        // 画像の無い材質には箱形の中心を入れない。
+        assert!(first(&list).normal.iter().all(|row| row[3] == 0.0));
+        let others = list.raw.iter().filter(|raw| raw.ids[1] & FLAG_CUT_OUT != 0);
+        assert_eq!(others.count(), 1);
+        let count = doc.subtree_colors(NodeKey(0)).unwrap().len();
+        let range = doc
+            .set_subtree_colors(NodeKey(0), &vec![[1.0, 1.0, 1.0, 0.5]; count])
+            .unwrap();
+        patch(&mut list, &doc, &range);
+        assert_eq!(first(&list).ids[1] & FLAG_CUT_OUT, 0);
+        assert_eq!(list, build(&doc, &|_| true));
     }
 
     #[test]
@@ -393,6 +567,7 @@ mod tests {
             Draw {
                 prim: PrimId(1),
                 base_color: [1.0, 0.0, 0.0, 1.0],
+                tex: None,
             },
         );
         for node in &mut other.nodes {

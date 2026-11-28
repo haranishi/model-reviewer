@@ -7,6 +7,7 @@ use model_reviewer_core::color::linear_to_srgb8;
 use model_reviewer_core::doc::Document;
 use model_reviewer_core::history::{Edit, Step};
 use model_reviewer_core::scene::{LoadWarning, Model, NodeId, SceneRead};
+use model_reviewer_render::DisplayMode;
 
 use super::{Session, edit};
 
@@ -55,21 +56,19 @@ fn color_state(doc: &Document, id: NodeId) -> ColorState {
 }
 
 pub(super) fn model_note(model: &Model) -> Option<&'static str> {
-    let textures = model
-        .warnings
-        .iter()
-        .any(|w| matches!(w, LoadWarning::Textures { .. }));
+    color_note(model, !model.textures.images.is_empty())
+}
+
+fn color_note(model: &Model, textures: bool) -> Option<&'static str> {
     let vertices = model
         .warnings
         .iter()
         .any(|w| matches!(w, LoadWarning::VertexColors { .. }));
     match (textures, vertices) {
-        (true, true) => Some(
-            "このモデルにはテクスチャと頂点の色があります。この画面には出ていません。ほかのソフトでは、選んだ色がテクスチャや頂点の色に掛け合わされて見えます。",
-        ),
-        (true, false) => Some(
-            "このモデルにはテクスチャがあります。この画面には出ていません。ほかのソフトでは、選んだ色がテクスチャに掛け合わされて見えます。",
-        ),
+        (true, true) => {
+            Some("色は画像に掛け合わされて見えます。ほかのソフトでは頂点の色も掛け合わされます。")
+        }
+        (true, false) => Some("色は画像に掛け合わされて見えます"),
         (false, true) => Some(
             "このモデルには頂点の色があります。この画面には出ていません。ほかのソフトでは、選んだ色が頂点の色に掛け合わされて見えます。",
         ),
@@ -89,9 +88,26 @@ pub fn selection_color(session: &Session) -> Option<ColorView> {
     {
         return Some(ColorView { locked, ..view });
     }
+    let textured = session.textures_shown
+        && matches!(
+            session.display,
+            DisplayMode::Faces | DisplayMode::FacesAndLines
+        )
+        && session.textures.displayed() > 0
+        && doc.subtree(id).map(NodeId).any(|node| {
+            session
+                .review
+                .as_ref()
+                .is_none_or(|r| r.visibility.effective(node))
+                && doc
+                    .draws(node)
+                    .iter()
+                    .filter_map(|draw| doc.tex_use(draw.tex?)?.image)
+                    .any(|image| session.textures.is_resident(image))
+        });
     let view = ColorView {
         state: color_state(doc, id),
-        note: model_note(doc.base()),
+        note: color_note(doc.base(), textured),
         locked,
         selection_rev,
     };

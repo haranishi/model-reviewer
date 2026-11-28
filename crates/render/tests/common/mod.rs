@@ -14,6 +14,7 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead, Vertex,
 };
+use model_reviewer_core::texture::Textures;
 
 pub fn cube(has_normals: bool) -> Primitive {
     let faces: [(Vec3, Vec3, Vec3); 6] = [
@@ -104,6 +105,7 @@ pub fn model(primitives: Vec<Primitive>, specs: Vec<NodeSpec>) -> Model {
             draws.push(Draw {
                 prim: PrimId(*prim),
                 base_color: *color,
+                tex: None,
             });
             if let Some(p) = primitives.get(*prim as usize) {
                 world_aabb = world_aabb.union(p.local_aabb.transformed(&spec.world));
@@ -130,6 +132,7 @@ pub fn model(primitives: Vec<Primitive>, specs: Vec<NodeSpec>) -> Model {
         placed_triangles: 0,
     };
     Model {
+        textures: Textures::default(),
         nodes,
         draws,
         primitives,
@@ -293,6 +296,7 @@ impl EditedScene {
         self.view.draws.push(Draw {
             prim: id,
             base_color: color,
+            tex: None,
         });
         self.view.nodes.push(Node {
             name: format!("added{index}"),

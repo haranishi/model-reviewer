@@ -46,6 +46,8 @@ pub enum Action {
     EditUndo,
     EditRedo,
     EditDuplicate,
+    TexturePaste,
+    TextureRemove,
     ToolSelect,
     ToolMove,
     ToolRotate,
@@ -110,7 +112,7 @@ const fn shift_cmd(key: egui::Key) -> Option<(egui::Key, bool, bool)> {
 
 use egui::Key as K;
 
-const TABLE: [Row; 43] = [
+const TABLE: [Row; 45] = [
     (
         Action::FileNew,
         "file.new",
@@ -166,6 +168,20 @@ const TABLE: [Row; 43] = [
         "複製",
         Group::Edit,
         cmd(K::D),
+    ),
+    (
+        Action::TexturePaste,
+        "texture.paste",
+        "画像を貼る",
+        Group::Edit,
+        cmd(K::T),
+    ),
+    (
+        Action::TextureRemove,
+        "texture.remove",
+        "画像を外す",
+        Group::Edit,
+        None,
     ),
     (
         Action::ToolSelect,
@@ -469,7 +485,7 @@ mod tests {
 
     #[test]
     fn table_order_matches_the_enum() {
-        assert_eq!(Action::ALL.len(), 43);
+        assert_eq!(Action::ALL.len(), 45);
         for (i, action) in Action::ALL.iter().enumerate() {
             assert_eq!(action.index(), i, "{action:?}");
         }
@@ -503,14 +519,14 @@ mod tests {
                 assert_eq!(Chord::parse(&chord.to_file()), Ok(chord), "{action:?}");
             }
         }
-        assert_eq!(ids.len(), 43);
+        assert_eq!(ids.len(), 45);
         assert_eq!(Action::from_id("tool.unknown"), None);
     }
 
     /// 第3段階の既定（足した4つと Cmd+N を含む）を書き写して固定する。
     #[test]
     fn defaults_match_stage_three() {
-        let expected: [(&str, Option<&str>); 43] = [
+        let expected: [(&str, Option<&str>); 45] = [
             ("file.new", Some("Command+N")),
             ("file.open", Some("Command+O")),
             ("file.save_review", Some("Command+S")),
@@ -519,6 +535,8 @@ mod tests {
             ("edit.undo", Some("Command+Z")),
             ("edit.redo", Some("Shift+Command+Z")),
             ("edit.duplicate", Some("Command+D")),
+            ("texture.paste", Some("Command+T")),
+            ("texture.remove", None),
             ("tool.select", Some("V")),
             ("tool.move", Some("G")),
             ("tool.rotate", Some("R")),

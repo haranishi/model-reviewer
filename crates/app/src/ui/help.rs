@@ -227,6 +227,12 @@ pub fn operation_rows(keys: &KeyLabels) -> Vec<[String; 4]> {
             keys_joined(keys, &[Action::DisplayFacesLines, Action::DisplayXray]),
         ),
         (
+            "画像を貼る／外す",
+            "部品を選び、右の「画像」で操作",
+            "同じ（貼るときは画像のドロップも可）",
+            keys_joined(keys, &[Action::TexturePaste, Action::TextureRemove]),
+        ),
+        (
             "画像の表示を切り替える",
             "上端の「画像」",
             "同じ",

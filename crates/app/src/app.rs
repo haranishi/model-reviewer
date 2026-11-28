@@ -422,6 +422,8 @@ fn action_command(
             .selection
             .is_some()
             .then_some(Command::DuplicateSelected),
+        Action::TexturePaste => Some(Command::PasteTextureDialog),
+        Action::TextureRemove => Some(Command::RemoveTexture),
         Action::ToolSelect => tool(Tool::Select),
         Action::ToolMove => tool(Tool::Move),
         Action::ToolRotate => tool(Tool::Rotate),
@@ -553,6 +555,7 @@ enum FileDialog {
     LoadReview,
     RelinkModel,
     ExportGlb,
+    PasteTexture,
 }
 
 /// 選択画面が不要な操作と、Session が自分で断る操作は、そのまま Session に渡す。
@@ -566,6 +569,9 @@ fn resolve_dialog(
     }
     let dialog = match command {
         Command::OpenModelDialog => FileDialog::OpenModel,
+        Command::PasteTextureDialog if crate::session::texture::paste_block(session).is_none() => {
+            FileDialog::PasteTexture
+        }
         // 新規の文書は書き出すまで保存できず、読み込みの間は前のレビューで置き換えないように、
         // どちらも保存先を聞かずに Session が断る。
         Command::SaveReviewDialog
@@ -586,7 +592,7 @@ fn resolve_dialog(
     };
     if automated {
         Err(
-            "自動操作ではファイル選択の画面を開きません。open_model や export_glb でパスを指定してください",
+            "自動操作ではファイル選択の画面を開きません。open_model・paste_texture・export_glb などでパスを指定してください",
         )
     } else {
         Ok(Some(dialog))
@@ -597,6 +603,10 @@ impl FileDialog {
     fn pick(self, session: &Session) -> Option<Command> {
         let dialog = rfd::FileDialog::new();
         match self {
+            Self::PasteTexture => dialog
+                .add_filter("PNG・JPEG", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
+                .pick_file()
+                .map(Command::PasteTexture),
             Self::OpenModel => dialog
                 .add_filter("GLB・STL", &["glb", "stl", "STL"])
                 .add_filter("GLB", &["glb"])
@@ -646,24 +656,30 @@ mod tests {
     use crate::loader::LoadPhase;
     use model_reviewer_core::scene::Model;
 
-    const FILE_DIALOG_COMMANDS: [(Command, FileDialog); 5] = [
+    const FILE_DIALOG_COMMANDS: [(Command, FileDialog); 6] = [
         (Command::OpenModelDialog, FileDialog::OpenModel),
         (Command::SaveReviewDialog, FileDialog::SaveReview),
         (Command::LoadReviewDialog, FileDialog::LoadReview),
         (Command::RelinkModelDialog, FileDialog::RelinkModel),
         (Command::ExportGlbDialog, FileDialog::ExportGlb),
+        (Command::PasteTextureDialog, FileDialog::PasteTexture),
     ];
 
     #[test]
     fn scripts_refuse_every_native_file_dialog_but_accept_paths() {
         let mut session = Session::default();
-        session.set_model(Model::empty().into());
+        session.set_model(
+            model_reviewer_gltf::load_glb(&model_reviewer_testdata::sample_glb())
+                .unwrap()
+                .into(),
+        );
+        session.apply(Command::Select(Some(model_reviewer_core::scene::NodeId(0))));
         for (command, dialog) in FILE_DIALOG_COMMANDS {
             assert_eq!(resolve_dialog(&session, &command, false), Ok(Some(dialog)));
             assert_eq!(
                 resolve_dialog(&session, &command, true),
                 Err(
-                    "自動操作ではファイル選択の画面を開きません。open_model や export_glb でパスを指定してください"
+                    "自動操作ではファイル選択の画面を開きません。open_model・paste_texture・export_glb などでパスを指定してください"
                 )
             );
         }
@@ -673,6 +689,7 @@ mod tests {
             Command::LoadReview("review.json".into()),
             Command::RelinkModel("model.stl".into()),
             Command::ExportGlb("export.glb".into()),
+            Command::PasteTexture("image.png".into()),
         ] {
             assert_eq!(resolve_dialog(&session, &command, true), Ok(None));
         }

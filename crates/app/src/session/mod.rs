@@ -45,6 +45,7 @@ mod persist;
 mod pick;
 mod section;
 mod snap;
+pub mod texture;
 mod view;
 
 pub use color::{ColorState, ColorView, selection_color};
@@ -61,6 +62,7 @@ pub use open::TextureProgress;
 pub use pick::ray_hit;
 pub use section::section_bounds;
 pub use snap::{SNAP_RADIUS_POINTS, find as find_snap, rest_after as snap_rest_after};
+pub use texture::{TextureView, texture_view};
 
 #[derive(Clone, Debug)]
 pub(super) struct PendingRestore {
@@ -113,6 +115,12 @@ pub struct Session {
     pub grid_visible: bool,
     pub textures_shown: bool,
     pub textures: TextureProgress,
+    paste_job: Option<texture::PasteJob>,
+    pub(crate) paste_error: Option<String>,
+    texture_cache: Cell<Option<texture::Selection>>,
+    /// 書き出しで新しいファイル番号を得た、スキン・モーフつきの複製。
+    exported_no_box: std::collections::HashSet<u32>,
+    export_colors: export::ExportColors,
     pub(crate) texture_options: loader::TextureOptions,
     /// 装置が線の表示（`POLYGON_MODE_LINE`）を持つか。GPUが無いときは偽。
     pub lines_supported: bool,
@@ -233,6 +241,11 @@ impl Default for Session {
             grid_visible: true,
             textures_shown: true,
             textures: TextureProgress::default(),
+            paste_job: None,
+            paste_error: None,
+            texture_cache: Cell::new(None),
+            exported_no_box: Default::default(),
+            export_colors: Default::default(),
             texture_options: loader::TextureOptions::default(),
             lines_supported: false,
             selection: None,
@@ -354,7 +367,22 @@ impl Session {
         let camera = self.camera;
         let shown = self.shown_generation;
         let key_rev = self.keymap.rev();
+        let history_action = matches!(cmd, Command::Undo | Command::Redo);
+        let patch_count = self.pending_patches.len();
         self.apply_inner(cmd);
+        if history_action
+            && self.history.doc_rev() != doc_rev
+            && self.pending_patches.len() == patch_count
+        {
+            // 見た目の履歴は、画像が替わると色・行列の部分更新範囲を返さない。
+            self.scene_dirty.instances = true;
+            self.pending_patches.clear();
+        }
+        if (self.history.doc_rev() != doc_rev || self.is_loading() || self.is_exporting())
+            && let Some(job) = &mut self.paste_job
+        {
+            job.stale = true;
+        }
         if self.scene_dirty.display || self.scene_dirty.instances {
             self.color_cache.set(None);
         }
@@ -558,6 +586,14 @@ impl Session {
             Command::PreviewLocal(trs) => edit::preview_local(self, trs),
             Command::CommitLocal(trs) => edit::commit_local(self, trs),
             Command::SetColor(rgb) => color::set_color(self, rgb),
+            Command::PasteTextureDialog => {
+                if let Some(reason) = texture::paste_block(self) {
+                    self.status_text = reason.into();
+                }
+            }
+            Command::PasteTexture(path) => texture::paste(self, path),
+            Command::RemoveTexture => texture::adjust(self, texture::Adjustment::Remove),
+            Command::SetTextureSize(size) => texture::adjust(self, texture::Adjustment::Size(size)),
             Command::Undo => edit::undo(self),
             Command::Redo => edit::redo(self),
             Command::AddShape(kind) => edit::add_shape(self, kind),
@@ -591,17 +627,16 @@ impl Session {
     }
 
     pub fn poll_loader(&mut self) -> bool {
-        let Some(handle) = self.loader.as_ref() else {
-            return false;
-        };
-        let events = handle.drain();
-        if events.is_empty() {
-            return false;
-        }
+        let events = self
+            .loader
+            .as_ref()
+            .map(|handle| handle.drain())
+            .unwrap_or_default();
+        let changed = !events.is_empty();
         for event in events {
             self.apply_load_event(event);
         }
-        true
+        texture::poll(self) || changed
     }
 
     pub fn poll_exporter(&mut self) -> bool {
@@ -662,6 +697,8 @@ impl Session {
     /// モデルを置き、その文書を作る。読み込み（`commit_pending`）と、読み込みを通さない試験が使う。
     /// レビュー・選択・視点には触れない。
     pub fn set_model(&mut self, model: Arc<Model>) {
+        self.exported_no_box.clear();
+        self.export_colors = Default::default();
         self.reset_textures();
         self.color_cache.set(None);
         self.doc = Some(Document::new(Arc::clone(&model)));
@@ -1162,6 +1199,9 @@ impl Session {
             LoadEvent::TexturesDone { generation } => {
                 if generation == self.generation {
                     self.loader = None;
+                    if generation == self.shown_generation {
+                        self.finish_texture_metrics();
+                    }
                 }
             }
         }
@@ -1386,6 +1426,8 @@ impl Session {
         self.shown_generation = incoming.generation;
         self.doc = Some(doc);
         self.model = Some(model);
+        self.exported_no_box.clear();
+        self.export_colors = Default::default();
         self.reset_textures();
         if from_gpu {
             self.textures.opened = self.open_started;
@@ -1553,6 +1595,9 @@ fn interrupts_transform(cmd: &Command, transform: Option<&Transform>) -> bool {
         | Command::DeleteAnnotation(_)
         | Command::SelectAnnotation(_)
         | Command::DeleteView(_)
+        | Command::PasteTexture(_)
+        | Command::RemoveTexture
+        | Command::SetTextureSize(_)
         | Command::Undo
         | Command::Redo
         | Command::AddShape(_)

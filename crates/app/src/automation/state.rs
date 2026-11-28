@@ -86,6 +86,7 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
         "review_unsaved": session.review_unsaved(),
         "selection": session.selection.map(|id| id.0),
         "selection_color": selection_color_json(session),
+        "selection_texture": selection_texture_json(session),
         "hidden": hidden.unwrap_or_default(),
         "annotations": annotations.unwrap_or_default(),
         "views": views.unwrap_or_default(),
@@ -150,6 +151,36 @@ pub(in crate::automation) fn state_value(session: &Session) -> Value {
             "spacing": f64::from(model_reviewer_core::camera::grid_spacing(session.camera.distance)),
         },
     })
+}
+
+fn selection_texture_json(session: &Session) -> Option<Value> {
+    use model_reviewer_core::scene::{NodeId, SceneRead};
+    use model_reviewer_core::texture::UvMap;
+    use std::fmt::Write;
+
+    let doc = session.doc.as_ref()?;
+    let mut draws = doc
+        .subtree(session.selection?)
+        .map(NodeId)
+        .flat_map(|id| doc.draws(id));
+    let first: Vec<_> = draws
+        .by_ref()
+        .take(8)
+        .map(|draw| {
+            let tex = doc.tex_use(draw.tex?)?;
+            let image = doc.image(tex.image?)?;
+            let mut hash = String::with_capacity(16);
+            for byte in &image.hash.0[..8] {
+                write!(hash, "{byte:02x}").unwrap();
+            }
+            let (map, size) = match tex.map {
+                UvMap::Vertex { .. } => ("uv", None),
+                UvMap::Box { size } => ("box", Some(size)),
+            };
+            Some(json!({ "hash": hash, "map": map, "size": size }))
+        })
+        .collect();
+    Some(json!({"total": first.len() + draws.count(), "draws": first}))
 }
 
 fn selection_color_json(session: &Session) -> Option<Value> {

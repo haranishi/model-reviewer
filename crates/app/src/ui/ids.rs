@@ -123,6 +123,11 @@ pub const COLOR_G: &str = "color.g";
 pub const COLOR_B: &str = "color.b";
 pub const COLOR_SWATCH: &str = "color.swatch";
 pub const COLOR_NOTE: &str = "color.note";
+pub const TEXTURE_STATE: &str = "texture.state";
+pub const TEXTURE_PASTE: &str = "texture.paste";
+pub const TEXTURE_REMOVE: &str = "texture.remove";
+pub const TEXTURE_SIZE: &str = "texture.size";
+pub const TEXTURE_NOTE: &str = "texture.note";
 
 // ---- 第4段階 ----
 // ショートカットの設定の画面（ui::keys）。行ごとの名前は `<前置き>.<操作の名前>`

@@ -26,6 +26,7 @@ pub mod overlay;
 pub mod section_bar;
 pub mod section_view;
 pub mod status;
+pub mod texture;
 pub mod toolbar;
 pub mod toolrail;
 pub mod tree;
@@ -122,17 +123,29 @@ pub(crate) fn show_scroll_handle(ui: &mut egui::Ui) {
     scroll.bar_outer_margin = -6.0;
 }
 
-/// 右のパネル。上から部品の一覧、変形、寸法、色、計測。
+/// 右のパネル。上から部品の一覧、変形、寸法、色、画像、計測。
 /// 一覧は下の場所を除いた高さに収める。
 fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
     let dims = crate::session::selection_dims(session);
     let color = crate::session::selection_color(session);
+    let texture = crate::session::texture_view(session);
     let color_height = color.map_or(0.0, |v| if v.note.is_some() { 220.0 } else { 140.0 });
     let below = transform_height(session)
         + dims_height(dims.as_ref())
         + color_height
+        + texture
+            .as_ref()
+            .map_or(0.0, |v| if v.has_box { 100.0 } else { 76.0 })
         + measure_height(session);
-    let list_h = (ui.available_height() - below).max(80.0);
+    let compact = texture.is_some() && ui.ctx().content_rect().height() <= 720.0;
+    let list_h = (ui.available_height() - below).max(if compact { 74.0 } else { 80.0 });
+    let separator = |ui: &mut egui::Ui| {
+        if compact {
+            ui.add(egui::Separator::default().spacing(1.0));
+        } else {
+            ui.separator();
+        }
+    };
     let width = ui.available_width();
     ui.allocate_ui(egui::vec2(width, list_h), |ui| {
         ui.set_min_height(list_h);
@@ -147,18 +160,27 @@ fn parts_panel(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
             .id_salt("parts.below")
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                ui.separator();
+                if compact {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                }
+                separator(ui);
                 inspector::show(ui, &inspector_input(session), out);
                 if let Some(view) = dims.as_ref() {
-                    ui.separator();
+                    separator(ui);
                     dims::show(ui, view, out);
                 }
                 if let Some(view) = &color {
-                    ui.separator();
+                    separator(ui);
                     ui.push_id(session.review_generation(), |ui| color::show(ui, view, out));
                 }
+                if let Some(view) = &texture {
+                    separator(ui);
+                    ui.push_id(session.review_generation(), |ui| {
+                        texture::show(ui, view, out)
+                    });
+                }
                 if measuring(session) {
-                    ui.separator();
+                    separator(ui);
                     measure_panel::show(ui, &measure_panel_input(session), out);
                 }
             });

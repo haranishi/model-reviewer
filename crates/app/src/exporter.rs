@@ -155,7 +155,7 @@ impl ExportFailure {
             Self::SameAsOpened => {
                 "開いたファイルへは書き出せません。別の名前を選んでください。".to_owned()
             }
-            Self::SameContentsAsOpened => "保存先の内容が、この起動で開いたモデルと一致します。別の名前を選んでください。".to_owned(),
+            Self::SameContentsAsOpened => "保存先の内容が、この起動で開いたモデルまたは貼った画像と一致します。別の名前を選んでください。".to_owned(),
             Self::Export(error) => error.message_ja(),
             Self::Io(detail) => format!("書き出せませんでした: {detail}"),
         }

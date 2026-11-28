@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use glam::{Affine3A, Quat, Vec3};
 
 use model_reviewer_core::camera::OrbitCamera;
-use model_reviewer_core::doc::{DocError, Document, NodeKey};
+use model_reviewer_core::doc::{DocError, Document, DrawLook, NodeKey};
 use model_reviewer_core::history::{Edit, History, KeyedNote, Pushed, Step};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::pick::Hit;
@@ -15,7 +15,9 @@ use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
-use model_reviewer_core::texture::Textures;
+use model_reviewer_core::texture::{
+    ImageHash, ImageId, Mime, Sampling, TexId, TexUse, Textures, UvMap,
+};
 
 struct Rng(u64);
 
@@ -1017,4 +1019,203 @@ fn next_removed_roots_names_what_undo_or_redo_would_take_out() {
     );
     history.undo(&mut doc, &mut review).unwrap();
     assert_eq!(history.next_removed_roots(false), vec![key]);
+}
+
+fn box_use(image: Option<ImageId>, size: f32) -> TexUse {
+    TexUse {
+        image,
+        map: UvMap::Box { size },
+        sampling: Sampling::default(),
+        cutoff: Some(0.375),
+        baked_box: None,
+    }
+}
+
+fn paste_edit(doc: &mut Document, key: NodeKey, bytes: &[u8]) -> Edit {
+    let image = doc.add_image(Arc::from(bytes), Mime::Png);
+    let tex = doc.add_tex_use(box_use(Some(image), 1.0)).unwrap();
+    let before = doc.subtree_looks(key).unwrap();
+    let after = before
+        .iter()
+        .map(|look| DrawLook {
+            base_color: [1.0, 1.0, 1.0, look.base_color[3]],
+            tex: Some(tex),
+        })
+        .collect();
+    Edit::SetLooks { key, before, after }
+}
+
+#[test]
+fn paste_undo_redo_restores_looks() {
+    let mut model = family();
+    model.draws[1].base_color[3] = 0.25;
+    model.draws[2].base_color[3] = 0.75;
+    model.textures.uses.push(box_use(None, 1.0));
+    model.draws[2].tex = Some(TexId(0));
+    let mut world = World::new(model);
+    let key = world.key(1);
+    let before = world.doc.subtree_looks(key).unwrap();
+    let edit = paste_edit(&mut world.doc, key, b"pasted");
+    assert!(edit.changes_document());
+    assert!(!edit.changes_review());
+    assert_eq!(edit.bytes(), std::mem::size_of::<Edit>() as u64 + 6 * 24);
+    let (applied, pushed) = world
+        .history
+        .execute(
+            Step::new("画像の貼り付け", vec![edit], Some(key)),
+            &mut world.doc,
+            &mut world.review,
+        )
+        .unwrap();
+    assert_eq!(pushed, Pushed::Kept);
+    assert_eq!(world.history.len(), 1);
+    assert!(applied.retextured);
+    assert!(applied.recolored.is_empty());
+    assert!(!applied.structure);
+    assert!(applied.doc_rev > 0);
+    assert_eq!(applied.review_rev, 0);
+    let pasted = world.doc.subtree_looks(key).unwrap();
+    for (look, alpha) in pasted.iter().zip([0.25, 0.75, 1.0]) {
+        assert_eq!(look.base_color, [1.0, 1.0, 1.0, alpha]);
+        assert_eq!(look.tex, Some(TexId(1)));
+    }
+    let undone = world
+        .history
+        .undo(&mut world.doc, &mut world.review)
+        .unwrap();
+    assert!(undone.retextured);
+    assert_eq!((undone.doc_rev, undone.review_rev), (0, 0));
+    assert_eq!(world.doc.subtree_looks(key).unwrap(), before);
+    assert_eq!(world.doc.tex_use(TexId(0)), Some(&box_use(None, 1.0)));
+
+    let stale = Edit::SetLooks {
+        key,
+        before: pasted.clone(),
+        after: before.clone(),
+    };
+    assert_eq!(
+        world.history.execute(
+            Step::new("画像を外す", vec![stale], None),
+            &mut world.doc,
+            &mut world.review
+        ),
+        Err(DocError::InvalidPiece)
+    );
+    let redone = world
+        .history
+        .redo(&mut world.doc, &mut world.review)
+        .unwrap();
+    assert!(redone.retextured);
+    assert_eq!((redone.doc_rev, redone.review_rev), (applied.doc_rev, 0));
+    assert_eq!(world.doc.subtree_looks(key).unwrap(), pasted);
+
+    let mut tinted = pasted.clone();
+    tinted[0].base_color[0] = 0.5;
+    let color = Edit::SetLooks {
+        key,
+        before: pasted.clone(),
+        after: tinted,
+    };
+    let (changed, _) = world
+        .history
+        .execute(
+            Step::new("色の変更", vec![color], None),
+            &mut world.doc,
+            &mut world.review,
+        )
+        .unwrap();
+    assert!(!changed.retextured);
+    assert_eq!(changed.recolored, vec![1..4]);
+    world.undo();
+    assert_eq!(world.doc.subtree_looks(key).unwrap(), pasted);
+}
+
+#[test]
+fn removed_part_comes_back_with_texture() {
+    let mut world = World::new(family());
+    let key = world.key(1);
+    let paste = paste_edit(&mut world.doc, key, b"part");
+    world.execute("画像の貼り付け", vec![paste]);
+    let before = world.snapshot();
+    let remove = Edit::remove_request(&world.doc, key).unwrap();
+    world.execute("削除", vec![remove]);
+    assert!(world.doc.id_of(key).is_none());
+    assert_eq!(world.doc.held_image_bytes(), 4);
+    world.undo();
+    assert_eq!(world.snapshot(), before);
+    assert_eq!(world.doc.tex_use(TexId(0)).unwrap().image, Some(ImageId(0)));
+    assert_eq!(
+        world.doc.image(ImageId(0)).unwrap().hash,
+        ImageHash::of(b"part")
+    );
+}
+
+#[test]
+fn tables_never_shrink() {
+    let mut world = World::new(family());
+    let key = world.key(4);
+    let first = paste_edit(&mut world.doc, key, b"first");
+    world.execute("画像の貼り付け", vec![first]);
+    world.undo();
+    let second = paste_edit(&mut world.doc, key, b"second");
+    world.execute("画像の貼り付け", vec![second]);
+    assert!(!world.history.can_redo());
+
+    let before = world.doc.subtree_looks(key).unwrap();
+    assert_eq!(before[0].tex, Some(TexId(1)));
+    let resized = box_use(Some(ImageId(1)), 2.0);
+    let id = world.doc.add_tex_use(resized).unwrap();
+    assert_eq!(id, TexId(2));
+    let after = vec![DrawLook {
+        tex: Some(id),
+        ..before[0]
+    }];
+    let resize = Edit::SetLooks {
+        key,
+        before: before.clone(),
+        after: after.clone(),
+    };
+    let (resized_edit, _) = world
+        .history
+        .execute(
+            Step::new("画像の大きさ", vec![resize], None),
+            &mut world.doc,
+            &mut world.review,
+        )
+        .unwrap();
+    assert!(resized_edit.retextured, "同じ画像でも貼り方の番号が変わる");
+    let remove = Edit::SetLooks {
+        key,
+        before: after.clone(),
+        after: vec![DrawLook {
+            tex: None,
+            ..after[0]
+        }],
+    };
+    world.execute("画像を外す", vec![remove]);
+    assert_eq!(
+        world.doc.subtree_looks(key).unwrap()[0],
+        DrawLook {
+            tex: None,
+            ..after[0]
+        }
+    );
+    world.undo();
+    assert_eq!(world.doc.subtree_looks(key).unwrap(), after);
+    world.undo();
+    assert_eq!(world.doc.subtree_looks(key).unwrap(), before);
+    world.history.clear();
+    assert_eq!(
+        world.doc.tex_uses().copied().collect::<Vec<_>>(),
+        [
+            box_use(Some(ImageId(0)), 1.0),
+            box_use(Some(ImageId(1)), 1.0),
+            resized,
+        ]
+    );
+    assert_eq!(
+        world.doc.images().map(|i| i.hash).collect::<Vec<_>>(),
+        [ImageHash::of(b"first"), ImageHash::of(b"second"),]
+    );
+    assert_eq!(world.doc.held_image_bytes(), 11);
 }

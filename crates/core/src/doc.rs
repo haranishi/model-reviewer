@@ -21,10 +21,21 @@ use crate::math::Aabb;
 use crate::review::Annotation;
 use crate::scene::{Draw, Model, NodeId, PrimId, Primitive, SceneRead};
 use crate::shapes::ShapeSpec;
+use crate::texture::{ImageHash, ImageId, ImageInfo, ImageSource, Mime, TexId, TexUse};
+
+/// 文書に保持する圧縮画像の合計の上限。
+pub const HELD_IMAGE_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
 
 /// 文書の中で変わらない鍵。開いたときは並び順に 0 から振る。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeKey(pub u64);
+
+/// 描画の形状を共有したまま、履歴で差し替えられる見た目。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawLook {
+    pub base_color: [f32; 4],
+    pub tex: Option<TexId>,
+}
 
 /// 文書の部品1件（約200バイト）。名前は `Arc<str>` にして、表の作り直しで文字列を複製しない。
 #[derive(Clone, Debug, PartialEq)]
@@ -171,13 +182,13 @@ pub enum DocError {
     UnknownKey(NodeKey),
     /// 戻す場所の親か兄弟が、いまの文書に無い。
     InvalidPlace,
-    /// 行列が有限でない。
+    /// 行列または色に有限でない値がある。
     NonFinite,
-    /// 部品の数が `u32` に収まらない。
+    /// 表の番号または保持する画像のバイト数が上限を超える。
     TooLarge,
     /// 中身がまだ無い（E0 の置き場所）。
     NotImplemented,
-    /// 入れる部分木の相対の値が壊れているか、鍵がすでに文書にある、または描画が知らない形状を指す。
+    /// 部分木・描画の内容や、形状・画像・貼り方の参照が文書と合わない。
     InvalidPiece,
     /// 履歴の適用で、戻す注釈・視点の番号がすでに使われている。
     IdInUse(u64),
@@ -192,6 +203,10 @@ pub struct Document {
     added: Vec<Arc<Primitive>>,
     /// `added` と同じ並びで、足した図形の作り方を持つ。記録の無い形状は `None`。
     added_specs: Vec<Option<ShapeSpec>>,
+    // 土台に続く番号を履歴が使うため、どちらの表も末尾にだけ足す。
+    added_images: Vec<ImageInfo>,
+    added_tex_uses: Vec<TexUse>,
+    held_image_bytes: u64,
     nodes: Vec<DocNode>,
     draws: Vec<Draw>,
     index_of: HashMap<NodeKey, u32>,
@@ -247,9 +262,20 @@ impl Document {
         Self {
             bounds: model.bounds,
             next_key: model.nodes.len() as u64,
+            held_image_bytes: model
+                .textures
+                .images
+                .iter()
+                .map(|image| match &image.source {
+                    ImageSource::File { .. } => 0,
+                    ImageSource::Held(bytes) => bytes.len() as u64,
+                })
+                .sum(),
             base,
             added: Vec::new(),
             added_specs: Vec::new(),
+            added_images: Vec::new(),
+            added_tex_uses: Vec::new(),
             nodes,
             draws,
             index_of,
@@ -266,6 +292,63 @@ impl Document {
     /// 足した図形の形状。番号は `base.primitives.len()` からの続き。
     pub fn added_primitives(&self) -> &[Arc<Primitive>] {
         &self.added
+    }
+
+    /// 土台と追加分の全画像を `ImageId` の順で読む。
+    pub fn images(&self) -> impl Iterator<Item = &ImageInfo> {
+        self.base.textures.images.iter().chain(&self.added_images)
+    }
+
+    /// 土台と追加分の貼り方を `TexId` の順で読む。
+    pub fn tex_uses(&self) -> impl Iterator<Item = &TexUse> {
+        self.base.textures.uses.iter().chain(&self.added_tex_uses)
+    }
+
+    /// 同じハッシュの画像を再利用する。新しい画像は文書を閉じるまで保持する。
+    /// 容量か番号の上限を超えるとパニックになる。利用者の入力には [`Self::try_add_image`] を使う。
+    pub fn add_image(&mut self, bytes: Arc<[u8]>, mime: Mime) -> ImageId {
+        self.try_add_image(bytes, mime).expect("画像は文書の上限内")
+    }
+
+    /// 付帯情報を取り除いた圧縮画像を登録する。保持上限を超えたら表を変更せずに断る。
+    /// 登録済みの画像は上限に達していても再利用できる。
+    pub fn try_add_image(&mut self, bytes: Arc<[u8]>, mime: Mime) -> Result<ImageId, DocError> {
+        let hash = ImageHash::of(&bytes);
+        if let Some(index) = self.images().position(|image| image.hash == hash) {
+            return Ok(ImageId(index as u32));
+        }
+        let len = bytes.len() as u64;
+        if len > HELD_IMAGE_BYTE_LIMIT.saturating_sub(self.held_image_bytes) {
+            return Err(DocError::TooLarge);
+        }
+        let index = self.base.textures.images.len() + self.added_images.len();
+        let id = ImageId(u32::try_from(index).map_err(|_| DocError::TooLarge)?);
+        self.added_images.push(ImageInfo {
+            hash,
+            mime,
+            source: ImageSource::Held(bytes),
+        });
+        self.held_image_bytes += len;
+        Ok(id)
+    }
+
+    /// 文書に保持している画像のバイト数。ファイル内の範囲だけで参照する画像は含まない。
+    pub fn held_image_bytes(&self) -> u64 {
+        self.held_image_bytes
+    }
+
+    /// 同じ値の貼り方には同じ番号を返す。MASK だけの材質は画像を持たなくてもよい。
+    pub fn add_tex_use(&mut self, tex: TexUse) -> Result<TexId, DocError> {
+        if tex.image.is_some_and(|id| self.image(id).is_none()) {
+            return Err(DocError::InvalidPiece);
+        }
+        if let Some(index) = self.tex_uses().position(|existing| *existing == tex) {
+            return Ok(TexId(index as u32));
+        }
+        let index = self.base.textures.uses.len() + self.added_tex_uses.len();
+        let id = TexId(u32::try_from(index).map_err(|_| DocError::TooLarge)?);
+        self.added_tex_uses.push(tex);
+        Ok(id)
     }
 
     /// 部品の表全体（行きがけ順）。
@@ -358,6 +441,53 @@ impl Document {
             .zip(colors)
         {
             draw.base_color = *color;
+        }
+        Ok(nodes)
+    }
+
+    /// 部品と子孫の見た目を、部品の順、その中は描画の順で返す。
+    pub fn subtree_looks(&self, key: NodeKey) -> Result<Vec<DrawLook>, DocError> {
+        Ok(self.iter_subtree_looks(key)?.collect())
+    }
+
+    pub(crate) fn iter_subtree_looks(
+        &self,
+        key: NodeKey,
+    ) -> Result<impl Iterator<Item = DrawLook> + '_, DocError> {
+        let (_, draws) = self.subtree_draw_range(key)?;
+        Ok(self.draws[draws.start as usize..draws.end as usize]
+            .iter()
+            .map(|draw| DrawLook {
+                base_color: draw.base_color,
+                tex: draw.tex,
+            }))
+    }
+
+    /// `subtree_looks` と同じ並びで見た目を入れ、部品の番号の範囲を返す。
+    /// 個数・色・貼り方の番号をすべて確かめてから書き換える。
+    pub fn set_subtree_looks(
+        &mut self,
+        key: NodeKey,
+        looks: &[DrawLook],
+    ) -> Result<Range<u32>, DocError> {
+        let (nodes, draws) = self.subtree_draw_range(key)?;
+        if looks.len() != (draws.end - draws.start) as usize {
+            return Err(DocError::InvalidPiece);
+        }
+        for look in looks {
+            if look.tex.is_some_and(|id| self.tex_use(id).is_none()) {
+                return Err(DocError::InvalidPiece);
+            }
+            if look.base_color.iter().any(|value| !value.is_finite()) {
+                return Err(DocError::NonFinite);
+            }
+        }
+        for (draw, look) in self.draws[draws.start as usize..draws.end as usize]
+            .iter_mut()
+            .zip(looks)
+        {
+            draw.base_color = look.base_color;
+            draw.tex = look.tex;
         }
         Ok(nodes)
     }
@@ -467,11 +597,10 @@ impl Document {
             return Err(DocError::InvalidPiece);
         }
         let primitive_count = self.primitive_count();
-        if piece
-            .draws
-            .iter()
-            .any(|draw| draw.prim.0 as usize >= primitive_count)
-        {
+        if piece.draws.iter().any(|draw| {
+            draw.prim.0 as usize >= primitive_count
+                || draw.tex.is_some_and(|id| self.tex_use(id).is_none())
+        }) {
             return Err(DocError::InvalidPiece);
         }
         let mut seen = HashSet::with_capacity(piece.nodes.len());
@@ -619,6 +748,9 @@ impl Document {
         let Some(prim) = self.primitive(draw.prim) else {
             return Err(DocError::InvalidPiece);
         };
+        if draw.tex.is_some_and(|id| self.tex_use(id).is_none()) {
+            return Err(DocError::InvalidPiece);
+        }
         let world_aabb = prim.local_aabb.transformed(&local);
         let key = self.allocate_key();
         let node = DocNode {
@@ -848,6 +980,18 @@ impl SceneRead for Document {
         self.base.primitives.len() + self.added.len()
     }
 
+    fn tex_use(&self, id: TexId) -> Option<&TexUse> {
+        self.tex_uses().nth(id.0 as usize)
+    }
+
+    fn image(&self, id: ImageId) -> Option<&ImageInfo> {
+        self.images().nth(id.0 as usize)
+    }
+
+    fn prim_uvs(&self, id: PrimId) -> &[[f32; 2]] {
+        self.base.prim_uvs(id)
+    }
+
     fn file_index(&self, id: NodeId) -> Option<u32> {
         let key = self.nodes[id.0 as usize].key;
         self.file_index.get(&key).copied()
@@ -970,6 +1114,23 @@ pub(crate) mod tests {
             .flat_map(|index| doc.draws(NodeId(index as u32)).iter())
             .map(|draw| draw.base_color)
             .collect()
+    }
+
+    #[test]
+    fn held_image_limit_allows_reuse() {
+        let mut doc = sample();
+        // 大きな画像を確保せず、残り2バイトの状態から境界を通す。
+        doc.held_image_bytes = HELD_IMAGE_BYTE_LIMIT - 2;
+        let bytes: Arc<[u8]> = Arc::from(&b"ab"[..]);
+        let id = doc.try_add_image(bytes.clone(), Mime::Png).unwrap();
+        assert_eq!(doc.held_image_bytes(), HELD_IMAGE_BYTE_LIMIT);
+        assert_eq!(
+            doc.try_add_image(Arc::from(&b"c"[..]), Mime::Png),
+            Err(DocError::TooLarge)
+        );
+        assert_eq!(doc.try_add_image(bytes, Mime::Png), Ok(id));
+        assert_eq!(doc.held_image_bytes(), HELD_IMAGE_BYTE_LIMIT);
+        assert_eq!(doc.images().count(), 1);
     }
 
     #[test]

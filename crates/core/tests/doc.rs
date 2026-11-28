@@ -4,13 +4,16 @@ use std::sync::Arc;
 
 use glam::{Affine3A, Quat, Vec3};
 
-use model_reviewer_core::doc::{DocError, Document, NodeKey, Place, Remap, Subtree};
+use model_reviewer_core::doc::{DocError, Document, DrawLook, NodeKey, Place, Remap, Subtree};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
 use model_reviewer_core::shapes::{self, ShapeKind, ShapeSpec};
-use model_reviewer_core::texture::Textures;
+use model_reviewer_core::texture::{
+    IDENTITY_TRANSFORM, ImageHash, ImageId, ImageInfo, ImageSource, Mime, Sampling, TexId, TexUse,
+    Textures, UvMap,
+};
 
 /// 決まった種の乱数（xorshift64）。
 struct Rng(u64);
@@ -613,4 +616,209 @@ fn shape_spec_survives_duplicate() {
     // 文書を作り直すと記録は消える。
     let fresh = Document::new(model);
     assert_eq!(fresh.shape_spec(id), None);
+}
+
+fn textured_family() -> Model {
+    let plane = shapes::build(ShapeKind::Plane, 1.0);
+    let uvs = vec![[0.25, 0.5]; plane.vertices.len()];
+    let mut model = build(
+        &[
+            (None, Affine3A::IDENTITY, vec![0]),
+            (Some(0), shift(1.0), vec![0, 0]),
+            (None, shift(2.0), vec![0]),
+        ],
+        vec![plane],
+    );
+    model.textures.images.push(ImageInfo {
+        hash: ImageHash::of(b"base"),
+        mime: Mime::Png,
+        source: ImageSource::File { offset: 8, len: 4 },
+    });
+    model.textures.uses.push(TexUse {
+        image: Some(ImageId(0)),
+        sampling: Sampling::default(),
+        map: UvMap::Vertex {
+            transform: IDENTITY_TRANSFORM,
+            tex_coord: 1,
+            info_from: Some(2),
+        },
+        cutoff: Some(0.375),
+        baked_box: None,
+    });
+    model.textures.prim_uvs.push(uvs);
+    model.draws[0].tex = Some(TexId(0));
+    model.draws[1].base_color[3] = 0.25;
+    model.draws[2].base_color[3] = 0.75;
+    model
+}
+
+#[test]
+fn add_image_dedups_by_hash() {
+    let model = Arc::new(textured_family());
+    let mut doc = Document::new(model.clone());
+    assert_eq!(
+        doc.add_image(Arc::from(&b"base"[..]), Mime::Png),
+        ImageId(0)
+    );
+    assert_eq!(doc.image(ImageId(0)), model.image(ImageId(0)));
+    assert_eq!(doc.held_image_bytes(), 0);
+
+    let bytes: Arc<[u8]> = Arc::from(&b"pasted"[..]);
+    let id = doc.add_image(bytes.clone(), Mime::Jpeg);
+    assert_eq!(id, ImageId(1));
+    assert_eq!(
+        doc.try_add_image(Arc::from(&b"pasted"[..]), Mime::Jpeg),
+        Ok(id)
+    );
+    let image = doc.image(id).unwrap();
+    assert_eq!(image.hash, ImageHash::of(&bytes));
+    assert_eq!(image.mime, Mime::Jpeg);
+    assert!(matches!(&image.source, ImageSource::Held(held) if Arc::ptr_eq(held, &bytes)));
+    assert_eq!(doc.images().count(), 2);
+    assert!(doc.image(ImageId(2)).is_none());
+    assert_eq!(doc.held_image_bytes(), bytes.len() as u64);
+}
+
+#[test]
+fn set_looks_round_trips() {
+    let model = Arc::new(textured_family());
+    let mut doc = Document::new(model.clone());
+    let tex = *doc.tex_use(TexId(0)).unwrap();
+    assert_eq!(doc.add_tex_use(tex), Ok(TexId(0)));
+    let mask = TexUse { image: None, ..tex };
+    assert_eq!(doc.add_tex_use(mask), Ok(TexId(1)));
+    assert_eq!(doc.add_tex_use(mask), Ok(TexId(1)));
+    assert_eq!(doc.tex_use(TexId(1)), Some(&mask));
+    assert_eq!(
+        doc.add_tex_use(TexUse {
+            image: Some(ImageId(1)),
+            ..tex
+        }),
+        Err(DocError::InvalidPiece)
+    );
+    assert!(doc.tex_use(TexId(2)).is_none());
+    let mut other_material = tex;
+    let UvMap::Vertex { info_from, .. } = &mut other_material.map else {
+        unreachable!()
+    };
+    *info_from = Some(3);
+    assert_eq!(doc.add_tex_use(other_material), Ok(TexId(2)));
+    assert_eq!(doc.tex_use(TexId(0)), Some(&tex));
+    assert_eq!(doc.prim_uvs(PrimId(0)), model.prim_uvs(PrimId(0)));
+    assert!(!doc.prim_uvs(PrimId(0)).is_empty());
+    let added = doc.add_primitive(Arc::new(prim(0.0, 1.0)));
+    assert!(doc.prim_uvs(added).is_empty());
+
+    let key = NodeKey(0);
+    let before = doc.subtree_looks(key).unwrap();
+    let after = [
+        DrawLook {
+            base_color: [1.0; 4],
+            tex: None,
+        },
+        DrawLook {
+            base_color: [1.0, 1.0, 1.0, 0.25],
+            tex: Some(TexId(0)),
+        },
+        DrawLook {
+            base_color: [0.0, 0.0, 0.0, 0.75],
+            tex: Some(TexId(1)),
+        },
+    ];
+    assert_eq!(doc.set_subtree_looks(key, &after), Ok(0..2));
+    assert_eq!(doc.subtree_looks(key).unwrap(), after);
+    assert_eq!(doc.subtree_looks(NodeKey(1)).unwrap(), after[1..]);
+    assert_eq!(doc.draws(NodeId(2)), model.draws(NodeId(2)));
+    assert_eq!(doc.set_subtree_looks(key, &before), Ok(0..2));
+    for id in [NodeId(0), NodeId(1)] {
+        assert_eq!(doc.draws(id), model.draws(id));
+    }
+
+    assert_eq!(
+        doc.set_subtree_looks(key, &after[1..]),
+        Err(DocError::InvalidPiece)
+    );
+    let mut bad = after;
+    bad[2].tex = Some(TexId(99));
+    assert_eq!(
+        doc.set_subtree_looks(key, &bad),
+        Err(DocError::InvalidPiece)
+    );
+    let mut bad = after;
+    bad[2].base_color[3] = f32::NAN;
+    assert_eq!(doc.set_subtree_looks(key, &bad), Err(DocError::NonFinite));
+    assert_eq!(doc.subtree_looks(key).unwrap(), before);
+    let missing = NodeKey(99);
+    assert_eq!(
+        doc.subtree_looks(missing),
+        Err(DocError::UnknownKey(missing))
+    );
+    assert_eq!(
+        doc.set_subtree_looks(missing, &[]),
+        Err(DocError::UnknownKey(missing))
+    );
+}
+
+#[test]
+fn duplicate_shares_image() {
+    let mut doc = Document::new(Arc::new(textured_family()));
+    let image = doc.add_image(Arc::from(&b"copy"[..]), Mime::Png);
+    let tex = doc
+        .add_tex_use(TexUse {
+            image: Some(image),
+            ..*doc.tex_use(TexId(0)).unwrap()
+        })
+        .unwrap();
+    let key = NodeKey(0);
+    let mut pasted = doc.subtree_looks(key).unwrap();
+    for look in &mut pasted {
+        look.tex = Some(tex);
+    }
+    doc.set_subtree_looks(key, &pasted).unwrap();
+    let (place, piece) = doc.duplicate_subtree(key).unwrap();
+    let copy = piece.root_key().unwrap();
+    doc.insert_subtree(place, piece).unwrap();
+    assert_eq!(doc.subtree_looks(copy).unwrap(), pasted);
+    assert_eq!(doc.tex_use(tex).unwrap().image, Some(image));
+    assert_eq!(doc.images().count(), 2);
+    assert_eq!(doc.held_image_bytes(), 4);
+    let mut detached = pasted.clone();
+    detached[0].tex = None;
+    doc.set_subtree_looks(copy, &detached).unwrap();
+    assert_eq!(doc.subtree_looks(key).unwrap(), pasted);
+
+    let (place, mut bad) = doc.duplicate_subtree(key).unwrap();
+    bad.draws[0].tex = Some(TexId(99));
+    assert_eq!(
+        doc.shape_piece("図形", Affine3A::IDENTITY, bad.draws[0]),
+        Err(DocError::InvalidPiece)
+    );
+    assert_eq!(doc.insert_subtree(place, bad), Err(DocError::InvalidPiece));
+}
+
+#[test]
+fn untextured_document_reads_as_before() {
+    let model = Arc::new(family());
+    let doc = Document::new(model.clone());
+    assert_eq!(doc.images().count(), 0);
+    assert_eq!(doc.tex_uses().count(), 0);
+    assert_eq!(doc.held_image_bytes(), 0);
+    assert!(doc.image(ImageId(0)).is_none());
+    assert!(doc.tex_use(TexId(0)).is_none());
+    for (index, node) in doc.nodes().iter().enumerate() {
+        let id = NodeId(index as u32);
+        assert_eq!(doc.draws(id), model.draws(id));
+        let expected: Vec<_> = model
+            .subtree(id)
+            .flat_map(|n| model.draws(NodeId(n)))
+            .map(|draw| DrawLook {
+                base_color: draw.base_color,
+                tex: None,
+            })
+            .collect();
+        assert_eq!(doc.subtree_looks(node.key).unwrap(), expected);
+    }
+    for p in 0..doc.primitive_count() {
+        assert!(doc.prim_uvs(PrimId(p as u32)).is_empty());
+    }
 }

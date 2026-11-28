@@ -3,9 +3,9 @@ use std::path::{Component, Path};
 use std::process::ExitCode;
 
 use model_reviewer_testdata::{
-    MESH_COUNT, NODE_COUNT, PLACED_TRIANGLES, PRIMITIVE_COUNT, STL_SAMPLE_TRIANGLES,
-    STL_SAMPLE_VERTICES, UNIQUE_TRIANGLES, nested_descendants, placed_triangles, sample_glb,
-    stl_sample, stl_stress, stress_glb, stress_nested_glb, textured_scene_glb,
+    MESH_COUNT, NODE_COUNT, PLACED_TRIANGLES, PRIMITIVE_COUNT, Pattern, STL_SAMPLE_TRIANGLES,
+    STL_SAMPLE_VERTICES, UNIQUE_TRIANGLES, nested_descendants, pattern_png, placed_triangles,
+    sample_glb, stl_sample, stl_stress, stress_glb, stress_nested_glb, textured_scene_glb,
 };
 
 fn main() -> ExitCode {
@@ -86,6 +86,15 @@ fn run() -> Result<(), Exit> {
             println!("placed_triangles {}", placed_triangles(parts, triangles));
             println!("bytes {}", bytes.len());
             Ok(())
+        }
+        "pattern" => {
+            let path = args.next().ok_or(Exit::Usage(usage()))?;
+            if args.next().is_some() || !is_under_target(&path) {
+                return Err(Exit::Usage(
+                    "pattern の出力は target/ 以下の相対パスだけです",
+                ));
+            }
+            write_file(&path, &pattern_png(Pattern::Quadrants, 128, 0))
         }
         "textured" => {
             let mut number = || {
@@ -169,7 +178,7 @@ fn run() -> Result<(), Exit> {
 const STL_STRESS_MAX_TRIANGLES: u32 = 20_000_000;
 
 fn usage() -> &'static str {
-    "使い方: model-reviewer-testdata sample [出力パス]\n       model-reviewer-testdata stress <部品数> <三角形数> [target/ 以下のパス]\n       model-reviewer-testdata stress-nested <部品数> <三角形数> [target/ 以下のパス]\n         （根の下に、部品数の半分を子孫に持つまとめ役を置く。部品数は 4 以上）\n       model-reviewer-testdata textured <画像の枚数> <辺の画素数> <部品数> <target/ 以下の出力.glb>\n       model-reviewer-testdata stl-sample [出力パス]\n       model-reviewer-testdata stl-stress <三角形数> <binary|ascii> [target/ 以下のパス]"
+    "使い方: model-reviewer-testdata sample [出力パス]\n       model-reviewer-testdata stress <部品数> <三角形数> [target/ 以下のパス]\n       model-reviewer-testdata stress-nested <部品数> <三角形数> [target/ 以下のパス]\n         （根の下に、部品数の半分を子孫に持つまとめ役を置く。部品数は 4 以上）\n       model-reviewer-testdata textured <画像の枚数> <辺の画素数> <部品数> <target/ 以下の出力.glb>\n       model-reviewer-testdata pattern <target/ 以下の出力.png>（128×128画素の4色の見本）\n       model-reviewer-testdata stl-sample [出力パス]\n       model-reviewer-testdata stl-stress <三角形数> <binary|ascii> [target/ 以下のパス]"
 }
 
 fn is_under_target(path: &str) -> bool {

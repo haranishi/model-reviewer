@@ -1,0 +1,16 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../target/tex/scene.glb" },
+    { "op": "wait_idle" },
+    { "op": "dump_state", "path": "tex-1-shown.json" },
+    { "op": "screenshot", "path": "tex-1-shown.png" },
+    { "op": "click_widget", "name": "view.textures" },
+    { "op": "hover_view", "at": [0.85, 0.85] },
+    { "op": "dump_state", "path": "tex-1-hidden.json" },
+    { "op": "screenshot", "path": "tex-1-hidden.png" },
+    { "op": "key", "key": "T", "modifiers": ["shift"] },
+    { "op": "assert_state_equals", "path": "tex-1-shown.json", "relative_to": "out" },
+    { "op": "quit" }
+  ]
+}

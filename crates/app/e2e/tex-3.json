@@ -1,0 +1,19 @@
+{
+  "timeout_secs": 30,
+  "steps": [
+    { "op": "open_model", "path": "../../../target/tex/box.stl" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "parts.row.0" },
+    { "op": "paste_texture", "path": "../../../target/tex/quadrants.png" },
+    { "op": "wait_idle" },
+    { "op": "dump_state", "path": "tex-3-pasted.json" },
+    { "op": "export_glb", "path": "tex-3.glb" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "dialog.cancel" },
+    { "op": "open_model", "path": "tex-3.glb", "relative_to": "out" },
+    { "op": "wait_idle" },
+    { "op": "click_widget", "name": "parts.row.0" },
+    { "op": "dump_state", "path": "tex-3-reopened.json" },
+    { "op": "quit" }
+  ]
+}

@@ -74,7 +74,7 @@
 
 ### 8. 軽さを測る
 1. The 検証の記録 shall 画像の枚数（0・24・96）と大きさ（512・2048）を変えたモデルで、最初の表示までの時間、画像がすべて出るまでの時間、常駐メモリ、読み込み中の最大のメモリ、視点を回す間のフレームの CPU 時間、送った画像のバイト数を、機械と条件つきで書く。`--no-textures` の値と並べる。
-2. The 文書 shall 測っていない値（GPU のメモリの実使用量、GPU の処理時間、ほかのソフトとの比較）を書かない。上限の既定（512 MiB）は、測った後に見直す。
+2. The 文書 shall 測っていない値（GPU の処理時間、ほかのソフトとの比較など）を書かない。使用メモリは、GPU の分を含む OS の値（macOS の `footprint`）で測れたものを主に書き、アプリの常駐メモリ（GPU の分を含まない）と分ける。上限の既定（512 MiB）は、測った後に見直す。
 
 ### 9. 検証と体裁
 1. The 変更 shall `cargo fmt --all --check`・`cargo clippy --all-targets --workspace --locked -- -D warnings`・`cargo test --workspace --locked`・`cargo build --release` を通し、既存の試験を消さず弱めない。

@@ -12,7 +12,6 @@
     { "op": "paste_texture", "path": "../../../target/tex/quadrants.png" },
     { "op": "wait_idle" },
     { "op": "click_widget", "name": "texture.size" },
-    { "op": "key", "key": "A", "modifiers": ["command"] },
     { "op": "type_text", "text": "10" },
     { "op": "key", "key": "Enter" },
     { "op": "hover_view", "at": [0.85, 0.85] },

@@ -24,6 +24,7 @@ const PAGES: &[(&str, &[&str])] = &[
         "11-create.md",
         &["create-new.png", "create-keymove.png", "create-color.png"],
     ),
+    ("12-texture.md", &["texture-view.png", "texture-paste.png"]),
 ];
 
 fn app_dir() -> &'static Path {

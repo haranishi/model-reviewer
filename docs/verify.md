@@ -56,7 +56,7 @@ cargo run --release --locked -p model-reviewer-testdata -- stl-sample target/tex
 
 - `{"op":"paste_texture","path":"../../../target/tex/quadrants.png"}` は選んだ部品とその子に貼ります。貼る画像のパスは手順 JSON のフォルダから指定します。`"relative_to":"out"` を付けると `--out` が基準になります。直後の `wait_idle` は貼り付けと画像転送の完了まで待ちます。モデルの読み込み・貼り付け・書き出しが失敗すると手順も失敗します。
 - `dump_state` の `textures` は `total`（省いた参照も含む枚数）、`displayed`（転送済み）、`shrunk`（縮小）、`failed`（省略・失敗）、`bytes`（縮小版を含む転送バイト数）、`shown`（表示の入・切）です。表示を切っても転送済みの枚数とバイト数は保たれます。
-- `selection_texture` は未選択なら `null` です。`total` は選択と子孫の描画数、`draws` は先頭8件まで。各描画には画像の BLAKE3 の先頭16桁 `hash`、貼り方 `map`（`uv`／`box`）、`size`（箱形の辺を部品内の座標で表した長さ、UV は `null`）が入り、画像のない描画は `null` です。
+- `selection_texture` は未選択なら `null` です。`total` は選択と子孫の描画数、`draws` は先頭8件まで。各描画には画像の BLAKE3 の先頭16桁 `hash`、貼り方 `map`（`uv`／`box`）、`size`（箱形の画像の長い辺を部品内の座標で表した長さ、UV は `null`）が入り、画像のない描画は `null` です。
 
 ### 重いモデルの素材
 
@@ -73,11 +73,11 @@ cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii targe
 
 各手順（`guide-*.json`）を `--out target/guide` で実行します。`guide-09-shortcuts.json` だけは `--keymap target/guide/keymap.json`（まだ無いファイル）を付けます。省略すると設定画面に「自動操作のため、変更は保存されません」と出ます。出力画像を開いて確認し、256色に落として（`ffmpeg` の `palettegen`・`paletteuse`）`docs/guide/images/` に置きます。第11章までの画像は 2026-11-27 に macOS 27.2.1（Apple Silicon）、ウィンドウ 1280×800（倍率 1）で撮りました。
 
-第12章は上の素材を生成してから `target/release/model-reviewer --script crates/app/e2e/guide-12-texture.json --out target/guide` で撮ります。`texture-view.png` は GLB の縞模様と「モデルの UV」、`texture-paste.png` は STL に貼った4色の模様と「1枚の大きさ」10 mm を確認します。
+第12章は上の素材を生成してから `target/release/model-reviewer --script crates/app/e2e/guide-12-texture.json --out target/guide` で撮ります。`texture-view.png` は GLB の縞模様と「モデルの UV」、`texture-paste.png` は STL に貼った4色の模様と「1枚の大きさ」10 mm を確認します。この2枚は 2026-11-28 に macOS 27.2.1（Apple Silicon）、ウィンドウ 1280×800（倍率 2）で撮り、2560×1600 を 1280×800 に縮めてから256色に落としました。
 
 ## 性能値の定義
 
-詳細パネルと `--log-metrics` は同じ値を出します。測っていない値には「未計測」と出ます。フレームの CPU 時間は直近120回の値です。操作中の値は `sample_every` か操作直後の `sample` で調べます。[読み込みと編集の測定値・測定環境](measurements.md)
+詳細パネルと `--log-metrics` は同じ値を出します。測っていない値には「未計測」と出ます。フレームの CPU 時間は直近120回の値です。操作中の値は `sample_every` か操作直後の `sample` で調べます。[読み込み・編集・画像の測定値と測定環境](measurements.md)
 
 | 名前 | 何を測ったか |
 |---|---|
@@ -93,7 +93,7 @@ cargo run --release -p model-reviewer-testdata -- stl-stress 1000000 ascii targe
 | フレームのCPU時間 | `App::ui` 1回の経過。直近120回の平均と最大。GPUが追いつかないときは前の描画を待つ時間を含む。GPUの処理時間そのものではない |
 | フレーム間隔 | ui の開始から次の開始まで。直近120回の平均と最大。100ms 以上の空きは除く。画面に出ている間は更新周期で頭打ちになる |
 | GPUの処理時間 | 初版では計らない。常に「未計測」 |
-| メモリ | `memory_stats` の `physical_mem` が取れたときだけ。プロセスの常駐メモリ |
+| 常駐メモリ | `memory_stats` の `physical_mem` が取れたときだけ。プロセスの常駐メモリで、GPU に置いた画像などは含まないことがある（[画像の測定](measurements.md)） |
 | 編集の確定 | 直近の変形・数値の確定・色の変更・追加・複製・削除で、文書と履歴を書き換えた時間 |
 | 取り消し・やり直し | 直近の取り消し・やり直しで、文書とレビューを書き換えた時間 |
 | 履歴 | 履歴が持つ操作の大きさの見積もり（バイト）と、取り消せる回数 |

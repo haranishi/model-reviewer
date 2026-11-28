@@ -28,7 +28,7 @@ Pass a GLB, STL or review JSON to open it. Use `--no-textures` to skip image dec
 ## What it does
 
 - **View**: floor grid and axes, an orientation cube, perspective or orthographic projection, and four display modes (shaded, shaded with edges, wireframe, see-through).
-- **View and apply textures** using embedded base-color PNG and JPEG images or your own image file. Apply an image to a part and its children using the model’s loaded UV coordinates or a repeating box projection. Export embeds the image and writes box projections as UV coordinates. [Illustrated guide (Japanese)](docs/guide/12-texture.md)
+- **View and apply textures** using embedded base-color PNG and JPEG images or your own image file. Apply an image to a part and its children using the model’s loaded UV coordinates or a repeating box projection centered on the part that keeps the image’s aspect ratio. Export embeds the image and writes box projections as UV coordinates. [Illustrated guide (Japanese)](docs/guide/12-texture.md)
 - **Move**: select a part, then drag a handle or type values in the transform panel. Move and rotate follow the floor axes; scale follows the part's own axes. Undo and redo.
 - **Add and remove**: add a box, sphere, cylinder or plane and set its dimensions (in mm, for example) in the Dimensions panel; selecting a part also shows its overall width, height and depth; duplicate or delete a part together with its children.
 - **Measure**: click two points to get the distance and the X, Y and Z differences. The pointer snaps to corners and edges (X turns it off). Measurements are not saved.
@@ -75,7 +75,7 @@ Reviews store hidden parts, notes, views, and the path and fingerprint of the so
 - For animated parts, playback tools use the animation values instead of your transform. glTF ignores the node transform of skinned parts. The export result counts both.
 - One dark theme. Window layout and unit choice are not remembered.
 - The unsaved-changes prompt appears on window close, Cmd+Q and the Quit menu, but not on Dock Quit or log out.
-- Memory used during export is not returned to the OS right away. GPU time is not measured.
+- Memory used during export is not returned to the OS right away. The memory figure in Details is resident memory and may not include images on the GPU. GPU time is not measured. [Texture measurements (Japanese)](docs/measurements.md)
 
 ## Development
 

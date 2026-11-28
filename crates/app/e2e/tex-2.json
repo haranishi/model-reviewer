@@ -10,7 +10,6 @@
     { "op": "wait_idle" },
     { "op": "dump_state", "path": "tex-2-pasted.json" },
     { "op": "click_widget", "name": "texture.size" },
-    { "op": "key", "key": "A", "modifiers": ["command"] },
     { "op": "type_text", "text": "0.25" },
     { "op": "key", "key": "Enter" },
     { "op": "dump_state", "path": "tex-2-sized.json" },

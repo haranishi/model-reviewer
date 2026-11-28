@@ -1,0 +1,19 @@
+{
+  "feature_name": "release-binaries",
+  "created_at": "2026-11-28T14:00:00Z",
+  "updated_at": "2026-11-28T14:00:00Z",
+  "language": "ja",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": { "generated": true, "approved": true },
+    "design": { "generated": true, "approved": true },
+    "tasks": { "generated": true, "approved": true }
+  },
+  "approval_basis": "依頼者の指示で実装まで進める",
+  "ready_for_implementation": true,
+  "documents": {
+    "requirements": ["requirements.md"],
+    "design": ["design.md"],
+    "tasks": ["tasks.md"]
+  }
+}

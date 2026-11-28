@@ -4,6 +4,8 @@
 //! - 日本語フォントは `fonts::install` が言語 "ja" で登録するので、eframe の自動登録は切る。
 //! - 起動できないときは、理由を出して終了コード1で終わる。
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::sync::Arc;
 
 use eframe::egui;

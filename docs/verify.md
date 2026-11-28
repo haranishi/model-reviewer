@@ -2,7 +2,7 @@
 
 ## テスト
 
-README の4コマンドはGPUが無くても実行できます。CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。次の試験は通常 ignored と数えます。GPUがある環境では `cargo test --workspace -- --include-ignored` で実行します。
+[ビルド手順](build.md)の4コマンドはGPUが無くても実行できます。通常の CI（`.github/workflows/ci.yml`）は macOS・Linux・Windows で clippy とテストを、書式と依存のライセンス検査（`deny.toml`）を1回実行します。配布用 CI は展開後の実行ファイルで `smoke` を試します。次の試験は通常 ignored と数えます。GPUがある環境では `cargo test --workspace -- --include-ignored` で実行します。
 
 - GPUの描画テスト（`crates/render/tests/gpu.rs`）: 中心が背景色でない、選択で画像が変わる、大きさ0では描かない、汚れの無いフレームでは描かない、転送に失敗しても表示中のモデルが残る。基準画像との1画素比較はしません。
 - `crates/render/tests/texture.rs` は、基本色との掛け合わせ、MASK の抜け方、箱形の投影の向きなどを描画した画素で確かめます。

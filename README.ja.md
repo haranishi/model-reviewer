@@ -1,29 +1,16 @@
 # model-reviewer
 
-受け取った3Dモデルを確かめ、部品の位置を直して渡すための、軽いデスクトップアプリです。GLB と STL を開き、部品を動かし、簡単な図形を足し、距離を測り、面に注釈を置いて、結果を別のGLBに書き出します。レビュー（注釈・非表示・視点）の保存先には、新しい名前か、このアプリで読めるレビュー JSON を選べます。頂点や面の形は編集できません。アプリを閉じるまで、開いたモデルの場所を保護し、改名や移動の後も内容が同じなら上書きを防ぎます。この起動で書き出した GLB には再び書き出せます。Rust製です。
+受け取った3Dモデル（GLB・STL）を開いて確かめ、部品を動かしたり画像を貼ったりして渡せる、軽いデスクトップアプリです。
 
-**初期版（0.1.0）です。** 画面を動かして確かめた環境は macOS（Apple Silicon）だけです。
+## ダウンロード
 
-[English README](README.md)
+[最新の公開版](https://github.com/haranishi/model-reviewer/releases/latest) の「Assets」から、macOS 用の ZIP（Apple Silicon・Intel 共通）、Windows x86-64 用の ZIP、Linux x86-64 用の tar.gz を選んで展開します。Rust のインストールは不要です。
+
+初回に警告が出たら、配布元と SHA-256 を確かめてください。macOS では「プライバシーとセキュリティ」から「このまま開く」、Windows の SmartScreen では「詳細情報」から「実行」を選べます。Windows と Linux は実機の画面が未確認の試験版です。[起動手順と SHA-256 の照合方法](docs/download.md)
 
 ![model-reviewer の操作（約30秒）。モデルを開き、部品に画像を貼り、部品を動かし、寸法を指定した円柱を足し、距離を測り、断面を見て、GLB に書き出す。模様はプログラムで作った画像](docs/images/demo.webp)
 
-## 必要なもの
-
-- Rust（rustup）。`rust-toolchain.toml` が 1.99.0 と rustfmt・clippy を指定します。最小の対応版は 1.95 です。
-- GPU と画面。Windows と Linux は、ビルドと自動テストだけを CI で確かめます。画面は未確認です。
-- 画面の文字は日本語です。Linux では日本語フォント（Noto Sans CJK など）を入れてください。
-
-[使い方は手順書へ](docs/guide/README.md)
-
-## 起動
-
-```
-cargo run --release -p model-reviewer
-cargo run --release -p model-reviewer -- assets/samples/review-sample.glb
-```
-
-起動時に GLB・STL・レビュー JSON を指定できます。`--no-textures` は画像の復号と貼り付けを無効にし、`--texture-budget-mib N` は GPU に置く画像の合計容量を指定します（縮小版を含めて既定 512 MiB）。自動操作には `--script` と `--out`、終了時の性能値の出力には `--log-metrics` を使います。[見本の GLB と 20 × 30 × 40 mm の STL の箱を作る方法](assets/samples/README.md)
+画面は日本語です。0.1.0 をソースからビルドし、Apple Silicon の Mac で操作を確認しています。[画像付きの使い方](docs/guide/README.md)・[ソースからの起動とコマンドライン引数](docs/build.md)・[English README](README.md)
 
 ## できること
 
@@ -71,6 +58,8 @@ GLB は、形状がファイル内（BIN チャンク）にある、圧縮して
 
 ## レビューJSON
 
+レビューの保存先には、新しい名前か、このアプリで読めるレビュー JSON を選べます。同じ起動中にアプリが書き出した GLB には再び書き出せます。
+
 部品の非表示、注釈、視点、元モデルの場所と識別値を保存します。バイト数と BLAKE3 ハッシュが一致するモデルに復元し、STL にはレビューの単位と上の向きを使います。単位の記録がなければ mm、向きの記録がなければ Y が上です。モデルを開き直す間はレビュー保存を休止します。書き出していない形の編集があるときは、先に書き出すよう案内します。平行投影の視点を含むときだけ版2で書きます。**`path` には絶対パスが入り、ユーザー名を含むことがあります。共有する前に中身を確かめてください。** [レビューJSONの形式](docs/review-json.md)
 
 ## 制限
@@ -84,17 +73,10 @@ GLB は、形状がファイル内（BIN チャンク）にある、圧縮して
 
 ## 検証と性能
 
-```
-cargo fmt --all --check
-cargo test --workspace
-cargo clippy --all-targets --workspace -- -D warnings
-cargo build --release
-```
-
-CI は、書式、依存のライセンス（`cargo deny`）、最小の対応版、clippy、テストを調べます。GPUを使う試験と実機の自動操作は走りません。手順と性能値の定義、測定値は [docs/verify.md](docs/verify.md) です。
+ビルドとテストのコマンドは[開発手順](docs/build.md)にあります。GPU を使う試験、自動操作、性能値の定義と測定値は[検証の手順](docs/verify.md)を参照してください。
 
 ## ライセンス
 
 [MIT](LICENSE-MIT) または [Apache-2.0](LICENSE-APACHE) のどちらでも使えます。著作権表記は model-reviewer contributors です。見本のGLBも同じ条件です。提出された変更は、断りがなければ同じ二つのライセンスで提供されたものとして扱います。
 
-依存ライブラリにはそれぞれのライセンスがあり、[deny.toml](deny.toml) で検査します。画面に使う内蔵の欧文・絵文字フォント（egui）は OFL-1.1 と Ubuntu Font Licence です。ビルド済みの実行ファイルを配る場合は、これらの表記が必要です（このリポジトリは実行ファイルをまだ配っていません）。貢献の方法は [CONTRIBUTING.md](CONTRIBUTING.md) を読んでください。
+配布物の `THIRD-PARTY-LICENSES` に依存ライブラリの表記と内蔵フォントのライセンス本文（OFL・Ubuntu Font Licence など）が入ります。[ライセンスの許可一覧](deny.toml)・[貢献の方法](CONTRIBUTING.md)

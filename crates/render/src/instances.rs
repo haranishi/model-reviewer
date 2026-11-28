@@ -168,7 +168,9 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
             None => &mut plain[draw.prim.0 as usize],
         };
         let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL };
-        raw[*slot as usize] = instance(model.world(id), draw.base_color, index as u32, flags);
+        let mut raw_instance = instance(model.world(id), draw.base_color, index as u32, flags);
+        raw_instance.color[3] = instance_alpha(model, draw);
+        raw[*slot as usize] = raw_instance;
         nodes[*slot as usize] = index as u32;
         slots.push(*slot);
         if let Some(ranges) = plain_order.get_mut(draw.prim.0 as usize) {
@@ -243,17 +245,28 @@ pub(crate) fn patch(
         let world = model.world(id);
         for (i, &slot) in list.slots[at].iter().enumerate() {
             let old = list.raw[slot as usize];
-            let color = if matched {
-                draws[i].base_color
+            let (color, alpha) = if matched {
+                (draws[i].base_color, instance_alpha(model, &draws[i]))
             } else {
-                old.color
+                (old.color, old.color[3])
             };
-            list.raw[slot as usize] = instance(world, color, node, old.ids[1]);
+            let mut next = instance(world, color, node, old.ids[1]);
+            next.color[3] = alpha;
+            list.raw[slot as usize] = next;
             out.slots.push(slot);
         }
     }
     out.slots.sort_unstable();
     out
+}
+
+/// 切り抜き（MASK）の材質の描画だけ、基本色の透明度を判定に渡す。画面へ書く透明度は表示方法で
+/// 決めるので、ほかの描画は 1 のままにする。
+fn instance_alpha(model: &impl SceneRead, draw: &Draw) -> f32 {
+    match draw.tex.and_then(|tex| model.tex_use(tex)) {
+        Some(usage) if usage.cutoff.is_some() => draw.base_color[3],
+        _ => 1.0,
+    }
 }
 
 /// 1件のインスタンス。確定した変形の部分更新でも、作り直しと同じ値になるようにここだけで作る。
@@ -354,6 +367,39 @@ mod tests {
             stats: ModelStats::default(),
             warnings: Vec::new(),
         })
+    }
+
+    #[test]
+    fn only_masked_draws_keep_the_base_alpha() {
+        use model_reviewer_core::texture::{ImageId, Sampling, TexId, TexUse, UvMap};
+
+        let mut model = (*scattered()).clone();
+        model.textures.uses = vec![TexUse {
+            image: Some(ImageId(0)),
+            sampling: Sampling::default(),
+            map: UvMap::Box { size: 1.0 },
+            cutoff: Some(0.5),
+            baked_box: None,
+        }];
+        model.draws[0].tex = Some(TexId(0));
+        let mut doc = Document::new(Arc::new(model));
+        let mut list = build(&doc, &|_| true);
+        let alphas = |list: &InstanceList, node: u32| -> Vec<f32> {
+            let slots = list.node_slots(&(node..node + 1));
+            slots
+                .iter()
+                .map(|&slot| list.raw[slot as usize].color[3])
+                .collect()
+        };
+        assert_eq!(alphas(&list, 0), [0.75]);
+        assert_eq!(alphas(&list, 1), [1.0, 1.0]);
+        let count = doc.subtree_colors(NodeKey(0)).unwrap().len();
+        let range = doc
+            .set_subtree_colors(NodeKey(0), &vec![[0.2, 0.4, 0.6, 0.25]; count])
+            .unwrap();
+        patch(&mut list, &doc, &range);
+        assert_eq!(alphas(&list, 0), [0.25]);
+        assert_eq!(list, build(&doc, &|_| true));
     }
 
     #[test]

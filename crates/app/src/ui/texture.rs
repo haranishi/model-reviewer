@@ -71,6 +71,17 @@ fn size_field(ui: &mut egui::Ui, input: &TextureView, out: &mut Vec<Command>) {
         })
         .inner;
     reg(ids::TEXTURE_SIZE, &field);
+    if field.gained_focus() {
+        // ほかの数値の欄と同じく、入ったら全部を選ぶ。打った値が前の値を置き換える。
+        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::default(),
+                egui::text::CCursor::end_of_str(&text),
+            )));
+        state.store(ui.ctx(), id);
+    }
     if field.lost_focus() {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             crate::app::mark_text_escape(ui.ctx());
@@ -79,7 +90,8 @@ fn size_field(ui: &mut egui::Ui, input: &TextureView, out: &mut Vec<Command>) {
             out.insert(0, Command::SetTextureSize(size as f32));
         }
         ui.data_mut(|d| d.remove::<String>(id));
-    } else if field.has_focus() {
+    } else if ui.memory(|m| m.has_focus(field.id)) {
+        // `Response::has_focus` は前面でないウィンドウで常に偽になり、打った文字が消える。
         ui.data_mut(|d| d.insert_temp(id, text));
     }
 }

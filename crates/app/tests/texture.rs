@@ -650,6 +650,16 @@ fn repasting_removed_mask_keeps_original_uv() {
 
 #[test]
 fn size_field_changes_box_size() {
+    size_field_accepts_typing(true);
+}
+
+// 画面を出さない自動操作の窓は前面にならず、egui は欄を「選ばれていない」と扱う。
+#[test]
+fn size_field_accepts_typing_in_a_background_window() {
+    size_field_accepts_typing(false);
+}
+
+fn size_field_accepts_typing(focused: bool) {
     use egui_kittest::{Harness, kittest::Queryable};
     use model_reviewer_core::units::UnitLabel;
 
@@ -672,9 +682,10 @@ fn size_field_changes_box_size() {
             },
             s,
         );
+    h.input_mut().focused = focused;
     h.get_by_label("1枚の大きさ").click();
     h.step();
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    // ほかの数値の欄と同じく、押して打つと前の値を置き換える。
     h.event(egui::Event::Text("25".into()));
     h.step();
     assert_eq!(selected_tex(h.state()), original);
@@ -832,12 +843,11 @@ fn pending_paste_blocks_writes() {
     export(&mut s, &input);
     assert_eq!(std::fs::read(&input).unwrap(), raw);
     assert!(s.status_text.contains("貼り付け"));
-    std::fs::rename(&input, &moved).unwrap();
-    export(&mut s, &moved);
-    assert_eq!(std::fs::read(&moved).unwrap(), raw);
-    // 文書側で中止しても、受け付けた原本の識別は残る。
+    // 文書側で中止しても、受け付けた原本の識別は残る。改名は読み終えた後にする
+    // （読み始める前に改名すると、ファイルが読めないまま貼り付けが失敗する）。
     s.apply(Command::DuplicateSelected);
     CountingImages::default().finish(&mut s);
+    std::fs::rename(&input, &moved).unwrap();
     export(&mut s, &moved);
     assert!(s.export_error().unwrap().contains("別の名前"));
     assert_eq!(std::fs::read(moved).unwrap(), raw);

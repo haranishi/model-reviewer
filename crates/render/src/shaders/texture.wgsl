@@ -1,7 +1,7 @@
 struct TextureParams {
     u: vec4<f32>,
     v: vec4<f32>,
-    // x: MASK の閾値（なしは -1）、y: 箱形の辺、z: 貼り方、w: 未使用。
+    // x: MASK の閾値（なしは -1）、y: 箱形の画像1枚の幅、z: 貼り方、w: 箱形の画像1枚の高さ。
     params: vec4<f32>,
 };
 @group(1) @binding(0) var base_image: texture_2d<f32>;
@@ -28,9 +28,11 @@ fn vs_uv(v: VertexIn, @location(11) uv: vec2<f32>) -> TexturedVertexOut {
     return textured_vertex(v, vec3<f32>(dot(material.u.xyz, p), dot(material.v.xyz, p), 0.0));
 }
 
+// 箱形の描画は、法線行列の各行の w に形状のローカルの外形の中心を持つ。
 @vertex
 fn vs_box(v: VertexIn) -> TexturedVertexOut {
-    return textured_vertex(v, v.position);
+    let center = vec3<f32>(v.normal0.w, v.normal1.w, v.normal2.w);
+    return textured_vertex(v, v.position - center);
 }
 
 fn textured_face(in: VertexOut, front: bool, uv: vec2<f32>) -> vec4<f32> {
@@ -65,5 +67,5 @@ fn scene_box(in: VertexOut, @builtin(front_facing) front: bool,
     } else {
         uv = vec2<f32>(select(p.x, -p.x, n.z < 0.0), -p.y);
     }
-    return textured_face(in, front, uv / material.params.y);
+    return textured_face(in, front, vec2<f32>(0.5) + uv / material.params.yw);
 }

@@ -296,6 +296,8 @@ fn mask_cuts_out_pixels() {
 
     mask.image = None;
     scene.show(quad(Some(mask), [1.0, 1.0, 1.0, 0.25]));
+    assert_color(sample(&scene.draw(&f), &f, Vec3::ZERO), clear);
+    scene.show(quad(Some(mask), [1.0, 1.0, 1.0, 0.5]));
     assert_color(sample(&scene.draw(&f), &f, Vec3::ZERO), [255; 4]);
 }
 
@@ -380,16 +382,32 @@ fn hidden_textures_match_plain_render() {
     }
 }
 
-fn check_box(world: Affine3A) {
+fn check_box(world: Affine3A, center: Vec3, wide: bool) {
     let mut scene = Scene::new();
     let size = 0.6;
+    let mut prim = cube(false);
+    for vertex in &mut prim.vertices {
+        vertex.position = (Vec3::from(vertex.position) + center).to_array();
+    }
+    prim.local_aabb.min += center;
+    prim.local_aabb.max += center;
+    let world = world * Affine3A::from_translation(-center);
     scene.show(mapped(
-        cube(false),
+        prim,
         world,
         WHITE,
-        Some(usage(UvMap::Box { size })),
+        Some(usage(UvMap::Box {
+            size,
+            aspect: if wide { 2.0 } else { 1.0 },
+        })),
     ));
-    scene.upload(pattern());
+    let mut image = pattern();
+    if wide {
+        image.size = [4, 2];
+        image.levels[0] = COLORS.into_iter().flat_map(|c| [c, c]).flatten().collect();
+        image.levels.insert(1, COLORS[..2].concat());
+    }
+    scene.upload(image);
     for n in [
         Vec3::X,
         Vec3::NEG_X,
@@ -400,14 +418,16 @@ fn check_box(world: Affine3A) {
     ] {
         let u = if n.x != 0.0 { Vec3::Z } else { Vec3::X };
         let v = n.cross(u);
-        let eye = world.transform_point3(n * 3.0 + u * 0.25 + v * 0.2);
+        let eye = world.transform_point3(center + n * 3.0 + u * 0.25 + v * 0.2);
         for perspective in [false, true] {
             let f = frame(eye, perspective);
             let image = scene.draw(&f);
-            for a in [-0.36, -0.15, 0.16, 0.35] {
-                for b in [-0.36, -0.15, 0.16, 0.35] {
-                    let pos = n * 0.5 + u * a + v * b;
-                    let [x, y] = box_uv(pos, n, size).map(|t| (t.rem_euclid(1.0) * 2.0) as usize);
+            for a in [-0.36, -0.11, 0.18, 0.35] {
+                for b in [-0.36, -0.11, 0.18, 0.35] {
+                    let pos = center + n * 0.5 + u * a + v * b;
+                    let [x, y] =
+                        box_uv(pos, n, center, [size, if wide { size / 2.0 } else { size }])
+                            .map(|t| (t.rem_euclid(1.0) * 2.0) as usize);
                     assert_color(
                         sample(&image, &f, world.transform_point3(pos)),
                         COLORS[y * 2 + x],
@@ -421,13 +441,23 @@ fn check_box(world: Affine3A) {
 #[test]
 #[ignore = "GPUが必要"]
 fn box_projection_matches_box_uv_on_six_faces() {
-    check_box(Affine3A::IDENTITY);
+    check_box(Affine3A::IDENTITY, Vec3::ZERO, false);
 }
 
 #[test]
 #[ignore = "GPUが必要"]
 fn box_projection_on_mirrored_part() {
-    check_box(Affine3A::from_scale(Vec3::new(-1.0, 1.0, 1.0)));
+    check_box(
+        Affine3A::from_scale(Vec3::new(-1.0, 1.0, 1.0)),
+        Vec3::ZERO,
+        false,
+    );
+}
+
+#[test]
+#[ignore = "GPUが必要"]
+fn offset_box_centers_wide_image() {
+    check_box(Affine3A::IDENTITY, Vec3::splat(0.5), true);
 }
 
 #[test]

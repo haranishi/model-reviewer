@@ -15,7 +15,7 @@ use model_reviewer_core::doc::Document;
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{LoadWarning, NodeId, SceneRead};
 use model_reviewer_gltf::export::{
-    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base,
+    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base, originals,
 };
 
 use crate::command::{Command, DialogButton, DialogRequest};
@@ -49,6 +49,7 @@ pub fn export_scene(doc: &Document) -> ExportScene {
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
         textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
+        originals: originals(doc.base()),
     }
 }
 
@@ -161,6 +162,11 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
     }
     if session.is_loading_replacement() {
         session.block_edit_if_locked();
+        return;
+    }
+    if session.paste_job.is_some() {
+        // 復号の途中は原本の識別がまだ分からない。貼り付けが確定か中止になるまで断る。
+        session.status_text = super::texture::PENDING_EXPORT.to_owned();
         return;
     }
     if nothing_to_export(session) {

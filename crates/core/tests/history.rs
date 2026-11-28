@@ -1024,7 +1024,7 @@ fn next_removed_roots_names_what_undo_or_redo_would_take_out() {
 fn box_use(image: Option<ImageId>, size: f32) -> TexUse {
     TexUse {
         image,
-        map: UvMap::Box { size },
+        map: UvMap::Box { size, aspect: 1.0 },
         sampling: Sampling::default(),
         cutoff: Some(0.375),
         baked_box: None,

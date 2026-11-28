@@ -102,6 +102,199 @@ fn remove_export_undo_export_restores_original() {
     assert_eq!(material_of(&new, 0)["alphaCutoff"], 0.375);
 }
 
+fn corner_uvs(bytes: &[u8], set: u32) -> Vec<[f32; 2]> {
+    let file = gltf::Gltf::from_slice(bytes).unwrap();
+    let mesh = file.nodes().next().unwrap().mesh().unwrap();
+    let prim = mesh.primitives().next().unwrap();
+    let reader = prim.reader(|_| file.blob.as_deref());
+    let uvs: Vec<_> = reader.read_tex_coords(set).unwrap().into_f32().collect();
+    reader
+        .read_indices()
+        .unwrap()
+        .into_u32()
+        .map(|i| uvs[i as usize])
+        .collect()
+}
+
+#[test]
+fn box_preserves_other_uv_sets() {
+    let base = edit_glb(
+        &textured_quad_glb(&TexturedOptions {
+            tex_coord: 1,
+            uv_format: model_reviewer_testdata::UvFormat::U16,
+            ..Default::default()
+        }),
+        |root| {
+            root["materials"][0]["normalTexture"] = json(r#"{"index":0,"texCoord":1}"#);
+            root["materials"][0]["pbrMetallicRoughness"]
+                .as_object_mut()
+                .unwrap()
+                .remove("baseColorTexture");
+        },
+    );
+    // 折れた板の共有頂点は焼き込みで分かれる。両方が同じ元の UV を受け取る。
+    let mut folded = Glb::from_slice(&base).unwrap();
+    let value = root(&base);
+    let a = primitive_of(&value, 0)["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize;
+    let view = value["accessors"][a]["bufferView"].as_u64().unwrap() as usize;
+    let offset = value["bufferViews"][view]["byteOffset"]
+        .as_u64()
+        .unwrap_or(0) as usize
+        + 3 * 12
+        + 8;
+    folded.bin.as_mut().unwrap().to_mut()[offset..offset + 4]
+        .copy_from_slice(&4.0f32.to_le_bytes());
+    let base = folded.to_vec().unwrap();
+    let mut scene = scene_of(&base);
+    let image = add_image(&mut scene, jpeg_8x8());
+    set_texture(&mut scene, 0, box_texture(image, 2.0));
+    let (built, written) = export(&base, &scene);
+    let v = root(&written);
+    let info = &material_of(&v, 0)["pbrMetallicRoughness"]["baseColorTexture"];
+    assert_eq!(info["texCoord"], 2);
+    for set in 0..2 {
+        assert_eq!(corner_uvs(&written, set), corner_uvs(&base, set));
+    }
+    assert_eq!(
+        material_of(&v, 0)["normalTexture"],
+        root(&base)["materials"][0]["normalTexture"]
+    );
+    let mut damaged = built.clone();
+    let uv = primitive_of(&v, 0)["attributes"]["TEXCOORD_1"]
+        .as_u64()
+        .unwrap() as usize;
+    let view = v["accessors"][uv]["bufferView"].as_u64().unwrap() as usize;
+    let at = v["bufferViews"][view]["byteOffset"].as_u64().unwrap() as usize
+        - Glb::from_slice(&base).unwrap().bin.unwrap().len();
+    damaged.appended_bin[at..at + 4].copy_from_slice(&0.25f32.to_le_bytes());
+    rejects(&base, &scene, &damaged);
+    assert_eq!(export(&written, &scene).1, written);
+}
+
+fn undo_box_paste(base: &[u8], remove_first: bool) -> Vec<u8> {
+    let mut doc = Document::new(Arc::new(load_glb(base).unwrap()));
+    let key = NodeKey(0);
+    let mut history = History::default();
+    let mut review = ReviewState::new(&doc);
+    let image = doc
+        .try_add_image(jpeg_8x8().into(), model_reviewer_core::texture::Mime::Jpeg)
+        .unwrap();
+    let pasted = doc.add_tex_use(box_texture(image, 0.75)).unwrap();
+    for tex in [None, Some(pasted)]
+        .into_iter()
+        .skip(usize::from(!remove_first))
+    {
+        let before = doc.subtree_looks(key).unwrap();
+        let mut after = before.clone();
+        after[0].tex = tex;
+        history
+            .execute(
+                Step::new(
+                    "画像の変更",
+                    vec![Edit::SetLooks { key, before, after }],
+                    Some(key),
+                ),
+                &mut doc,
+                &mut review,
+            )
+            .unwrap();
+    }
+    let (built, written) = export(base, &snapshot(&doc));
+    doc.set_file_indices(&built.assigned);
+    history.undo(&mut doc, &mut review).unwrap();
+    if remove_first {
+        history.undo(&mut doc, &mut review).unwrap();
+    }
+    let (restored, bytes) = export(&written, &snapshot(&doc));
+    assert!(restored.appended_bin.is_empty());
+    bytes
+}
+
+#[test]
+fn undo_restores_uv0_geometry() {
+    let base = textured_quad_glb(&Default::default());
+    let restored = undo_box_paste(&base, true);
+    assert_eq!(corner_uvs(&restored, 0), corner_uvs(&base, 0));
+    assert_eq!(
+        primitive_of(&root(&restored), 0)["attributes"],
+        primitive_of(&root(&base), 0)["attributes"]
+    );
+    assert_eq!(
+        material_of(&root(&restored), 0),
+        material_of(&root(&base), 0)
+    );
+}
+
+#[test]
+fn undo_restores_skipped_reference() {
+    let base = edit_glb(&textured_quad_glb(&Default::default()), |v| {
+        v["images"][0] = json(r#"{"uri":"external.png"}"#);
+        v["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extras"] =
+            json(r#"{"layer":7}"#);
+    });
+    let restored = root(&undo_box_paste(&base, false));
+    assert_eq!(material_of(&restored, 0), material_of(&root(&base), 0));
+    assert_eq!(source_image(&restored, 0), 0);
+}
+
+#[test]
+fn undo_then_recolor_keeps_original_geometry() {
+    let base = textured_quad_glb(&Default::default());
+    let mut doc = Document::new(Arc::new(load_glb(&base).unwrap()));
+    let key = NodeKey(0);
+    let mut history = History::default();
+    let mut review = ReviewState::new(&doc);
+    let image = doc
+        .try_add_image(jpeg_8x8().into(), model_reviewer_core::texture::Mime::Jpeg)
+        .unwrap();
+    let pasted = doc.add_tex_use(box_texture(image, 0.75)).unwrap();
+    let before = doc.subtree_looks(key).unwrap();
+    let mut after = before.clone();
+    after[0].tex = Some(pasted);
+    history
+        .execute(
+            Step::new(
+                "貼る",
+                vec![Edit::SetLooks { key, before, after }],
+                Some(key),
+            ),
+            &mut doc,
+            &mut review,
+        )
+        .unwrap();
+    let (built, written) = export(&base, &snapshot(&doc));
+    doc.set_file_indices(&built.assigned);
+    history.undo(&mut doc, &mut review).unwrap();
+    let before = doc.subtree_looks(key).unwrap();
+    let mut after = before.clone();
+    after[0].base_color[0] = 0.5;
+    history
+        .execute(
+            Step::new("色", vec![Edit::SetLooks { key, before, after }], Some(key)),
+            &mut doc,
+            &mut review,
+        )
+        .unwrap();
+    let (restored, bytes) = export(&written, &snapshot(&doc));
+    assert!(restored.appended_bin.is_empty());
+    let old = root(&base);
+    let new = root(&bytes);
+    assert_eq!(
+        primitive_of(&new, 0)["attributes"],
+        primitive_of(&old, 0)["attributes"]
+    );
+    assert_eq!(corner_uvs(&bytes, 0), corner_uvs(&base, 0));
+    let pbr = "pbrMetallicRoughness";
+    assert_eq!(
+        material_of(&new, 0)[pbr]["baseColorTexture"],
+        material_of(&old, 0)[pbr]["baseColorTexture"]
+    );
+    assert_eq!(material_of(&new, 0)[pbr]["baseColorFactor"][0], 0.5);
+    assert!(material_of(&new, 0).get("extras").is_none());
+}
+
 fn uv_quad() -> Vec<u8> {
     textured_quad_glb(&TexturedOptions {
         tex_coord: 1,
@@ -137,6 +330,7 @@ fn snapshot(doc: &Document) -> ExportScene {
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
         textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
+        originals: model_reviewer_gltf::export::originals(doc.base()),
     }
 }
 
@@ -147,7 +341,7 @@ fn scene_of(base: &[u8]) -> ExportScene {
 fn box_texture(image: ImageId, size: f32) -> TexUse {
     TexUse {
         image: Some(image),
-        map: UvMap::Box { size },
+        map: UvMap::Box { size, aspect: 1.0 },
         sampling: Sampling::default(),
         cutoff: None,
         baked_box: None,

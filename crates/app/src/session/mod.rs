@@ -190,7 +190,9 @@ pub struct Session {
     shown_generation: u64,
     /// モデルまたはレビューが切り替わるたびに進める世代。編集途中の一時メモリの区別に使う。
     review_generation: u64,
+    /// 候補の読み込みは、転送の成功時に表示中の受信口と入れ替える。
     loader: Option<LoadHandle>,
+    shown_loader: Option<LoadHandle>,
     load_meta: Option<LoadMeta>,
     incoming: Option<Incoming>,
     staged_pick: Option<StagedPick>,
@@ -298,6 +300,7 @@ impl Default for Session {
             shown_generation: 0,
             review_generation: 0,
             loader: None,
+            shown_loader: None,
             load_meta: None,
             incoming: None,
             staged_pick: None,
@@ -627,11 +630,12 @@ impl Session {
     }
 
     pub fn poll_loader(&mut self) -> bool {
-        let events = self
-            .loader
-            .as_ref()
-            .map(|handle| handle.drain())
-            .unwrap_or_default();
+        let events: Vec<_> = self
+            .shown_loader
+            .iter()
+            .chain(&self.loader)
+            .flat_map(LoadHandle::drain)
+            .collect();
         let changed = !events.is_empty();
         for event in events {
             self.apply_load_event(event);
@@ -970,6 +974,8 @@ impl Session {
             Some("書き出しが終わってからレビューを保存してください")
         } else if self.is_loading_replacement() {
             Some("読み込みが終わってからレビューを保存してください")
+        } else if self.paste_job.is_some() {
+            Some(texture::PENDING_REVIEW)
         } else {
             None
         }
@@ -1110,7 +1116,9 @@ impl Session {
             ) {
                 self.load = LoadPhase::Idle;
             }
-            self.rebuild_shown_pick();
+            if self.shown_loader.is_none() {
+                self.rebuild_shown_pick();
+            }
         }
     }
 
@@ -1156,10 +1164,10 @@ impl Session {
                 generation,
                 message,
             } => {
-                if generation != self.generation {
+                if self.shown_generation == generation && self.rebuild_shown_pick() {
                     return;
                 }
-                if self.shown_generation == generation && self.rebuild_shown_pick() {
+                if generation != self.generation {
                     return;
                 }
                 if persist::try_next_candidate_after_error(self) {
@@ -1178,7 +1186,7 @@ impl Session {
                 shrunk,
                 skipped,
             } => {
-                if generation == self.generation && generation == self.shown_generation {
+                if generation == self.shown_generation {
                     self.textures.total = total;
                     self.textures.planned_shrinks = shrunk;
                     for (image, reason) in skipped {
@@ -1191,17 +1199,17 @@ impl Session {
                 image,
                 error,
             } => {
-                if generation == self.generation && generation == self.shown_generation {
+                if generation == self.shown_generation {
                     self.textures.fail(image, error);
                     self.finish_texture_metrics();
                 }
             }
             LoadEvent::TexturesDone { generation } => {
-                if generation == self.generation {
+                if generation == self.shown_generation {
+                    self.shown_loader = None;
+                    self.finish_texture_metrics();
+                } else if generation == self.generation {
                     self.loader = None;
-                    if generation == self.shown_generation {
-                        self.finish_texture_metrics();
-                    }
                 }
             }
         }
@@ -1284,9 +1292,6 @@ impl Session {
     }
 
     fn accept_pick(&mut self, generation: u64, index: PickIndex, elapsed: Duration) {
-        if generation != self.generation {
-            return;
-        }
         if self.shown_generation == generation && self.model.is_some() {
             let mut index = index;
             // 索引は読み込んだ形状だけで作られる。届く前に足した図形の分を足す。
@@ -1347,7 +1352,7 @@ impl Session {
     pub fn close_for_gpu_error(&mut self, message: String) {
         log::error!("gpu error, stopping 3D: {message}");
         self.cancel_pending_load();
-        if self.loader.take().is_some() {
+        if self.shown_loader.take().is_some() {
             self.rebuild_shown_pick();
         }
         self.reset_textures();
@@ -1424,6 +1429,7 @@ impl Session {
         }
         self.pick_index = None;
         self.shown_generation = incoming.generation;
+        self.shown_loader = self.loader.take();
         self.doc = Some(doc);
         self.model = Some(model);
         self.exported_no_box.clear();

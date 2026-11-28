@@ -43,6 +43,7 @@ fn scene_of(model: &Model) -> ExportScene {
             &model.textures.images,
             &model.textures.uses,
         ),
+        originals: Default::default(),
     }
 }
 

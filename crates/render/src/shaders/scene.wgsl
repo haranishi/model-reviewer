@@ -35,6 +35,10 @@ fn scene_vertex(v: VertexIn) -> VertexOut {
     let wp = world * vec4<f32>(v.position, 1.0);
     var out: VertexOut;
     out.clip = frame.view_proj * wp;
+    if ((v.ids.y & FLAG_CUT_OUT) != 0u) {
+        // 3つの角を同じ画面の外の点へ寄せ、三角形を描かない。
+        out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    }
     out.world_pos = wp.xyz;
     out.normal = normal_mat * v.normal;
     out.color = v.color;
@@ -50,6 +54,8 @@ fn vs_main(v: VertexIn) -> VertexOut {
 const FLAG_DERIVE_NORMAL: u32 = 1u;
 // ワールド行列の行列式が負の部品。表と裏の判定が逆になるので反転する。
 const FLAG_MIRRORED: u32 = 2u;
+// MASK の材質で、基本色の透明度が閾値より小さい描画。画像を掛けても閾値に届かないので描かない。
+const FLAG_CUT_OUT: u32 = 4u;
 // 切り口の色。sRGB の #D9822B をリニアにした値。
 const CUT_COLOR: vec3<f32> = vec3<f32>(0.69387, 0.22323, 0.02416);
 const SKY: vec3<f32> = vec3<f32>(0.42, 0.45, 0.50);

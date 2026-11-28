@@ -24,11 +24,12 @@ mod synth;
 mod textures;
 mod verify;
 
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
 use glam::Affine3A;
-use model_reviewer_core::scene::{Draw, Primitive};
+use model_reviewer_core::scene::{Draw, Model, NodeId, Primitive, SceneRead};
 
 pub use textures::{ExportImage, ExportTextures};
 
@@ -42,6 +43,30 @@ pub struct ExportScene {
     pub added: Vec<Arc<Primitive>>,
     pub base_primitive_count: u32,
     pub textures: ExportTextures,
+    /// 文書を開いた時点の部品（ファイル内のノード番号）。箱形で焼いて書き出した描画が取り消しで
+    /// 開いた時点の見た目に戻ったとき、元の形状の参照（UV の組を含む）へ戻すのに使う。
+    pub originals: HashMap<u32, OriginalNode>,
+}
+
+/// 開いた時点のノードのメッシュと描画。描画の `tex` は `ExportScene::textures` の番号。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginalNode {
+    pub mesh: u32,
+    pub draws: Vec<Draw>,
+}
+
+/// 開いたモデルから `ExportScene::originals` を作る。メッシュの番号が無いモデル（STL など）は空。
+pub fn originals(model: &Model) -> HashMap<u32, OriginalNode> {
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(at, node)| {
+            let mesh = *model.textures.source_meshes.get(&node.gltf_index)?;
+            let draws = model.draws(NodeId(at as u32)).to_vec();
+            Some((node.gltf_index, OriginalNode { mesh, draws }))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]

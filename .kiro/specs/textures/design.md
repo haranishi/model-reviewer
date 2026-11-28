@@ -33,19 +33,20 @@ pub struct Sampling { pub wrap: [Wrap; 2], pub mag_linear: bool, pub min_linear:
 pub enum UvMap {
     Vertex { transform: [f32; 6],        // 2×3 の行列（m00 m01 tx m10 m11 ty）。無変換は単位行列
              tex_coord: u32, info_from: Option<u32> },  // UV の番号と、textureInfo を読んだ材質の番号（書き出しが写す）
-    Box { size: f32 },                   // 形状のローカルの長さで、画像1枚の辺
+    Box { size: f32, aspect: f32 },      // 形状のローカルの長さで画像の長い辺と、画像の幅 / 高さ
 }
 pub struct TexUse { pub image: Option<ImageId>, pub sampling: Sampling, pub map: UvMap,   // image が None は「MASK だけの材質」
                     pub cutoff: Option<f32>,          // 材質が MASK のとき。画像の有無によらず保つ
                     pub baked_box: Option<f32> }      // 箱形を UV に焼いて書いた材質の印（design-export.md）
 pub struct Textures { pub images: Vec<ImageInfo>, pub uses: Vec<TexUse>,
                       pub prim_uvs: Vec<Vec<[f32; 2]>>,    // 形状の番号順。空なら UV なし。表が空なら全部なし
-                      pub no_box_nodes: Vec<u32> }         // スキンかモーフを持つノード（ファイルの番号。昇順）
+                      pub no_box_nodes: Vec<u32>,          // スキンかモーフを持つノード（ファイルの番号。昇順）
+                      pub source_meshes: HashMap<u32, u32> } // ノード → 開いた時点のメッシュ（取り消しの書き出し）
 pub struct MipChain { pub size: [u32; 2], pub levels: Vec<Vec<u8>> }       // RGBA8（sRGB）。levels[0] が size
 pub fn plan_levels(sizes: &[[u32; 2]], max_side: u32, budget: u64) -> Vec<Option<u8>>;  // 何段縮めるか。None は出さない
 pub fn chain_bytes(size: [u32; 2]) -> u64;                                 // 縮小版を含む RGBA8 のバイト数
-pub fn box_uv(p: Vec3, face_normal: Vec3, size: f32) -> [f32; 2];          // 式は design-paste.md
-pub fn bake_box(prim: &Primitive, size: f32) -> Baked;                     // Baked { vertices, uvs, indices }
+pub fn box_uv(p: Vec3, n: Vec3, center: Vec3, sides: [f32; 2]) -> [f32; 2]; // 式は design-paste.md
+pub fn bake_box(prim: &Primitive, sides: [f32; 2]) -> Baked;  // 分けた頂点の元の番号も返す
 ```
 - `SceneRead` に `tex_use(TexId)`・`image(ImageId)`・`prim_uvs(PrimId)` を、既定の実装つき（`None`・空）で足す。`Document` は、土台の表の後ろに、貼った分を足した番号で返す（形状と同じ数え方）。
 - 2つの `TexUse` が「同じ見た目」かは、番号ではなく値で比べる（画像はハッシュ。`info_from` は比べない）。`same_look(a, b)` を `core::texture` に置き、書き出しと照合が使う。

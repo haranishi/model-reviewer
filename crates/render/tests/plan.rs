@@ -113,17 +113,24 @@ fn mixed_batches() -> instances::InstanceList {
         tex_coord: 0,
         info_from: None,
     };
-    m.textures.uses = [UvMap::Box { size: 1.0 }, uv, uv]
-        .into_iter()
-        .enumerate()
-        .map(|(i, map)| TexUse {
-            image: Some(ImageId(i as u32)),
-            sampling: Default::default(),
-            map,
-            cutoff: None,
-            baked_box: None,
-        })
-        .collect();
+    m.textures.uses = [
+        UvMap::Box {
+            size: 1.0,
+            aspect: 1.0,
+        },
+        uv,
+        uv,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, map)| TexUse {
+        image: Some(ImageId(i as u32)),
+        sampling: Default::default(),
+        map,
+        cutoff: None,
+        baked_box: None,
+    })
+    .collect();
     for (draw, id) in m.draws.iter_mut().zip(draws.into_iter().flatten()) {
         draw.tex = id.map(TexId);
     }

@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 
 use model_reviewer_core::scene::SceneRead;
 use model_reviewer_core::texture::{
-    IDENTITY_TRANSFORM, ImageId, Mip, MipChain, Sampling, TexId, UvMap, Wrap,
+    IDENTITY_TRANSFORM, ImageId, Mip, MipChain, Sampling, TexId, UvMap, Wrap, box_sides,
 };
 use wgpu::util::DeviceExt;
 
@@ -78,15 +78,15 @@ fn sampler_desc(s: Sampling) -> wgpu::SamplerDescriptor<'static> {
 }
 
 fn uniform(device: &wgpu::Device, map: UvMap, cutoff: Option<f32>) -> wgpu::Buffer {
-    let (transform, size, kind) = match map {
-        UvMap::Vertex { transform, .. } => (transform, 1.0, 0.0),
-        UvMap::Box { size } => (IDENTITY_TRANSFORM, size, 1.0),
+    let (transform, [width, height], kind) = match map {
+        UvMap::Vertex { transform, .. } => (transform, [1.0; 2], 0.0),
+        UvMap::Box { size, aspect } => (IDENTITY_TRANSFORM, box_sides(size, aspect), 1.0),
     };
     let [a, b, tx, c, d, ty] = transform;
     let rows = [
         [a, b, tx, 0.0],
         [c, d, ty, 0.0],
-        [cutoff.unwrap_or(-1.0), size, kind, 0.0],
+        [cutoff.unwrap_or(-1.0), width, kind, height],
     ];
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("texture parameters"),
@@ -138,7 +138,14 @@ impl Placeholder {
         );
         Self {
             view: white.create_view(&Default::default()),
-            uniform: uniform(device, UvMap::Box { size: 1.0 }, None),
+            uniform: uniform(
+                device,
+                UvMap::Box {
+                    size: 1.0,
+                    aspect: 1.0,
+                },
+                None,
+            ),
         }
     }
 }
@@ -163,6 +170,15 @@ pub(super) struct GpuTextures {
 }
 
 impl GpuTextures {
+    pub fn discard_edits(&mut self, base_images: usize) {
+        self.materials.clear();
+        self.samplers.clear();
+        self.pending
+            .take_if(|upload| upload.id.0 as usize >= base_images);
+        self.images.retain(|id, _| (id.0 as usize) < base_images);
+        self.bytes = self.images.values().map(|(_, bytes)| bytes).sum();
+    }
+
     pub fn count(&self) -> u32 {
         self.images.len() as u32
     }

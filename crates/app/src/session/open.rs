@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::LoadWarning;
-use model_reviewer_core::texture::{ImageId, sniff};
+use model_reviewer_core::texture::{ImageId, chain_bytes, sniff};
 
 use crate::command::{LaunchArgs, is_review_path};
 use crate::gpu_view::ImageSink;
@@ -33,6 +33,36 @@ pub struct TextureProgress {
 }
 
 impl TextureProgress {
+    /// 元のモデルに属する画像と、転送途中ならその進捗だけを残す。
+    pub(super) fn discard_edits(&mut self, base_images: usize) {
+        let original = |id: ImageId| (id.0 as usize) < base_images;
+        self.pasted.take_if(|ready| !original(ready.image));
+        self.resident.retain(|&id, size| {
+            if original(id) {
+                true
+            } else {
+                self.bytes -= chain_bytes(*size);
+                false
+            }
+        });
+        if self.in_flight.take_if(|(id, _)| !original(*id)).is_some() {
+            self.bytes = self.resident.values().copied().map(chain_bytes).sum();
+        }
+        self.failed.retain(|&(id, _)| original(id));
+        self.reasons.clear();
+        for (_, reason) in &self.failed {
+            *self.reasons.entry(reason.clone()).or_default() += 1;
+        }
+        self.planned_shrinks.retain(|&id| original(id));
+        self.shrunk = self
+            .planned_shrinks
+            .iter()
+            .filter(|id| self.resident.contains_key(id))
+            .count();
+        self.done = self.displayed() + self.failed.len();
+        self.total = self.total.min(base_images);
+    }
+
     pub fn displayed(&self) -> usize {
         self.resident.len()
     }
@@ -135,15 +165,14 @@ impl Session {
     /// 計画がまだ無い期間と、スレッドが終わった後の最後の転送も含む。
     pub fn textures_busy(&self) -> bool {
         self.loader.is_some()
+            || self.shown_loader.is_some()
             || self.paste_job.is_some()
             || self.textures.pasted.is_some()
             || self.textures.in_flight.is_some()
     }
 
     pub(crate) fn allow_first_image(&self) {
-        if self.generation == self.shown_generation
-            && let Some(handle) = &self.loader
-        {
+        if let Some(handle) = &self.shown_loader {
             handle.allow_image();
         }
     }
@@ -161,16 +190,13 @@ impl Session {
 
     pub fn texture_progress_label(&self) -> Option<String> {
         let p = &self.textures;
-        ((self.shown_generation == self.generation || p.pasted.is_some() || p.in_flight.is_some())
-            && p.done < p.total)
-            .then(|| format!("テクスチャ {}/{}", p.done, p.total))
+        (p.done < p.total).then(|| format!("テクスチャ {}/{}", p.done, p.total))
     }
 
     pub(crate) fn observe_texture_memory(&mut self, bytes: Option<u64>) {
-        if self.shown_generation == self.generation
-            && self.texture_options.enabled
+        if self.texture_options.enabled
             && self.textures.opened.is_some()
-            && (self.loader.is_some() || self.textures.in_flight.is_some())
+            && (self.shown_loader.is_some() || self.textures.in_flight.is_some())
             && self
                 .model
                 .as_ref()
@@ -198,10 +224,7 @@ impl Session {
                 }
                 self.textures.pasted.take().unwrap()
             } else {
-                if self.shown_generation != self.generation {
-                    return false;
-                }
-                let Some(handle) = &self.loader else {
+                let Some(handle) = &self.shown_loader else {
                     return false;
                 };
                 if self.textures.done >= self.textures.total || budget < 4 {
@@ -334,6 +357,8 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
     super::persist::load_review(session, path);
 }
 
+pub(super) const NOT_REGULAR_FILE: &str = "通常のファイルではないため開けません";
+
 pub fn dropped(session: &mut Session, paths: Vec<PathBuf>) {
     let Some(first) = paths.first().cloned() else {
         return;
@@ -342,6 +367,11 @@ pub fn dropped(session: &mut Session, paths: Vec<PathBuf>) {
         session.notice = "複数のファイルのうち、最初の1つだけを開きます".to_owned();
     } else {
         session.notice.clear();
+    }
+    // 書き手のいない名前付きパイプなどは開くだけで止まる。中身を読む前に通常のファイルか確かめる。
+    if std::fs::metadata(&first).is_ok_and(|meta| !meta.is_file()) {
+        session.status_text = NOT_REGULAR_FILE.to_owned();
+        return;
     }
     let mut header = Vec::with_capacity(8);
     let _ = std::fs::File::open(&first).and_then(|f| f.take(8).read_to_end(&mut header));

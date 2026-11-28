@@ -112,16 +112,16 @@ fn capture_takes_the_next_key() {
     send(
         &mut s,
         vec![
-            Event::Text("T".into()),
-            press(Key::T, SHIFT),
+            Event::Text("B".into()),
+            press(Key::B, SHIFT),
             press(Key::S, NONE),
         ],
     );
     assert_eq!(
         s.keymap.chord(Action::ToolMove),
-        Chord::parse("Shift+T").ok()
+        Chord::parse("Shift+B").ok()
     );
-    assert_eq!(s.key_labels.get(Action::ToolMove), Some("Shift+T"));
+    assert_eq!(s.key_labels.get(Action::ToolMove), Some("Shift+B"));
     assert!(s.keys.capture.is_none());
     assert_eq!(s.tool, Tool::Select);
     assert!(s.history.is_empty());

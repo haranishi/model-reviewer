@@ -3,6 +3,7 @@
 use super::script::{is_plain_relative, load_script};
 use super::state::{numbers_match, values_match};
 use super::{Automation, Op, WidgetEntry, WidgetFrame, view_to_screen};
+use crate as app;
 use crate::command::parse_args;
 use crate::loader::LoadPhase;
 use crate::session::Session;
@@ -12,6 +13,190 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+#[path = "../../tests/support/texture_stream.rs"]
+mod texture_stream;
+use texture_stream::{CountingImages, until};
+
+fn open_texture_case(s: &mut Session, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let dir = scratch(name);
+    let file = dir.join("model.glb");
+    fs::write(&file, bytes).unwrap();
+    s.apply(crate::Command::OpenModel(file));
+    dir
+}
+
+#[test]
+fn dump_state_has_textures() {
+    let mut s = Session::default();
+    let file = model_reviewer_testdata::textured_scene_glb(2, 128, 2);
+    let launch = parse_args(["app"]).unwrap();
+    s.configure_textures(&launch, Some(64));
+    let dir = open_texture_case(&mut s, "dump-textures", &file);
+    CountingImages::default().finish(&mut s);
+    s.apply(crate::Command::SetTexturesShown(false));
+    assert_eq!(s.textures.warning_count(), 1);
+    assert_eq!(
+        s.textures
+            .warnings(launch.texture_budget_mib)
+            .collect::<Vec<_>>(),
+        ["画像 2 枚を縮小して表示しています（上限 512 MiB）"]
+    );
+    assert_eq!(
+        super::state::state_value(&s)["textures"],
+        json!({
+            "total": 2, "displayed": 2, "shrunk": 2, "failed": 0,
+            "bytes": 2 * model_reviewer_core::texture::chain_bytes([64, 64]), "shown": false,
+        })
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn wait_idle_waits_for_textures() {
+    let mut s = Session::default();
+    let file = model_reviewer_testdata::textured_quad_glb(&Default::default());
+    let dir = open_texture_case(&mut s, "idle-textures", &file);
+    until(|| {
+        s.poll_loader();
+        s.textures.total == 1
+    });
+    assert!(s.pick_index.is_some() && !s.is_loading());
+    assert_eq!(super::idle_error(&s, false), Ok(false));
+    let mut sink = CountingImages::default();
+    until(|| {
+        s.poll_images(&mut sink, 4);
+        s.textures.bytes == 4
+    });
+    // 1枚を取った後に来るイベントは TexturesDone。GPU 側にはまだ残っている。
+    until(|| s.poll_loader());
+    assert_eq!(super::idle_error(&s, false), Ok(false));
+    sink.finish(&mut s);
+    assert_eq!(super::idle_error(&s, false), Ok(true));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn wait_idle_ends_without_plan() {
+    use model_reviewer_testdata::{broken_glb, inputs, textured_scene_glb};
+    for (file, flags, fails) in [
+        (inputs::triangle(), vec!["app"], false),
+        (
+            textured_scene_glb(1, 8, 1),
+            vec!["app", "--no-textures"],
+            false,
+        ),
+        (broken_glb(), vec!["app"], true),
+    ] {
+        let mut s = Session::default();
+        s.configure_textures(&parse_args(flags).unwrap(), Some(4096));
+        let dir = open_texture_case(&mut s, "idle-no-plan", &file);
+        assert!(s.textures_busy());
+        let mut sink = CountingImages::default();
+        sink.finish(&mut s);
+        assert_eq!(s.textures.total, 0);
+        assert!(sink.started.is_empty());
+        let result = super::idle_error(&s, false);
+        if fails {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result, Ok(true));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn wait_idle_ends_when_images_are_skipped_or_fail() {
+    use model_reviewer_testdata::{rich_glb, textured_scene_glb};
+    let valid = textured_scene_glb(1, 128, 1);
+    let mut broken_pixels = valid.clone();
+    let end = broken_pixels
+        .windows(4)
+        .rposition(|w| w == b"IEND")
+        .unwrap();
+    broken_pixels[end] = b'X';
+    for (file, budget, reason) in [
+        (valid, "0", "上限"),
+        (rich_glb(), "1", "画像を読めません"),
+        (broken_pixels, "1", "画像を読めません"),
+    ] {
+        let mut s = Session::default();
+        let launch = parse_args(["app", "--texture-budget-mib", budget]).unwrap();
+        s.configure_textures(&launch, Some(4096));
+        let dir = open_texture_case(&mut s, "idle-texture-errors", &file);
+        CountingImages::default().finish(&mut s);
+        assert_eq!(super::idle_error(&s, false), Ok(true));
+        assert_eq!(
+            (s.textures.done, s.textures.displayed(), s.textures.bytes),
+            (1, 0, 0)
+        );
+        assert_eq!(s.textures.failed.len(), 1);
+        assert!(s.textures.failed[0].1.contains(reason));
+        assert_eq!(super::state::state_value(&s)["textures"]["failed"], 1);
+        assert_eq!(s.textures.warning_count(), 1);
+        assert!(
+            s.textures
+                .warnings(launch.texture_budget_mib)
+                .next()
+                .unwrap()
+                .contains(reason)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn textures_arrive_after_geometry_upload_is_done() {
+    let mut s = Session::default();
+    s.enable_gpu_upload();
+    let file = model_reviewer_testdata::textured_quad_glb(&Default::default());
+    let dir = open_texture_case(&mut s, "geometry-before-textures", &file);
+    until(|| {
+        s.poll_loader();
+        s.has_incoming()
+    });
+    let mut sink = CountingImages::default();
+    assert!(!s.poll_images(&mut sink, 65536));
+    s.commit_pending(true);
+    until(|| {
+        s.poll_loader();
+        s.pick_index.is_some()
+    });
+    assert_eq!(s.textures.total, 0);
+    assert_eq!(super::idle_error(&s, false), Ok(false));
+    s.note_presented();
+    s.allow_first_image();
+    let _ = s.take_scene_dirty();
+    until(|| {
+        s.poll_loader();
+        s.textures.total == 1
+    });
+    s.observe_texture_memory(Some(80));
+    assert!(s.poll_images(&mut sink, 0));
+    assert!(sink.started.is_empty());
+    until(|| {
+        assert!(s.poll_images(&mut sink, 4));
+        s.textures.bytes == 4
+    });
+    assert!(s.poll_images(&mut sink, 0));
+    assert_eq!(s.textures.bytes, 4);
+    assert!(!s.take_scene_dirty().any());
+    s.observe_texture_memory(Some(100));
+    s.observe_texture_memory(Some(90));
+    assert!(s.poll_images(&mut sink, 65536));
+    let dirty = s.take_scene_dirty();
+    assert!(dirty.display && !dirty.instances && !dirty.model);
+    sink.finish(&mut s);
+    assert_eq!(super::idle_error(&s, false), Ok(true));
+    assert!(s.metrics.texture_present.unwrap() >= s.metrics.first_present.unwrap());
+    assert_eq!(s.metrics.texture_peak_mem, Some(100));
+    let metrics = crate::metrics::report_value(&s.metrics);
+    assert!(metrics["texture_present_ms"]["value"].is_number());
+    assert_eq!(metrics["texture_peak_mem"]["value"], 100);
+    assert!(!s.poll_images(&mut sink, 65536));
+    fs::remove_dir_all(dir).unwrap();
+}
 
 #[test]
 fn only_plain_relative_paths_are_accepted() {
@@ -36,6 +221,22 @@ fn scratch(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[test]
+fn existing_automation_scripts_parse() {
+    let out = scratch("all-scripts");
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("e2e");
+    let mut count = 0;
+    for entry in fs::read_dir(scripts).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            load_script(&path, &out).unwrap_or_else(|err| panic!("{path:?}: {err}"));
+            count += 1;
+        }
+    }
+    assert!(count > 0);
+    fs::remove_dir_all(out).unwrap();
 }
 
 #[test]
@@ -662,6 +863,10 @@ fn sample_waits_frames_and_lands_in_the_report() {
         .collect();
     assert_eq!(labels, ["first", "later"]);
     assert!(samples[0].get("physical_mem").is_some());
+    for key in ["texture_present_ms", "texture_peak_mem"] {
+        assert!(samples[0].get(key).unwrap().is_null());
+        assert!(report["metrics"][key].get("value").unwrap().is_null());
+    }
     // 範囲外の値は読み込みで断る。
     fs::write(
         &script,

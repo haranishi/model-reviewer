@@ -200,7 +200,11 @@ fn top_controls_and_status_bar_fit_without_overlap_at_960() {
             .iter()
             .filter(|(name, _)| name.starts_with("viewcube."))
             .collect();
-        assert_eq!(bar.len(), 8, "{size:?}: 上端のボタンが8つ（断面を含む）");
+        assert_eq!(
+            bar.len(),
+            9,
+            "{size:?}: 上端のボタンが9つ（画像と断面を含む）"
+        );
         assert!(!cube.is_empty(), "{size:?}: 立方体の面が登録されていない");
         for (name, rect) in bar.iter().chain(cube.iter()) {
             assert!(
@@ -272,6 +276,26 @@ fn top_controls_and_status_bar_fit_without_overlap_at_960() {
             );
         }
     }
+}
+
+#[test]
+fn texture_button_and_progress_fit_at_960() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(egui::vec2(960.0, 600.0));
+    h.state_mut().textures.total = 24;
+    h.state_mut().textures.done = 3;
+    h.step();
+    h.step();
+    let button = widget_rect(&h, ids::VIEW_TEXTURES);
+    let progress = h.get_by_label("テクスチャ 3/24").rect();
+    assert!(widget_rect(&h, ids::VIEWPORT).contains_rect(button));
+    assert!(widget_rect(&h, ids::PANEL_STATUS).contains_rect(progress));
+    for (name, other) in entries(&h) {
+        if name.starts_with("status.") && name != ids::STATUS_TEXTURES {
+            assert!(!other.intersects(progress), "{name}");
+        }
+    }
+    assert!(!button.intersects(progress));
 }
 
 /// 2つの未保存の印と長い状態文が同時に出た状態でも、幅960で状態欄がはみ出さず重ならない。

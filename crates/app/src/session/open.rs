@@ -1,13 +1,191 @@
 //! モデルとレビューを開く。
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use model_reviewer_core::identity::ModelIdentity;
+use model_reviewer_core::scene::LoadWarning;
+use model_reviewer_core::texture::ImageId;
 
-use crate::command::is_review_path;
+use crate::command::{LaunchArgs, is_review_path};
+use crate::gpu_view::ImageSink;
 use crate::loader::{self, LoadOptions};
 
 use super::{Pending, Session};
+
+/// 表示中のモデルの画像。`done` は、送り終えた画像と省いた画像を数える。
+#[derive(Default)]
+pub struct TextureProgress {
+    pub total: usize,
+    pub done: usize,
+    pub shrunk: usize,
+    pub failed: Vec<(ImageId, String)>,
+    pub bytes: u64,
+    resident: HashSet<ImageId>,
+    reasons: BTreeMap<String, usize>,
+    pub(super) planned_shrinks: Vec<ImageId>,
+    in_flight: Option<ImageId>,
+    pub(super) opened: Option<Instant>,
+    last_upload: Option<Duration>,
+}
+
+impl TextureProgress {
+    pub fn displayed(&self) -> usize {
+        self.resident.len()
+    }
+
+    pub fn is_resident(&self, image: ImageId) -> bool {
+        self.resident.contains(&image)
+    }
+
+    pub(super) fn fail(&mut self, image: ImageId, reason: String) {
+        *self.reasons.entry(reason.clone()).or_default() += 1;
+        self.failed.push((image, reason));
+        self.done += 1;
+    }
+
+    pub(crate) fn warning_count(&self) -> usize {
+        usize::from(self.shrunk > 0) + self.reasons.len()
+    }
+
+    pub(crate) fn warnings(&self, budget_mib: u32) -> impl Iterator<Item = String> + '_ {
+        (self.shrunk > 0)
+            .then(|| {
+                format!(
+                    "画像 {} 枚を縮小して表示しています（上限 {budget_mib} MiB）",
+                    self.shrunk
+                )
+            })
+            .into_iter()
+            .chain(self.reasons.iter().map(|(reason, n)| {
+                format!("画像 {n} 枚は読めないため、色だけで表示します（{reason}）")
+            }))
+    }
+}
+
+impl Session {
+    /// ファイルの解析で省いた参照も一覧に数える。表示を無効にしても元の枚数は分かる。
+    pub(crate) fn texture_counts(&self) -> (usize, usize) {
+        let Some(model) = self.model.as_ref() else {
+            return (0, 0);
+        };
+        let skipped: usize = model
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                LoadWarning::ImagesSkipped { count, .. } => Some(*count as usize),
+                _ => None,
+            })
+            .sum();
+        (
+            model.textures.images.len() + skipped,
+            self.textures.failed.len() + skipped,
+        )
+    }
+
+    pub fn configure_textures(&mut self, launch: &LaunchArgs, device_max_side: Option<u32>) {
+        self.texture_options = loader::TextureOptions {
+            enabled: !launch.no_textures && device_max_side.is_some(),
+            max_side: device_max_side.unwrap_or(0).min(loader::MAX_TEXTURE_SIDE),
+            budget_mib: launch.texture_budget_mib,
+        };
+        self.textures_shown = self.texture_options.enabled;
+    }
+
+    /// 計画がまだ無い期間と、スレッドが終わった後の最後の転送も含む。
+    pub fn textures_busy(&self) -> bool {
+        self.loader.is_some() || self.textures.in_flight.is_some()
+    }
+
+    pub(crate) fn allow_first_image(&self) {
+        if self.generation == self.shown_generation
+            && let Some(handle) = &self.loader
+        {
+            handle.allow_image();
+        }
+    }
+
+    pub(super) fn reset_textures(&mut self) {
+        self.textures = TextureProgress::default();
+        self.metrics.texture_present = None;
+        self.metrics.texture_peak_mem = None;
+    }
+
+    pub fn texture_progress_label(&self) -> Option<String> {
+        let p = &self.textures;
+        (self.shown_generation == self.generation && p.done < p.total)
+            .then(|| format!("テクスチャ {}/{}", p.done, p.total))
+    }
+
+    pub(crate) fn observe_texture_memory(&mut self, bytes: Option<u64>) {
+        if self.shown_generation == self.generation
+            && self.texture_options.enabled
+            && self.textures_busy()
+            && self
+                .model
+                .as_ref()
+                .is_some_and(|m| !m.textures.images.is_empty())
+            && let Some(bytes) = bytes
+        {
+            self.metrics.texture_peak_mem =
+                Some(self.metrics.texture_peak_mem.unwrap_or(0).max(bytes));
+        }
+    }
+
+    pub(super) fn finish_texture_metrics(&mut self) {
+        if self.textures.done == self.textures.total {
+            self.metrics.texture_present = self.textures.last_upload;
+        }
+    }
+
+    /// 形状を送った残りの予算で、表示中のモデルへ最大1枚を送る。戻り値は描き直しの予約。
+    pub fn poll_images(&mut self, sink: &mut impl ImageSink, budget: u64) -> bool {
+        if self.textures.in_flight.is_none() {
+            if self.shown_generation != self.generation {
+                return false;
+            }
+            let Some(handle) = &self.loader else {
+                return false;
+            };
+            if self.textures.done >= self.textures.total || budget < 4 {
+                return self.texture_options.enabled
+                    && self
+                        .model
+                        .as_ref()
+                        .is_some_and(|m| !m.textures.images.is_empty());
+            }
+            let Ok(ready) = handle.images.try_recv() else {
+                return true;
+            };
+            handle.allow_image();
+            if ready.generation != self.shown_generation {
+                return true;
+            }
+            if let Err(reason) = sink.begin_image(ready.image, ready.chain) {
+                self.textures.fail(ready.image, reason);
+                self.finish_texture_metrics();
+                return true;
+            }
+            self.textures.in_flight = Some(ready.image);
+        }
+        let progress = sink.continue_images(budget);
+        self.textures.bytes += progress.uploaded_bytes;
+        if let Some(image) = progress.completed {
+            debug_assert_eq!(self.textures.in_flight, Some(image));
+            self.textures.in_flight = None;
+            self.textures.resident.insert(image);
+            self.textures.done += 1;
+            self.textures.shrunk +=
+                usize::from(self.textures.planned_shrinks.binary_search(&image).is_ok());
+            self.textures.last_upload = self.textures.opened.map(|t| t.elapsed());
+            self.finish_texture_metrics();
+            self.color_cache.set(None);
+            self.scene_dirty.display = true;
+        }
+        true
+    }
+}
 
 pub(super) fn open_guarded(session: &mut Session, path: PathBuf, options: LoadOptions) {
     open_guarded_with_identity(session, path, options, None);

@@ -83,6 +83,7 @@ pub enum Command {
     ToggleProjection,
     /// 床の格子と軸を出すか。
     SetGrid(bool),
+    SetTexturesShown(bool),
 
     // ---- 第2段階：道具と編集（session/edit.rs） ----
     /// 道具を選ぶだけ（G・R・S もすぐ掴む動きにはしない）。`SetAnnotateMode` は
@@ -251,6 +252,8 @@ pub struct LaunchArgs {
     pub script: Option<PathBuf>,
     pub out: Option<PathBuf>,
     pub log_metrics: bool,
+    pub no_textures: bool,
+    pub texture_budget_mib: u32,
     /// `--keymap` の設定ファイル。場所を決めるのは実行ファイルの入口だけ（`App::new` は渡された
     /// 場所しか読み書きしない）。
     pub keymap: Option<PathBuf>,
@@ -262,7 +265,7 @@ pub fn is_review_path(path: &Path) -> bool {
 }
 
 pub fn usage() -> &'static str {
-    "使い方: model-reviewer [GLBまたはレビューJSON] [--script 手順.json] [--out 出力フォルダ] [--keymap 設定.json] [--log-metrics]"
+    "使い方: model-reviewer [GLBまたはレビューJSON] [--script 手順.json] [--out 出力フォルダ] [--keymap 設定.json] [--log-metrics] [--no-textures] [--texture-budget-mib 数]"
 }
 
 pub fn parse_args<I, S>(args: I) -> Result<LaunchArgs, String>
@@ -279,6 +282,8 @@ where
         script: None,
         out: None,
         log_metrics: false,
+        no_textures: false,
+        texture_budget_mib: crate::loader::DEFAULT_TEXTURE_BUDGET_MIB,
         keymap: None,
     };
     while let Some(arg) = iter.next() {
@@ -292,6 +297,18 @@ where
             launch.keymap = Some(next_path(&mut iter, "--keymap")?);
         } else if text == "--log-metrics" {
             launch.log_metrics = true;
+        } else if text == "--no-textures" {
+            launch.no_textures = true;
+        } else if text == "--texture-budget-mib" {
+            launch.texture_budget_mib = iter
+                .next()
+                .and_then(|v| v.as_ref().to_str()?.parse().ok())
+                .ok_or_else(|| {
+                    format!(
+                        "--texture-budget-mib の後に 0 以上の整数が必要です\n{}",
+                        usage()
+                    )
+                })?;
         } else if text.starts_with('-') {
             return Err(format!("不明な引数です: {text}\n{}", usage()));
         } else if launch.positional.is_some() {

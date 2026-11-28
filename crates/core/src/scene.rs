@@ -222,7 +222,9 @@ impl LoadWarning {
     pub fn message_ja(&self) -> String {
         match self {
             Self::Textures { count } => {
-                format!("テクスチャ {count} 件は読まず、色は baseColorFactor だけで表示します")
+                format!(
+                    "基本色の画像 {count} 枚は、表示時に基本色（baseColorFactor）と掛け合わせます"
+                )
             }
             Self::OtherTextures { count } => {
                 format!("基本色以外の画像 {count} 件（法線・粗さなど）は表示しません")
@@ -556,8 +558,10 @@ mod tests {
     #[test]
     fn warning_messages_name_the_simplification() {
         let texture = LoadWarning::Textures { count: 2 };
-        assert!(texture.message_ja().contains("baseColorFactor"));
-        assert!(texture.message_ja().contains('2'));
+        assert_eq!(
+            texture.message_ja(),
+            "基本色の画像 2 枚は、表示時に基本色（baseColorFactor）と掛け合わせます"
+        );
         assert_eq!(
             LoadWarning::OtherTextures { count: 3 }.message_ja(),
             "基本色以外の画像 3 件（法線・粗さなど）は表示しません"

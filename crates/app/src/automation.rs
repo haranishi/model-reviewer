@@ -573,7 +573,9 @@ impl Automation {
             }
             Op::WaitIdle => match idle_error(session, gpu_busy) {
                 Ok(true) => self.mark_ok(),
-                Ok(false) => self.note("読み込み・書き出し・転送・当たり判定の準備待ち"),
+                Ok(false) => {
+                    self.note("読み込み・書き出し・形状と画像の転送・当たり判定の準備待ち")
+                }
                 Err(err) => return Err(err),
             },
             Op::DragView {
@@ -828,6 +830,12 @@ impl Automation {
         let value = json!({
             "label": label,
             "physical_mem": metrics::sample_memory(),
+            "texture_present_ms": ms(m.texture_present),
+            "texture_peak_mem": m.texture_peak_mem,
+            "texture_count": stats.map(|s| s.texture_count),
+            "texture_bytes": stats.map(|s| s.texture_bytes),
+            "textured_draws": stats.map(|s| s.textured_draws),
+            "texture_shrunk": session.textures.shrunk,
             "frame_cpu_avg_ms": ms(m.frame_cpu_avg),
             "frame_cpu_max_ms": ms(m.frame_cpu_max),
             "edit_commit_ms": ms(m.edit_commit),
@@ -1112,7 +1120,7 @@ fn idle_error(session: &Session, gpu_busy: bool) -> Result<bool, String> {
     let loading = !matches!(session.load, LoadPhase::Idle);
     let exporting = session.is_exporting();
     let picking = session.model.is_some() && session.pick_index.is_none();
-    Ok(!loading && !exporting && !picking && !gpu_busy)
+    Ok(!loading && !exporting && !picking && !gpu_busy && !session.textures_busy())
 }
 
 fn widget_rect(ctx: &egui::Context, name: &str) -> Option<egui::Rect> {

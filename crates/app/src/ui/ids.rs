@@ -21,6 +21,7 @@ pub const VIEWPORT: &str = "viewport";
 pub const VIEWS_NAME: &str = "views.name";
 pub const VIEWS_SAVE: &str = "views.save";
 pub const STATUS_WARNINGS: &str = "status.warnings";
+pub const STATUS_TEXTURES: &str = "status.textures";
 pub const STATUS_DETAILS: &str = "status.details";
 pub const DIALOG_CONFIRM: &str = "dialog.confirm";
 pub const DIALOG_CANCEL: &str = "dialog.cancel";
@@ -55,6 +56,7 @@ pub const VIEW_DISPLAY_XRAY: &str = "view.display.xray";
 pub const VIEW_PROJECTION_PERSPECTIVE: &str = "view.projection.perspective";
 pub const VIEW_PROJECTION_ORTHOGRAPHIC: &str = "view.projection.orthographic";
 pub const VIEW_GRID: &str = "view.grid";
+pub const VIEW_TEXTURES: &str = "view.textures";
 // 向きの立方体（ui::viewcube）。見えている面だけ登録する。
 pub const VIEWCUBE_FRONT: &str = "viewcube.front";
 pub const VIEWCUBE_BACK: &str = "viewcube.back";

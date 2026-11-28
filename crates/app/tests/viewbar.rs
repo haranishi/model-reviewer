@@ -20,6 +20,7 @@ fn input(lines_supported: bool) -> ViewBarInput {
         display: DisplayMode::Faces,
         projection: Projection::Perspective,
         grid_visible: true,
+        textures_shown: Some(true),
         lines_supported,
         keys: model_reviewer::keymap::KeyLabels::default(),
     }
@@ -93,6 +94,7 @@ fn every_button_is_registered_in_one_row() {
         ids::VIEW_DISPLAY_FACES_LINES,
         ids::VIEW_DISPLAY_LINES,
         ids::VIEW_DISPLAY_XRAY,
+        ids::VIEW_TEXTURES,
         ids::VIEW_PROJECTION_PERSPECTIVE,
         ids::VIEW_PROJECTION_ORTHOGRAPHIC,
         ids::VIEW_GRID,
@@ -106,7 +108,16 @@ fn every_button_is_registered_in_one_row() {
         assert!(rect.height() >= 28.0, "押しやすい高さ: {rect:?}");
         assert!(rect.width() >= 40.0, "押しやすい幅: {rect:?}");
     }
-    for label in ["面", "面と線", "線", "透かし", "透視", "平行", "格子"] {
+    for label in [
+        "面",
+        "面と線",
+        "線",
+        "透かし",
+        "画像",
+        "透視",
+        "平行",
+        "格子",
+    ] {
         harness.get_by_label(label);
     }
 }
@@ -143,6 +154,7 @@ fn pressing_buttons_pushes_commands() {
         display: DisplayMode::XRay,
         projection: Projection::Orthographic,
         grid_visible: false,
+        textures_shown: Some(false),
         lines_supported: true,
         keys: model_reviewer::keymap::KeyLabels::default(),
     };
@@ -236,6 +248,7 @@ fn render_viewbar_for_visual_check() {
                 display: DisplayMode::XRay,
                 projection: Projection::Orthographic,
                 grid_visible: false,
+                textures_shown: Some(false),
                 lines_supported: true,
                 keys: model_reviewer::keymap::KeyLabels::default(),
             },

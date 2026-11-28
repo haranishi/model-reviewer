@@ -1,7 +1,6 @@
-//! 3Dビューの上端のボタン：表示（面・面と線・線・透かし）、投影（透視・平行）、格子、断面。
+//! 3Dビューの上端のボタン。面・線・透かし・画像の表示、投影、格子、断面を切り替える。
 //! 状態が見えるように並べたボタンにする（開くメニューにしない）。線が使えないGPUでは「面と線」
-//! 「線」を無効にし、理由を出す。押すと `SetDisplay`・`SetProjection`・`SetGrid`・
-//! `ToggleSection` を積む。[断面] は断面の状態を `show_with` で渡したときだけ出す。
+//! 「線」を無効にし、理由を出す。[断面] は断面の状態を `show_with` で渡したときだけ出す。
 //! 名前は `ids::VIEW_*`。
 //!
 //! 選ばれているボタンは、色だけでなく琥珀の帯と太字でも示す（`chip`。道具の列も使う）。
@@ -33,6 +32,8 @@ pub struct ViewBarInput {
     pub display: DisplayMode,
     pub projection: Projection,
     pub grid_visible: bool,
+    /// 読み込みを無効にして起動したときは切り替えられない。
+    pub textures_shown: Option<bool>,
     /// `SceneRenderer::supports_lines`。GPUが無いとき（試験）は偽。
     pub lines_supported: bool,
     /// 今のキーの文字（説明の文に使う）。
@@ -92,6 +93,34 @@ pub fn show_with(
                     if response.clicked() && input.display != mode {
                         out.push(Command::SetDisplay(mode));
                     }
+                }
+                let label = "画像";
+                let hint = with_key_suffix(
+                    "画像（テクスチャ）を表示します。「線」「透かし」では出ません",
+                    &input.keys,
+                    Action::DisplayTextures,
+                );
+                let response = chip(
+                    ui,
+                    &Chip {
+                        label,
+                        selected: input.textures_shown == Some(true),
+                        enabled: input.textures_shown.is_some(),
+                        reason: input
+                            .textures_shown
+                            .is_none()
+                            .then_some("画像の読み込みが無効です"),
+                        hint: &hint,
+                        size: text_size(ui, label),
+                        band: BandSide::Bottom,
+                    },
+                    None,
+                );
+                reg(ids::VIEW_TEXTURES, &response);
+                if response.clicked()
+                    && let Some(shown) = input.textures_shown
+                {
+                    out.push(Command::SetTexturesShown(!shown));
                 }
                 ui.add_space(GROUP_GAP);
                 let projections = [

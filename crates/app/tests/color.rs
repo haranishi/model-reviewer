@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use model_reviewer as app;
 use model_reviewer::command::{Axis, Command, ShapeKind, Tool};
 use model_reviewer::loader::LoadPhase;
 use model_reviewer::session::{ColorState, Session, selection_color};
@@ -13,6 +14,9 @@ use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{LoadWarning, Model, NodeId, SceneRead};
 use model_reviewer_gltf::load_glb;
 use model_reviewer_testdata::{rich_glb, sample_glb};
+
+#[path = "support/texture_stream.rs"]
+mod texture_stream;
 
 const ARM: NodeId = NodeId(9);
 const WHEEL: NodeId = NodeId(3);
@@ -259,19 +263,32 @@ fn texture_note_is_shown_for_textured_model() {
     use egui_kittest::{Harness, kittest::Queryable};
 
     let dir = scratch("texture-note");
+    let quad = dir.join("quad.glb");
+    std::fs::write(
+        &quad,
+        model_reviewer_testdata::textured_quad_glb(&Default::default()),
+    )
+    .unwrap();
     let source = dir.join("textured.glb");
     std::fs::write(&source, rich_glb()).unwrap();
     let mut session = Session::default();
-    open(&mut session, &source);
-    session.apply(Command::Select(Some(NodeId(1))));
+    open(&mut session, &quad);
+    texture_stream::CountingImages::default().finish(&mut session);
+    session.apply(Command::Select(Some(NodeId(0))));
     let view = selection_color(&session).unwrap();
     let note = view.note.unwrap();
-    assert!(note.contains("テクスチャ") && note.contains("掛け合わされ"));
+    assert_eq!(note, "色は画像に掛け合わされて見えます");
     let panel = Harness::builder()
         .allow_missing_glyphs()
         .with_accessibility_check(false)
         .build_ui(|ui| model_reviewer::ui::color::show(ui, &view, &mut Vec::new()));
     panel.get_by_label(note);
+    // こちらの埋め込み PNG は壊れている。画面には画像が出ず、書き出しには元の材質が残る。
+    open(&mut session, &source);
+    texture_stream::CountingImages::default().finish(&mut session);
+    session.apply(Command::Select(Some(NodeId(1))));
+    assert_eq!(session.textures.failed.len(), 1);
+    assert_eq!(selection_color(&session).unwrap().note, None);
     session.apply(paint(4));
     session.apply(Command::ExportGlb(dir.join("recolored.glb")));
     finish_export(&mut session);

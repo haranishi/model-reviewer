@@ -60,7 +60,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               print(f"version={version}", file=out)
       - run: rustup toolchain install
-      - run: cargo install --locked --version 0.9.3 cargo-about
+      - run: cargo install --locked --version 0.9.3 --features cli cargo-about
       - name: Generate and check the third-party notices
         run: |
           mkdir -p target/notices

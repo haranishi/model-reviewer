@@ -23,11 +23,12 @@ cargo run --release -p model-reviewer
 cargo run --release -p model-reviewer -- assets/samples/review-sample.glb
 ```
 
-Arguments: `[GLB, STL or review JSON]`, `--script` and `--out` for scripted runs, and `--log-metrics` to print performance values on exit. The sample models (a GLB and a 20 x 30 x 40 mm STL box) were generated for this project ([how to regenerate it](assets/samples/README.md)).
+Pass a GLB, STL or review JSON to open it. Use `--no-textures` to skip image decoding and disable pasting, or `--texture-budget-mib N` to set the total GPU memory budget for textures (default 512 MiB including mipmaps). Scripted runs use `--script` and `--out`. Use `--log-metrics` to print performance values on exit. [Regenerate the sample GLB and the 20 × 30 × 40 mm STL box](assets/samples/README.md).
 
 ## What it does
 
 - **View**: floor grid and axes, an orientation cube, perspective or orthographic projection, and four display modes (shaded, shaded with edges, wireframe, see-through).
+- **View and apply textures** using embedded base-color PNG and JPEG images or your own image file. Apply an image to a part and its children using the model’s loaded UV coordinates or a repeating box projection. Export embeds the image and writes box projections as UV coordinates. [Illustrated guide (Japanese)](docs/guide/12-texture.md)
 - **Move**: select a part, then drag a handle or type values in the transform panel. Move and rotate follow the floor axes; scale follows the part's own axes. Undo and redo.
 - **Add and remove**: add a box, sphere, cylinder or plane and set its dimensions (in mm, for example) in the Dimensions panel; selecting a part also shows its overall width, height and depth; duplicate or delete a part together with its children.
 - **Measure**: click two points to get the distance and the X, Y and Z differences. The pointer snaps to corners and edges (X turns it off). Measurements are not saved.
@@ -47,6 +48,8 @@ Arguments: `[GLB, STL or review JSON]`, `--script` and `--out` for scripted runs
 | Frame all / frame selection / home view | Toolbar buttons | A / F / Home |
 | Front, right, top view | Click a face of the cube | 1 / 3 / 7 |
 | Projection / display mode | Buttons above the view | 5 / Z, Shift+Z |
+| Show or hide textures | Image button (画像) above the view | Shift+T |
+| Apply / remove an image | Select a part, then drop a PNG or JPEG, or use 画像を貼る… (apply) or 画像を外す (remove) in the image panel | Cmd+T to choose an image |
 | Tools | Column on the left | V select, G move, R rotate, S scale, M measure, N note |
 | Undo / redo | Toolbar buttons | Cmd+Z / Shift+Cmd+Z |
 | Duplicate / delete | | Cmd+D / Delete (Backspace) |
@@ -58,7 +61,7 @@ You can change shortcuts in the app. See [guide 09](docs/guide/09-shortcuts.md).
 
 ## Supported GLB, STL and export
 
-The app reads GLB files whose geometry is inside the file (BIN chunk), with uncompressed triangle meshes. Textures, vertex colors and animations are accepted but shown in a simplified way. **Deleting a part only removes it from the scene: its geometry data stays in the exported file** (the export result tells you how many). Details: [docs/glb.md](docs/glb.md) (Japanese). Binary and ASCII STL files open as one part; exporting one writes a GLB that reads in metres (the app never writes STL). Details: [docs/stl.md](docs/stl.md) (Japanese).
+The app reads GLB files with uncompressed triangle meshes in the BIN chunk. Shaded faces show a base-color texture multiplied by the part’s color. Wireframe and see-through modes omit images. **Deleted parts’ geometry stays in the exported file.** Binary and ASCII STL files open as one part and export to GLB in metres. The app protects opened models and pasted image files from export and review saves, including unchanged copies. [GLB and texture support (Japanese)](docs/glb.md) · [STL units and export (Japanese)](docs/stl.md)
 
 ## Review JSON
 
@@ -66,7 +69,8 @@ Reviews store hidden parts, notes, views, and the path and fingerprint of the so
 
 ## Limitations
 
-- You can start with an empty document and change a part’s base color. Vertex, edge and face editing, reparenting, multi-selection, texture and metallic material editing, angle measurement and auto-save are unavailable.
+- You can start with an empty document and change a part’s base color. Vertex, edge and face editing, reparenting, multi-selection, angle measurement and auto-save are unavailable.
+- External images, KTX2, WebP, non-base-color maps, vertex colors and alpha blending are unsupported. UV coordinates and metallic/roughness values cannot be edited. Skinned or morphed parts need a loaded UV mapping to accept an image.
 - Snapping only looks at the part under the pointer. The section view has a single axis-aligned plane; cut surfaces get a flat colour without caps or outlines, and open or inside-out meshes can show that colour elsewhere.
 - For animated parts, playback tools use the animation values instead of your transform. glTF ignores the node transform of skinned parts. The export result counts both.
 - One dark theme. Window layout and unit choice are not remembered.

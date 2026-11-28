@@ -1,0 +1,40 @@
+{
+  "feature_name": "textures",
+  "created_at": "2026-11-28T03:00:00Z",
+  "updated_at": "2026-11-28T03:00:00Z",
+  "language": "ja",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "approval_basis": "依頼者の指示で実装まで進める",
+  "ready_for_implementation": true,
+  "depends_on": "stl-up-axis",
+  "documents": {
+    "requirements": [
+      "requirements.md"
+    ],
+    "ux": "ux.md",
+    "design": [
+      "design.md",
+      "design-display.md",
+      "design-paste.md",
+      "design-export.md",
+      "design-testing.md"
+    ],
+    "tasks": [
+      "tasks.md"
+    ]
+  }
+}

@@ -112,24 +112,32 @@ impl<'a> MeshChecks<'a> {
                 .map_err(|e| fail(e.message_ja()))?;
             let mut original_look = old_draw.and_then(|old| model_look(&self.base.model, old.tex));
             let mut old_color = old_draw.map(|old| old.base_color);
-            // 焼いた形状に箱形でない見た目が戻ったら、開いた時点の形状と描画を元として比べる。
-            if let Some(o) = opened
-                && box_size(look).is_none()
-                && old_draw.is_some()
-            {
+            // 箱形の組の番号を決める元の形状（ファイルのメッシュと形状の番号）。
+            let mut uv_source = origin.filter(|_| prior.is_some()).map(|m| (m, slot));
+            // 前の書き出しで焼いた形状か（開いた時点の形状と材質以外で違う）。
+            let rebaked = opened.filter(|o| {
                 let first = &self.old["meshes"][o.mesh as usize]["primitives"][slot];
-                if current
-                    .is_some_and(|now| without(first, &["material"]) != without(now, &["material"]))
-                {
-                    let opened_draw = &o.draws[draw_index - 1];
-                    prior = Some(first);
-                    original_look = self
-                        .textures
-                        .look(opened_draw.tex)
-                        .map_err(|e| fail(e.message_ja()))?;
-                    old_color = Some(opened_draw.base_color);
-                    self.restored.insert((at, draw_index - 1));
-                }
+                old_draw.is_some()
+                    && current.is_some_and(|now| {
+                        without(first, &["material"]) != without(now, &["material"])
+                    })
+            });
+            if let Some(o) = rebaked {
+                // 焼き直す形状は、開いた時点の形状の UV の組を写す。
+                uv_source = Some((o.mesh as usize, slot));
+            }
+            // 焼いた形状に箱形でない見た目が戻ったら、開いた時点の形状と描画を元として比べる。
+            if let Some(o) = rebaked
+                && box_size(look).is_none()
+            {
+                let opened_draw = &o.draws[draw_index - 1];
+                prior = Some(&self.old["meshes"][o.mesh as usize]["primitives"][slot]);
+                original_look = self
+                    .textures
+                    .look(opened_draw.tex)
+                    .map_err(|e| fail(e.message_ja()))?;
+                old_color = Some(opened_draw.base_color);
+                self.restored.insert((at, draw_index - 1));
             }
             let texture_changed = !same_look(look, original_look);
             let color_changed = old_color
@@ -146,9 +154,9 @@ impl<'a> MeshChecks<'a> {
                 ));
             }
             let boxed = texture_changed && box_size(look).is_some();
+            let sets = self.readable_sets(uv_source)?;
             if boxed || prior.is_none() {
                 let first_accessor = array(self.old, "accessors").len();
-                let sets = prior.map(uv_sets).unwrap_or_default();
                 if !new_geometry(primitive, first_accessor, boxed, &sets)
                     || (boxed && (written.get("skin").is_some() || !*may_bake))
                 {
@@ -176,7 +184,7 @@ impl<'a> MeshChecks<'a> {
             if prior.is_none() {
                 expected["pbrMetallicRoughness"]["metallicFactor"] = 0.0.into();
             }
-            let box_set = box_set(prior.map(uv_sets).unwrap_or_default());
+            let box_set = box_set(sets);
             self.check_material(
                 &mut expected,
                 &self.new["materials"][material],
@@ -190,6 +198,18 @@ impl<'a> MeshChecks<'a> {
             return Err(fail("メッシュを写す描画が文書と違います".into()));
         }
         Ok(())
+    }
+
+    /// ファイルの形状の、読めた UV の組の番号（番号順）。写すのはこの組だけ。
+    fn readable_sets(&self, source: Option<(usize, usize)>) -> Result<Vec<u32>, ExportError> {
+        let Some((mesh, slot)) = source else {
+            return Ok(Vec::new());
+        };
+        let sets = self
+            .base
+            .file_uv_sets(mesh, slot)
+            .ok_or_else(|| fail("元の形状がありません".into()))?;
+        Ok(sets.sets.iter().map(|(n, _)| *n).collect())
     }
 
     fn check_material(
@@ -294,18 +314,6 @@ impl<'a> MeshChecks<'a> {
 
 fn index(value: &Value, key: &str) -> Option<usize> {
     usize::try_from(value.get(key)?.as_u64()?).ok()
-}
-
-/// 元の形状の `TEXCOORD_n` の番号（番号順）。
-fn uv_sets(primitive: &Value) -> Vec<u32> {
-    let mut sets: Vec<u32> = primitive["attributes"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, _)| key.strip_prefix("TEXCOORD_")?.parse().ok())
-        .collect();
-    sets.sort_unstable();
-    sets
 }
 
 fn box_set(sets: Vec<u32>) -> u32 {

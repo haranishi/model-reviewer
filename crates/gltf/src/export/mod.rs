@@ -112,6 +112,10 @@ pub enum ExportNote {
     },
     /// 元の extras の値を保つため、箱形の大きさを記録できなかった。
     BoxSizeUnmarked,
+    /// 箱形で焼くとき、読めない UV の組（基本色が使わない組）を写さなかった数。
+    UvSetsDropped {
+        sets: u32,
+    },
     /// シーンから外した部品（データはファイルに残る）。
     DetachedNodes {
         count: u32,

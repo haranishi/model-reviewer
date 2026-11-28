@@ -212,6 +212,160 @@ fn undo_box_paste(base: &[u8], remove_first: bool) -> Vec<u8> {
     bytes
 }
 
+/// 箱形の大きさ（または画像）を変えながら毎回書き出し、全部を取り消して書き出す。
+/// 書き出しごとの箱形の組の番号と、最後に書いたバイト列を返す。
+fn repaste_and_undo(base: &[u8], pastes: &[(f32, bool)]) -> (Vec<u64>, Vec<u8>) {
+    let mut doc = Document::new(Arc::new(load_glb(base).unwrap()));
+    let key = NodeKey(0);
+    let mut history = History::default();
+    let mut review = ReviewState::new(&doc);
+    let jpeg = doc
+        .try_add_image(jpeg_8x8().into(), model_reviewer_core::texture::Mime::Jpeg)
+        .unwrap();
+    let png = doc
+        .try_add_image(
+            pattern_png(Pattern::Checker, 4, 1).into(),
+            model_reviewer_core::texture::Mime::Png,
+        )
+        .unwrap();
+    let mut current = base.to_vec();
+    let mut sets = Vec::new();
+    for &(size, other) in pastes {
+        let image = if other { png } else { jpeg };
+        let pasted = doc.add_tex_use(box_texture(image, size)).unwrap();
+        let before = doc.subtree_looks(key).unwrap();
+        let mut after = before.clone();
+        after[0].tex = Some(pasted);
+        history
+            .execute(
+                Step::new(
+                    "貼る",
+                    vec![Edit::SetLooks { key, before, after }],
+                    Some(key),
+                ),
+                &mut doc,
+                &mut review,
+            )
+            .unwrap();
+        let (built, written) = export(&current, &snapshot(&doc));
+        doc.set_file_indices(&built.assigned);
+        let v = root(&written);
+        sets.push(
+            material_of(&v, 0)["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"]
+                .as_u64()
+                .unwrap_or(0),
+        );
+        current = written;
+    }
+    for _ in pastes {
+        history.undo(&mut doc, &mut review).unwrap();
+    }
+    let (restored, bytes) = export(&current, &snapshot(&doc));
+    assert!(restored.appended_bin.is_empty());
+    (sets, bytes)
+}
+
+#[test]
+fn repeated_box_exports_then_undo_restore_opened_geometry() {
+    let base = textured_quad_glb(&Default::default());
+    for pastes in [
+        &[(0.75, false), (0.5, false)][..],
+        &[(0.75, false), (0.75, true)][..],
+        &[(0.75, false), (0.5, false), (0.25, true)][..],
+    ] {
+        let (sets, restored) = repaste_and_undo(&base, pastes);
+        // 開いた時点の組は TEXCOORD_0 だけ。箱形の組は何回書き出しても次の番号（1）。
+        assert!(sets.iter().all(|&set| set == 1), "{sets:?}");
+        let new = root(&restored);
+        let old = root(&base);
+        assert_eq!(
+            primitive_of(&new, 0)["attributes"],
+            primitive_of(&old, 0)["attributes"]
+        );
+        assert_eq!(corner_uvs(&restored, 0), corner_uvs(&base, 0));
+        assert_eq!(material_of(&new, 0), material_of(&old, 0));
+    }
+}
+
+#[test]
+fn repeated_box_exports_do_not_carry_old_box_sets() {
+    let base = textured_quad_glb(&TexturedOptions {
+        tex_coord: 1,
+        ..Default::default()
+    });
+    let (sets, _) = repaste_and_undo(&base, &[(0.75, false), (0.5, false), (0.25, true)]);
+    assert_eq!(sets, [2, 2, 2]);
+}
+
+/// 使っていない TEXCOORD_1 を、頂点の数と合わない accessor にする。
+fn broken_unused_set() -> Vec<u8> {
+    edit_glb(&textured_quad_glb(&Default::default()), |v| {
+        let uv = primitive_of(v, 0)["attributes"]["TEXCOORD_0"]
+            .as_u64()
+            .unwrap() as usize;
+        let mut short = v["accessors"][uv].clone();
+        short["count"] = (short["count"].as_u64().unwrap() - 1).into();
+        let accessors = v["accessors"].as_array_mut().unwrap();
+        accessors.push(short);
+        let broken = accessors.len() - 1;
+        let mesh = v["nodes"][0]["mesh"].as_u64().unwrap() as usize;
+        v["meshes"][mesh]["primitives"][0]["attributes"]["TEXCOORD_1"] = broken.into();
+    })
+}
+
+#[test]
+fn unreadable_unused_uv_set_is_dropped_when_baking() {
+    let base = broken_unused_set();
+    let mut scene = scene_of(&base);
+    let image = add_image(&mut scene, jpeg_8x8());
+    set_texture(&mut scene, 0, box_texture(image, 0.5));
+    let (built, written) = export(&base, &scene);
+    assert!(
+        built.notes.contains(&ExportNote::UvSetsDropped { sets: 1 }),
+        "{:?}",
+        built.notes
+    );
+    let v = root(&written);
+    let attributes = primitive_of(&v, 0)["attributes"].as_object().unwrap();
+    let mut texcoords: Vec<_> = attributes
+        .keys()
+        .filter(|k| k.starts_with("TEXCOORD_"))
+        .cloned()
+        .collect();
+    texcoords.sort();
+    assert_eq!(texcoords, ["TEXCOORD_0", "TEXCOORD_1"]);
+    assert_eq!(corner_uvs(&written, 0), corner_uvs(&base, 0));
+}
+
+#[test]
+fn unreadable_unused_uv_set_survives_undo() {
+    let base = broken_unused_set();
+    let restored = undo_box_paste(&base, false);
+    assert_eq!(
+        primitive_of(&root(&restored), 0)["attributes"],
+        primitive_of(&root(&base), 0)["attributes"]
+    );
+    let (_, restored) = repaste_and_undo(&base, &[(0.75, false), (0.5, true)]);
+    assert_eq!(
+        primitive_of(&root(&restored), 0)["attributes"],
+        primitive_of(&root(&base), 0)["attributes"]
+    );
+}
+
+#[test]
+fn unreadable_base_color_set_still_refuses_box() {
+    let base = edit_glb(&broken_unused_set(), |v| {
+        v["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"] = 1.into();
+    });
+    let mut scene = scene_of(&base);
+    let image = add_image(&mut scene, jpeg_8x8());
+    set_texture(&mut scene, 0, box_texture(image, 0.5));
+    assert!(matches!(
+        build(&base, &scene),
+        Err(ExportError::InvalidScene(_))
+    ));
+}
+
 #[test]
 fn undo_restores_uv0_geometry() {
     let base = textured_quad_glb(&Default::default());

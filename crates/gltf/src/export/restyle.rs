@@ -90,9 +90,9 @@ pub(super) fn apply(
             let look = scene.textures.look(draw.tex)?;
             let base_index = range.as_ref().map(|r| r.start + i);
             let original_mesh = original.map(|o| o.mesh as usize);
-            // 箱形で焼いて書き出した形状に、箱形でない見た目が戻ったら、開いた時点の形状と比べる。
-            let prior = match (original, base_index, mesh) {
-                (Some(o), Some(index), Some(current)) if box_size(look).is_none() => {
+            // 土台の形状が、前の書き出しで焼いた形状に替わっているか（開いた時点の形状と比べる）。
+            let opened = match (original, base_index, mesh) {
+                (Some(o), Some(index), Some(current)) => {
                     let slot = base.sources[index].primitive as usize;
                     let prior = &base.value["meshes"][o.mesh as usize]["primitives"][slot];
                     let now = &base.value["meshes"][current]["primitives"][slot];
@@ -100,6 +100,8 @@ pub(super) fn apply(
                 }
                 _ => None,
             };
+            // 箱形でない見た目が戻ったら、開いた時点の形状へ戻す。
+            let prior = opened.filter(|_| box_size(look).is_none());
             if let (Some((slot, prior, old)), Some(m)) = (prior, original_mesh) {
                 let previous = scene.textures.look(old.tex)?;
                 let color_changed =
@@ -173,19 +175,38 @@ pub(super) fn apply(
                 let primitive = &base.value["meshes"][source.mesh as usize]["primitives"][slot];
                 let material = primitive["material"].as_u64().map(|n| n as usize);
                 let prim = base.model.draws[index].prim.0;
-                let refs = sides
-                    .map(|s| {
-                        bin.primitive(
+                let refs = match (sides, opened.zip(original_mesh)) {
+                    (None, _) => None,
+                    // 焼いた形状を焼き直すと、前の箱形の組まで写して組が増える。開いた時点の
+                    // 形状と UV の組から焼く。
+                    (Some(s), Some(((_, first, _), m))) => {
+                        let geometry = base.file_primitive(m, slot)?;
+                        Some(bin.primitive(
+                            Geometry::File {
+                                mesh: m as u32,
+                                slot: slot as u32,
+                            },
+                            &geometry,
+                            Some(s),
+                            SourceUvs {
+                                key: uv_accessors(first),
+                                read: Box::new(move || base.bake_uv_sets(m, slot)),
+                            },
+                        )?)
+                    }
+                    (Some(s), None) => {
+                        let mesh = source.mesh as usize;
+                        Some(bin.primitive(
                             Geometry::Base(prim),
                             &base.model.primitives[prim as usize],
                             Some(s),
                             SourceUvs {
                                 key: uv_accessors(primitive),
-                                read: Box::new(move || base.uv_sets(index)),
+                                read: Box::new(move || base.bake_uv_sets(mesh, slot)),
                             },
-                        )
-                    })
-                    .transpose()?;
+                        )?)
+                    }
+                };
                 (slot, Source::Material(material), refs)
             } else {
                 // shape() が追加形状の範囲を確かめている。
@@ -265,6 +286,11 @@ pub(super) fn apply(
     }
     if unmarked {
         notes.push(ExportNote::BoxSizeUnmarked);
+    }
+    if bin.dropped_sets > 0 {
+        notes.push(ExportNote::UvSetsDropped {
+            sets: bin.dropped_sets,
+        });
     }
     Ok(Restyled { mesh_of, notes })
 }

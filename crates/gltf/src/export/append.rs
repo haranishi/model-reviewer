@@ -6,8 +6,8 @@ use model_reviewer_core::texture::bake_box;
 use std::collections::HashMap;
 
 use super::ExportError;
+use super::base::SourceSets;
 use super::json::{array, f32s, obj, set, uint};
-use crate::build::UvSets;
 
 const FLOAT: u64 = 5126;
 const UNSIGNED_INT: u64 = 5125;
@@ -50,20 +50,25 @@ impl PrimRefs {
 pub(super) enum Geometry {
     Base(u32),
     Added(u32),
+    /// 開いた時点のファイルの形状（`meshes[mesh].primitives[slot]`）。
+    File {
+        mesh: u32,
+        slot: u32,
+    },
 }
 
 /// 焼き込みで写す元の UV の組。`key` は元の形状の `TEXCOORD_n` の accessor（形状番号が同じでも
 /// 組が違う形状を分ける）。
 pub(super) struct SourceUvs<'a> {
     pub key: Vec<(u32, u64)>,
-    pub read: Box<dyn FnOnce() -> Result<UvSets, ExportError> + 'a>,
+    pub read: Box<dyn FnOnce() -> Result<SourceSets, ExportError> + 'a>,
 }
 
 impl SourceUvs<'_> {
     pub fn none() -> Self {
         Self {
             key: Vec::new(),
-            read: Box::new(|| Ok(Vec::new())),
+            read: Box::new(|| Ok(SourceSets::default())),
         }
     }
 }
@@ -85,6 +90,8 @@ pub(super) struct Appender {
     pub views: Vec<Value>,
     prims: HashMap<PrimKey, PrimRefs>,
     pub baked: u32,
+    /// 焼き込みで写さなかった、読めない UV の組の数。
+    pub dropped_sets: u32,
 }
 
 impl Appender {
@@ -98,6 +105,7 @@ impl Appender {
             views: Vec::new(),
             prims: HashMap::new(),
             baked: 0,
+            dropped_sets: 0,
         }
     }
 
@@ -121,7 +129,9 @@ impl Appender {
                 }
                 let baked = bake_box(source, sides);
                 let mut sets = Vec::new();
-                for (set, values) in (uvs.read)()? {
+                let source_sets = (uvs.read)()?;
+                self.dropped_sets += source_sets.skipped.len() as u32;
+                for (set, values) in source_sets.sets {
                     let copied = baked
                         .source_indices
                         .iter()

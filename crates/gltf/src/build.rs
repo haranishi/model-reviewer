@@ -777,26 +777,46 @@ fn prim_info(primitive: &gltf::json::mesh::Primitive) -> Result<PrimInfo, LoadEr
 /// UV の組の番号と、頂点ごとの値。
 pub(crate) type UvSets = Vec<(u32, Vec<[f32; 2]>)>;
 
-/// 形状の `TEXCOORD_n` をすべて、組の番号順に読む。`vertices` 個でない組や読めない組があれば `None`。
+/// 形状の `TEXCOORD_n` を組の番号順に読む。読めない組（型・範囲が不正、数が頂点と違う）は
+/// 値を返さず、番号だけを `skipped` に入れる。頂点の数は `POSITION` の数。
 pub(crate) fn uv_sets(
     root: &Root,
     bin: &[u8],
     primitive: &gltf::json::mesh::Primitive,
-    vertices: usize,
-) -> Result<Option<UvSets>, LoadError> {
+) -> (UvSets, Vec<u32>) {
+    let vertices = find_semantic(primitive, Semantic::Positions)
+        .and_then(|index| root.accessors.get(index))
+        .map(|accessor| accessor.count.0 as usize);
     let mut sets = Vec::new();
+    let mut skipped = Vec::new();
     for (semantic, index) in &primitive.attributes {
         let Checked::Valid(Semantic::TexCoords(set)) = semantic else {
             continue;
         };
-        let uvs = read_uvs(root, bin, index.value())?;
-        if uvs.len() != vertices {
-            return Ok(None);
+        match read_uvs(root, bin, index.value()) {
+            Ok(uvs) if Some(uvs.len()) == vertices => sets.push((*set, uvs)),
+            _ => skipped.push(*set),
         }
-        sets.push((*set, uvs));
     }
     sets.sort_by_key(|(set, _)| *set);
-    Ok(Some(sets))
+    skipped.sort_unstable();
+    (sets, skipped)
+}
+
+/// 形状の JSON から、読み込みと同じ式で頂点と三角形を作る。三角形が無ければ `None`。
+pub(crate) fn decode_primitive(
+    root: &Root,
+    bin: &[u8],
+    primitive: &gltf::json::mesh::Primitive,
+) -> Result<Option<Primitive>, LoadError> {
+    let info = prim_info(primitive)?;
+    if matches!(
+        info.mode,
+        Mode::Points | Mode::Lines | Mode::LineLoop | Mode::LineStrip
+    ) {
+        return Ok(None);
+    }
+    Ok(decode(root, bin, info)?.map(|built| built.primitive))
 }
 
 fn find_semantic(primitive: &gltf::json::mesh::Primitive, want: Semantic) -> Option<usize> {

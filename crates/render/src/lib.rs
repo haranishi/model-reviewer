@@ -671,6 +671,25 @@ impl SceneRenderer {
             .shown
             .as_ref()
             .and_then(|shown| shown.instances.as_ref().map(|i| (shown, i)));
+        let textured = drawable.is_some_and(|(shown, _)| {
+            self.textures_shown
+                && matches!(mode, DisplayMode::Faces | DisplayMode::FacesAndLines)
+                && frame.display != DisplayMode::Lines
+                && shown.textures.count() > 0
+                && !shown.textures.materials.is_empty()
+        });
+        if let Some((shown, instances)) = drawable.filter(|_| textured) {
+            // 画像を描く描画があるときだけ、そのパイプラインを作る。
+            for batch in &instances.list.batches {
+                if let Some(material) = batch_material(shown, batch) {
+                    pipelines.textured(
+                        device,
+                        &self.layouts,
+                        matches!(material.map, UvMap::Box { .. }),
+                    );
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
@@ -714,11 +733,7 @@ impl SceneRenderer {
                         draw_plain(&mut pass, geometry, &instances.list);
                     }
                     DisplayMode::Faces | DisplayMode::FacesAndLines => {
-                        if self.textures_shown
-                            && frame.display != DisplayMode::Lines
-                            && shown.textures.count() > 0
-                            && !shown.textures.materials.is_empty()
-                        {
+                        if textured {
                             self.stats.textured_draws +=
                                 draw_faces(&mut pass, shown, pipelines, batches);
                         } else {
@@ -1018,6 +1033,21 @@ fn draw_plain(pass: &mut wgpu::RenderPass<'_>, geometry: &GpuGeometry, list: &In
     }
 }
 
+/// 画像で描くまとまりの材質。UV で貼る材質は、形状に UV があるときだけ使う。
+fn batch_material<'a>(
+    shown: &'a Shown,
+    batch: &instances::Batch,
+) -> Option<&'a textures::Material> {
+    let slot = shown.geometry.plan.prims.get(batch.prim as usize)?;
+    batch
+        .tex
+        .and_then(|id| shown.textures.materials.get(&id))
+        .filter(|m| {
+            matches!(m.map, UvMap::Box { .. })
+                || shown.geometry.pages[slot.page as usize].uv.is_some()
+        })
+}
+
 fn draw_faces(
     pass: &mut wgpu::RenderPass<'_>,
     shown: &Shown,
@@ -1034,17 +1064,15 @@ fn draw_faces(
         if slot.index_count == 0 {
             continue;
         }
-        let material = batch
-            .tex
-            .and_then(|id| shown.textures.materials.get(&id))
-            .filter(|m| {
-                matches!(m.map, UvMap::Box { .. })
-                    || shown.geometry.pages[slot.page as usize].uv.is_some()
-            });
-        let pipeline = match material.map(|m| m.map) {
-            None => &pipelines.scene,
-            Some(UvMap::Vertex { .. }) => &pipelines.scene_uv,
-            Some(UvMap::Box { .. }) => &pipelines.scene_box,
+        let material = batch_material(shown, batch);
+        let textured = match material.map(|m| m.map) {
+            None => None,
+            Some(UvMap::Vertex { .. }) => pipelines.scene_uv.get(),
+            Some(UvMap::Box { .. }) => pipelines.scene_box.get(),
+        };
+        // 描く前に `Pipelines::textured` で作ってある。
+        let Some(pipeline) = textured.or(material.is_none().then_some(&pipelines.scene)) else {
+            continue;
         };
         if bound_pipeline != Some(pipeline) {
             pass.set_pipeline(pipeline);
@@ -1301,6 +1329,58 @@ mod failure_tests {
         assert!(renderer.take_error().is_none());
         let after = center_after(&mut renderer, &device, &queue, size);
         assert_eq!(after, before);
+    }
+
+    #[test]
+    #[ignore = "GPUが必要"]
+    fn texture_pipelines_are_lazy() {
+        use model_reviewer_core::texture::{ImageId, MipChain, Sampling, TexId, TexUse, UvMap};
+        let (device, queue) = gpu_device();
+        let mut renderer = SceneRenderer::new(&device);
+        let mut model = plates(1);
+        let draw = |renderer: &mut SceneRenderer| {
+            center_after(renderer, &device, &queue, [64, 48]);
+            let pipelines = renderer.pipelines.as_ref().unwrap();
+            (
+                pipelines.scene_uv.get().is_some(),
+                pipelines.scene_box.get().is_some(),
+            )
+        };
+        let show = |renderer: &mut SceneRenderer, m| {
+            let m = Arc::new(m);
+            upload(renderer, &device, &queue, &m);
+            renderer.set_instances(&device, &queue, &m, &Visibility::all_visible(1));
+        };
+        show(&mut renderer, model.clone());
+        assert_eq!(draw(&mut renderer), (false, false));
+        model.draws[0].tex = Some(TexId(0));
+        model.textures.uses.push(TexUse {
+            image: Some(ImageId(0)),
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: None,
+            baked_box: None,
+        });
+        show(&mut renderer, model);
+        assert_eq!(draw(&mut renderer), (false, false));
+        renderer
+            .begin_image(
+                &device,
+                ImageId(0),
+                MipChain {
+                    size: [1; 2],
+                    levels: vec![vec![255; 4]],
+                },
+            )
+            .unwrap();
+        renderer.continue_images(&device, &queue, 4);
+        renderer.set_textures_shown(false);
+        assert_eq!(draw(&mut renderer), (false, false));
+        renderer.set_textures_shown(true);
+        assert_eq!(draw(&mut renderer), (false, true));
     }
 
     #[test]

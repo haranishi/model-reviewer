@@ -175,7 +175,7 @@ fn selection_texture_json(session: &Session) -> Option<Value> {
             }
             let (map, size) = match tex.map {
                 UvMap::Vertex { .. } => ("uv", None),
-                UvMap::Box { size } => ("box", Some(size)),
+                UvMap::Box { size, .. } => ("box", Some(size)),
             };
             Some(json!({ "hash": hash, "map": map, "size": size }))
         })

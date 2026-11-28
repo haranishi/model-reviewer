@@ -39,6 +39,9 @@ pub(crate) struct Base<'a> {
     pub image_indices: HashMap<ImageHash, usize>,
     /// 同じ内容の画像が複数ある場合も、取り消しで元の材質の画像番号を復元する。
     pub image_hashes: Vec<Option<ImageHash>>,
+    /// 読み込みが検証した JSON と BIN。焼き込みで元の UV の組を写すときに読む。
+    root: gltf::json::Root,
+    bin: &'a [u8],
 }
 
 pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>, ExportError> {
@@ -46,6 +49,8 @@ pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>,
     let opened =
         inspect::open(bytes).map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
     let root = opened.document.as_json();
+    let checked_root = root.clone();
+    let checked_bin = opened.bin;
     let mut image_indices = HashMap::new();
     let image_hashes = root
         .images
@@ -134,6 +139,8 @@ pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>,
         sources,
         image_indices,
         image_hashes,
+        root: checked_root,
+        bin: checked_bin,
     })
 }
 
@@ -154,6 +161,24 @@ impl Base<'_> {
                 super::json::array(m, "primitives")
                     .iter()
                     .all(|p| p.get("targets").is_none())
+            })
+    }
+
+    /// `model.draws[draw]` の形状の UV の組をすべて読む。読めない組があれば断る。
+    pub fn uv_sets(&self, draw: usize) -> Result<build::UvSets, ExportError> {
+        let source = self.sources[draw];
+        let vertices = self.model.primitives[self.model.draws[draw].prim.0 as usize]
+            .vertices
+            .len();
+        let primitive =
+            &self.root.meshes[source.mesh as usize].primitives[source.primitive as usize];
+        build::uv_sets(&self.root, self.bin, primitive, vertices)
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                ExportError::InvalidScene(
+                    "元の UV の組を読めないため、箱形の形状を作れません".to_owned(),
+                )
             })
     }
 

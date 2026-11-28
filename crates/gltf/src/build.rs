@@ -282,7 +282,11 @@ impl<'a> Assembly<'a> {
         let gltf_index = inspect::fit_u32(frame.index as u64, "インスタンス数")?;
         let start = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
         let world_aabb = match source.mesh {
-            Some(mesh) => self.add_mesh(mesh.value(), &world)?,
+            Some(mesh) => {
+                let index = u32_index(mesh.value())?;
+                self.textures.source_meshes.insert(gltf_index, index);
+                self.add_mesh(mesh.value(), &world)?
+            }
             None => Aabb::empty(),
         };
         let end = inspect::fit_u32(self.draws.len() as u64, "インスタンス数")?;
@@ -768,6 +772,31 @@ fn prim_info(primitive: &gltf::json::mesh::Primitive) -> Result<PrimInfo, LoadEr
         material: primitive.material.as_ref().map(gltf::json::Index::value),
         mode,
     })
+}
+
+/// UV の組の番号と、頂点ごとの値。
+pub(crate) type UvSets = Vec<(u32, Vec<[f32; 2]>)>;
+
+/// 形状の `TEXCOORD_n` をすべて、組の番号順に読む。`vertices` 個でない組や読めない組があれば `None`。
+pub(crate) fn uv_sets(
+    root: &Root,
+    bin: &[u8],
+    primitive: &gltf::json::mesh::Primitive,
+    vertices: usize,
+) -> Result<Option<UvSets>, LoadError> {
+    let mut sets = Vec::new();
+    for (semantic, index) in &primitive.attributes {
+        let Checked::Valid(Semantic::TexCoords(set)) = semantic else {
+            continue;
+        };
+        let uvs = read_uvs(root, bin, index.value())?;
+        if uvs.len() != vertices {
+            return Ok(None);
+        }
+        sets.push((*set, uvs));
+    }
+    sets.sort_by_key(|(set, _)| *set);
+    Ok(Some(sets))
 }
 
 fn find_semantic(primitive: &gltf::json::mesh::Primitive, want: Semantic) -> Option<usize> {

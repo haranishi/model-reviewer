@@ -15,7 +15,7 @@ use model_reviewer_core::doc::Document;
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{LoadWarning, NodeId, SceneRead};
 use model_reviewer_gltf::export::{
-    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base,
+    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base, originals,
 };
 
 use crate::command::{Command, DialogButton, DialogRequest};
@@ -49,6 +49,7 @@ pub fn export_scene(doc: &Document) -> ExportScene {
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
         textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
+        originals: originals(doc.base()),
     }
 }
 

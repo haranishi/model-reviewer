@@ -16,7 +16,7 @@ ExportNote::Retextured { nodes: u32, images: u32, image_bytes: u64, baked: u32 }
 
 ## 変わったかどうかの判定
 - 色の写しと同じく、**ファイルにある部品は自分のノード、複製は写す元のノードの描画と、土台を読み直した値を比べる**。比べるのは、基本色のビットと、`same_look(文書の TexUse, 土台の TexUse)`（どちらも無ければ同じ）。
-- `same_look` は値で比べる。画像はハッシュ、`sampling`・`cutoff` は値、`map` は次の3つを同じとみなす: ①どちらも `Vertex` で、行列のビットと UV の番号が同じ（`info_from` は比べない）、②どちらも `Box` で `size` のビットが同じ、③片方が `Box { size }` で、もう片方が `Vertex`（単位行列、UV は0番）かつ `baked_box == Some(size)`（ビットが同じ）。
+- `same_look` は値で比べる。画像はハッシュ、`sampling`・`cutoff` は値、`map` は次の3つを同じとみなす: ①どちらも `Vertex` で、行列のビットと UV の番号が同じ（`info_from` は比べない）、②どちらも `Box` で `size` と `aspect` のビットが同じ、③片方が `Box { size, .. }` で、もう片方が `Vertex`（単位行列。UV の番号は問わない）かつ `baked_box == Some(size)`（ビットが同じ）。
 - ③があるので、箱形で貼って書き出した後、文書（箱形のまま）と新しい土台（UV に焼いた形状）が「同じ」になり、次の書き出しで何も足さない（要件6.7）。
 
 ## 足すもの（`export/recolor.rs` を「見た目の写し」に広げる。名前は `restyle.rs` に改めてよい）
@@ -26,9 +26,9 @@ ExportNote::Retextured { nodes: u32, images: u32, image_bytes: u64, baked: u32 }
 4. **材質の写し**。鍵を（元の材質の番号、色のビット、画像の変更）に広げる。元の材質の JSON を写し、変わった項目だけを直す。
    - 画像を替えた（UV で貼る）: `baseColorTexture` の項目を、**`UvMap::Vertex.info_from` が指す材質の `baseColorTexture`（`texCoord`・`extensions`・`extras` を含む）の写し**にし、`index` だけを新しいテクスチャの番号にする。写す元の材質が今の土台に無い、または `baseColorTexture` を持たなければ `InvalidScene`。材質の番号は書き出しをまたいで変わらない（足すだけの決まり）ので、外して書き出した後に取り消しても、最初の材質から `TEXCOORD_1` や UV の変換を取り戻せる。メッシュの写しは `material` だけを替えるので、UV のアクセサは残っている。
    - 画像を外した: `baseColorTexture` の項目を除く。
-   - 箱形で貼った: `baseColorTexture` を `{"index": t}` だけにし（焼いた UV は0番で、変換なし）、`alphaMode` と `alphaCutoff` は元のまま保ち、`extras.model_reviewer.box_size` に `size` を書く（`extras` がオブジェクトでなければ、印を書かずに進める。次の書き出しで同じ形状をもう一度足すことになるので、結果の一覧に出す）。
+   - 箱形で貼った: `baseColorTexture` を `{"index": t}` と、箱形の組が0番でなければ `texCoord` だけにし（変換なし）、`alphaMode` と `alphaCutoff` は元のまま保ち、`extras.model_reviewer.box_size` に `size` を書く（`extras` がオブジェクトでなければ、印を書かずに進める。次の書き出しで同じ形状をもう一度足すことになるので、結果の一覧に出す）。
    - 元のプリミティブに材質が無いときは、基本色（と上の項目）だけの材質を作る。
-5. **メッシュの写し**。UV で貼った・外した・色だけ変えた描画は、今までどおり `material` だけを替える（形状のデータは増えない）。**箱形で貼った描画**は、土台を読み直した形状（複製は写す元、足した図形は `scene.added`）に `bake_box` を掛け、位置・法線（あれば）・`TEXCOORD_0`・番号のアクセサを足して、そのプリミティブを `{"attributes": {…}, "indices": n, "material": m, "mode": 4}` に差し替える。元のプリミティブにあった頂点の色と接線は写さない（規格の上では無くてよい項目）。**スキンを持つノードと、モーフを持つプリミティブは焼かない**: 関節と重み（`JOINTS_0`・`WEIGHTS_0`）を落としてノードの `skin` を残すと規格に反し、モーフを落とすとアニメーションの重みの数が合わなくなる。貼る前に断る（[design-paste.md](design-paste.md)）のに加え、書き出しでも `no_box_nodes` と土台の JSON の両方で確かめ、当たれば `InvalidScene` にする。分けた頂点へ属性を写す案は、アクセサの型ごとの写しと照合が要るので、この段階では取らない。同じ（形状、`size`）の焼いた形状は1回だけ足す。
+5. **メッシュの写し**。UV で貼った・外した・色だけ変えた描画は、今までどおり `material` だけを替える（形状のデータは増えない）。**箱形で貼った描画**は、土台を読み直した形状（複製は写す元、足した図形は `scene.added`）に `bake_box` を掛け、位置・法線（あれば）・元の `TEXCOORD_n` をすべて同じ番号で（分けた頂点へ元の頂点の値を、小数で）・箱形の UV を元の組の次の番号で・番号のアクセサを足して、そのプリミティブを `{"attributes": {…}, "indices": n, "material": m, "mode": 4}` に差し替える。元のプリミティブにあった頂点の色と接線は写さない（規格の上では無くてよい項目）。**スキンを持つノードと、モーフを持つプリミティブは焼かない**: 関節と重み（`JOINTS_0`・`WEIGHTS_0`）を落としてノードの `skin` を残すと規格に反し、モーフを落とすとアニメーションの重みの数が合わなくなる。貼る前に断る（[design-paste.md](design-paste.md)）のに加え、書き出しでも `no_box_nodes` と土台の JSON の両方で確かめ、当たれば `InvalidScene` にする。同じ（形状、幅と高さ、元の UV の組）の焼いた形状は1回だけ足す。**取り消しで戻ったとき**: 土台の形状が焼いた形状に替わっていて、文書が箱形でない描画は、開いた時点の描画（`ExportScene::originals`）と比べ、同じなら開いた時点のプリミティブの JSON をそのまま、違えばその形状と材質を元に写す。全部が戻れば元のメッシュを指す。
 6. **足した図形**（`Appender`）。画像の無い描画は今のまま（基本色と `metallicFactor: 0` の材質）。画像のある描画は、焼いた形状と、`baseColorTexture` と印を持つ材質を足す。材質の鍵は（色、テクスチャの番号、`size`）。
 7. `extensionsUsed` と `extensionsRequired` は変えない（拡張を新しく使わないため）。
 

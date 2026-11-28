@@ -674,7 +674,7 @@ fn size_field_changes_box_size() {
         );
     h.get_by_label("1枚の大きさ").click();
     h.step();
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    // ほかの数値の欄と同じく、押して打つと前の値を置き換える。
     h.event(egui::Event::Text("25".into()));
     h.step();
     assert_eq!(selected_tex(h.state()), original);

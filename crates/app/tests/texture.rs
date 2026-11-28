@@ -832,12 +832,11 @@ fn pending_paste_blocks_writes() {
     export(&mut s, &input);
     assert_eq!(std::fs::read(&input).unwrap(), raw);
     assert!(s.status_text.contains("貼り付け"));
-    std::fs::rename(&input, &moved).unwrap();
-    export(&mut s, &moved);
-    assert_eq!(std::fs::read(&moved).unwrap(), raw);
-    // 文書側で中止しても、受け付けた原本の識別は残る。
+    // 文書側で中止しても、受け付けた原本の識別は残る。改名は読み終えた後にする
+    // （読み始める前に改名すると、ファイルが読めないまま貼り付けが失敗する）。
     s.apply(Command::DuplicateSelected);
     CountingImages::default().finish(&mut s);
+    std::fs::rename(&input, &moved).unwrap();
     export(&mut s, &moved);
     assert!(s.export_error().unwrap().contains("別の名前"));
     assert_eq!(std::fs::read(moved).unwrap(), raw);

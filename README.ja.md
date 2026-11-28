@@ -6,7 +6,7 @@
 
 [English README](README.md)
 
-![見本の台車に立方体を足したところ。移動のハンドル、部品の一覧、変形の数値が並ぶ](docs/images/editor.png)
+![model-reviewer の操作（約30秒）。モデルを開き、部品に画像を貼り、部品を動かし、寸法を指定した円柱を足し、距離を測り、断面を見て、GLB に書き出す。模様はプログラムで作った画像](docs/images/demo.webp)
 
 ## 必要なもの
 

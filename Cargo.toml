@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/gltf",
     "crates/stl",
+    "crates/texture",
     "crates/render",
     "crates/app",
     "crates/testdata",
@@ -47,7 +48,7 @@ rfd = "0.18.0"
 memory-stats = "1.2.0"
 bytemuck = { version = "1.25", features = ["derive"] }
 thiserror = "2"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
 egui_kittest = { version = "0.37.0", default-features = false, features = [
     "eframe",

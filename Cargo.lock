@@ -1531,6 +1531,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1911,6 +1913,14 @@ dependencies = [
 name = "model-reviewer-testdata"
 version = "0.1.0"
 dependencies = [
+ "model-reviewer-core",
+]
+
+[[package]]
+name = "model-reviewer-texture"
+version = "0.1.0"
+dependencies = [
+ "image",
  "model-reviewer-core",
 ]
 

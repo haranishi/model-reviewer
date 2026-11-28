@@ -6,12 +6,13 @@ mod looks;
 
 use std::collections::HashSet;
 
-use super::textures::{Look, box_size, can_mark, model_look};
+use super::textures::{Look, box_size, can_mark, model_look, same_texture};
 use glam::{Affine3A, Vec3};
 use gltf::json::Value;
 use model_reviewer_core::scene::{Model, Primitive, SceneRead};
 use model_reviewer_core::texture::{UvMap, box_uv, same_look};
 
+use super::append::Geometry;
 use super::base::{self, Base, SourceSets, same_bits};
 use super::container::{self, align4};
 use super::json::{array, read_children};
@@ -498,7 +499,7 @@ impl Written<'_> {
     fn uv_sets(&self, node: u32, slot: usize) -> Option<SourceSets> {
         let mesh = self.root.nodes.get(node as usize)?.mesh?.value();
         let primitive = self.root.meshes.get(mesh)?.primitives.get(slot)?;
-        let (sets, skipped) = crate::build::uv_sets(self.root, self.bin, primitive);
+        let (sets, skipped) = crate::build::uv_sets(self.root, self.bin, primitive).ok()?;
         Some(SourceSets { sets, skipped })
     }
 }
@@ -557,22 +558,19 @@ fn check_model(
         if draws.len() != node.draws.len() {
             return Err(fail(format!("{what} の描画の数が違います")));
         }
-        let source_range = node
-            .file_index
-            .or(node.template)
-            .map(|file| base.draw_range(file));
-        let source_draws = match source_range.clone() {
-            Some(range) => Some(
-                range
-                    .and_then(|r| base.model.draws.get(r))
-                    .ok_or_else(|| fail(format!("{what} の元の描画がありません")))?,
-            ),
-            None => None,
-        };
-        if source_draws.is_some_and(|source| source.len() != draws.len()) {
+        let file = node.file_index.or(node.template);
+        let source_range = file
+            .map(|id| {
+                base.draw_range(id)
+                    .ok_or_else(|| fail(format!("{what} の元の描画がありません")))
+            })
+            .transpose()?;
+        if source_range
+            .as_ref()
+            .is_some_and(|r| r.len() != draws.len())
+        {
             return Err(fail(format!("{what} の描画の数が元のファイルと違います")));
         }
-        let file = node.file_index.or(node.template);
         let opened = file.and_then(|id| opened_mesh(base, scene, id, node.draws.len()));
         for (slot, (got, want)) in draws.iter().zip(&node.draws).enumerate() {
             if got.base_color.map(f32::to_bits) != want.base_color.map(f32::to_bits) {
@@ -582,54 +580,69 @@ fn check_model(
                 .primitives
                 .get(got.prim.0 as usize)
                 .ok_or_else(|| fail(format!("{what} の形状がありません")))?;
-            let base_draw = source_range.clone().flatten().map(|r| r.start + slot);
-            // 前の書き出しで焼いた形状は、開いた時点の形状と UV の組を元として比べる。
-            let first = match (opened, base_draw) {
-                (Some(mesh), Some(draw)) => {
-                    let file_slot = base.sources[draw].primitive as usize;
-                    let current = base.sources[draw].mesh as usize;
-                    rebaked_slot(&base.value, mesh, current, file_slot)
-                        .then(|| base.file_primitive(mesh, file_slot))
-                        .transpose()
-                        .map_err(|e| fail(e.message_ja()))?
-                        .map(|prim| (mesh, file_slot, prim))
-                }
-                _ => None,
-            };
-            let (key, expected) = match (&first, source_draws) {
-                (Some((mesh, file_slot, prim)), _) => {
-                    ((2, ((*mesh as u64) << 32) | *file_slot as u64), prim)
-                }
-                (None, Some(source)) => {
-                    let prim = source[slot].prim.0;
-                    ((0, u64::from(prim)), &base.model.primitives[prim as usize])
-                }
-                (None, None) => {
-                    let slot = want
-                        .prim
-                        .0
-                        .checked_sub(scene.base_primitive_count)
-                        .ok_or_else(|| fail(format!("{what} の形状の番号が範囲の外です")))?;
-                    let prim = scene
-                        .added
-                        .get(slot as usize)
-                        .ok_or_else(|| fail(format!("{what} の形状の番号が範囲の外です")))?;
-                    ((1, u64::from(slot)), prim.as_ref())
-                }
-            };
+            let base_draw = source_range.as_ref().map(|r| r.start + slot);
+            let source = base_draw.map(|draw| base.sources[draw]);
+            let file_slot = source.map_or(slot, |s| s.primitive as usize);
+            let current = source.map(|s| s.mesh as usize);
+            let first = opened.filter(|&mesh| {
+                current.is_some_and(|now| rebaked_slot(&base.value, mesh, now, file_slot))
+            });
             let look = scene
                 .textures
                 .look(want.tex)
                 .map_err(|e| fail(e.message_ja()))?;
+            let sides = box_size(look).map(|(_, sides)| sides);
+            let added = scene
+                .added_geometry(want)
+                .filter(|_| sides.is_some() || base_draw.is_none());
+            let origin = match (added, first, base_draw) {
+                (Some((index, _)), _, _) => Geometry::Added(index),
+                (_, Some(mesh), _) => Geometry::File {
+                    mesh: mesh as u32,
+                    slot: file_slot as u32,
+                },
+                (_, _, Some(draw)) => Geometry::Base(base.model.draws[draw].prim.0),
+                _ => return Err(fail(format!("{what} の形状の番号が範囲の外です"))),
+            };
             let reloaded = model_look(model, got.tex);
             if !matches_look(look, reloaded, &base.value, new) {
                 return Err(fail(format!(
                     "{what} の画像・貼り方・透明度の閾値が違います"
                 )));
             }
-            let sides = box_size(look).map(|(_, sides)| sides);
             let back = restored.contains(&(index, slot));
-            if compared.insert((got.prim, key, sides.map(|s| s.map(f32::to_bits)), back)) {
+            let source_mesh = first.or(current).filter(|_| added.is_none());
+            let uv_refs = (sides.is_some() || back).then(|| {
+                let source = source_mesh
+                    .map(|mesh| {
+                        super::restyle::uv_accessors(
+                            &base.value["meshes"][mesh]["primitives"][file_slot],
+                        )
+                    })
+                    .unwrap_or_default();
+                let mesh = model.textures.source_meshes[&loaded.gltf_index] as usize;
+                let output =
+                    super::restyle::uv_accessors(&new["meshes"][mesh]["primitives"][file_slot]);
+                (source, output)
+            });
+            if compared.insert((
+                got.prim,
+                origin,
+                sides.map(|s| s.map(f32::to_bits)),
+                back,
+                uv_refs,
+            )) {
+                let decoded;
+                let expected = match origin {
+                    Geometry::Added(i) => scene.added[i as usize].as_ref(),
+                    Geometry::Base(i) => &base.model.primitives[i as usize],
+                    Geometry::File { mesh, slot } => {
+                        decoded = base
+                            .file_primitive(mesh as usize, slot as usize)
+                            .map_err(|e| fail(e.message_ja()))?;
+                        &decoded
+                    }
+                };
                 let matches = match sides {
                     Some(sides) => baked_matches(actual, model.prim_uvs(got.prim), expected, sides),
                     None if back => same_triangles(actual, expected),
@@ -639,17 +652,15 @@ fn check_model(
                     return Err(fail(format!("{what} の形状または UV が違います")));
                 }
                 // 焼いた形状は元の UV の組を、戻した形状は開いた時点の UV の組を、角ごとに同じ値で持つ。
-                if let Some(draw) = base_draw.filter(|_| sides.is_some() || back) {
-                    let file_slot = base.sources[draw].primitive as usize;
+                if sides.is_some() || back {
                     let got_sets = written
                         .uv_sets(built.assigned[index], file_slot)
                         .ok_or_else(|| fail(format!("{what} の UV の組を読めません")))?;
-                    let want_sets = match &first {
-                        Some((mesh, file_slot, _)) => {
-                            base.file_uv_sets(*mesh, *file_slot).unwrap_or_default()
-                        }
-                        None => base.uv_sets(draw),
-                    };
+                    let want_sets = source_mesh
+                        .map(|mesh| base.file_uv_sets(mesh, file_slot))
+                        .transpose()
+                        .map_err(|e| fail(e.message_ja()))?
+                        .unwrap_or_default();
                     if !same_uv_sets(actual, &got_sets, expected, &want_sets, back) {
                         return Err(fail(format!("{what} の元の UV の組が違います")));
                     }
@@ -666,7 +677,7 @@ fn check_model(
 
 /// 元の追加情報が印を書けない型なら、今回焼いた写しだけは、後段の全三角形の UV 照合で補う。
 fn matches_look(want: Look<'_>, got: Look<'_>, old: &Value, new: &Value) -> bool {
-    if same_look(want, got) {
+    if same_texture(want, got, old, new) {
         return true;
     }
     let (Some((size, _)), Some((tex, hash))) = (box_size(want), got) else {
@@ -707,23 +718,26 @@ fn same_uv_sets(
     let mut with_box = want_numbers.clone();
     with_box.push(want_numbers.iter().max().map_or(0, |n| n + 1));
     let shape = same || (!back && got.skipped.is_empty() && got_numbers == with_box);
+    let mut compared = HashSet::new();
     shape
-        && want.sets.iter().all(|(set, want_values)| {
-            let Some((_, got_values)) = got.sets.iter().find(|(n, _)| n == set) else {
-                return false;
-            };
-            actual.indices.len() == expected.indices.len()
-                && actual
-                    .indices
-                    .iter()
-                    .zip(&expected.indices)
-                    .all(|(&g, &w)| {
-                        match (got_values.get(g as usize), want_values.get(w as usize)) {
-                            (Some(a), Some(b)) => a.map(f32::to_bits) == b.map(f32::to_bits),
-                            _ => false,
-                        }
-                    })
-        })
+        && actual.indices.len() == expected.indices.len()
+        && want
+            .sets
+            .iter()
+            .zip(&got.sets)
+            .all(|((_, want_values), (_, got_values))| {
+                !compared.insert((want_values.as_ptr(), got_values.as_ptr()))
+                    || actual
+                        .indices
+                        .iter()
+                        .zip(&expected.indices)
+                        .all(|(&g, &w)| {
+                            match (got_values.get(g as usize), want_values.get(w as usize)) {
+                                (Some(a), Some(b)) => a.map(f32::to_bits) == b.map(f32::to_bits),
+                                _ => false,
+                            }
+                        })
+            })
 }
 
 /// 開いた時点のメッシュの番号。土台のノードが同じメッシュを指していれば `None`。
@@ -864,7 +878,7 @@ mod tests {
         SourceSets {
             sets: list
                 .iter()
-                .map(|&(set, u)| (set, vec![[u, 0.0], [u, 1.0], [u, 0.5]]))
+                .map(|&(set, u)| (set, [[u, 0.0], [u, 1.0], [u, 0.5]].into()))
                 .collect(),
             skipped: skipped.to_vec(),
         }

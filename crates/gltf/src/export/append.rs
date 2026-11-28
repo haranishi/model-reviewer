@@ -128,33 +128,43 @@ impl Appender {
                     return Err(scene_error("箱形の大きさが正の有限の数ではありません"));
                 }
                 let baked = bake_box(source, sides);
-                let mut sets = Vec::new();
+                let unique: std::collections::HashSet<_> =
+                    key.2.iter().map(|&(_, accessor)| accessor).collect();
+                let stride =
+                    12 + u64::from(source.has_normals) * 12 + (unique.len() as u64 + 1) * 8;
+                let length = (baked.vertices.len() as u64)
+                    .saturating_mul(stride)
+                    .saturating_add(baked.indices.len() as u64 * 4);
+                super::glb_length(
+                    0,
+                    Some((self.start + self.bin.len() as u64).saturating_add(length)),
+                )?;
                 let source_sets = (uvs.read)()?;
                 self.dropped_sets += source_sets.skipped.len() as u32;
-                for (set, values) in source_sets.sets {
-                    let copied = baked
-                        .source_indices
-                        .iter()
-                        .map(|&i| values.get(i as usize).copied())
-                        .collect::<Option<Vec<_>>>()
-                        .ok_or_else(|| scene_error("元の UV の組の数が頂点の数と違います"))?;
-                    sets.push((set, copied));
+                let mut refs =
+                    self.write_geometry(&baked.vertices, &baked.indices, source.has_normals)?;
+                let mut written = HashMap::new();
+                for (set, values) in &source_sets.sets {
+                    // 同じ元配列に対する頂点の振り直しも、一度だけでよい。
+                    let accessor = match written.entry(values.as_ptr()) {
+                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let pairs = baked
+                                .source_indices
+                                .iter()
+                                .map(|&i| values.get(i as usize).copied());
+                            *entry.insert(self.write_uvs(pairs)?)
+                        }
+                    };
+                    refs.uvs.push((*set, accessor));
                 }
-                let box_set = box_set(sets.iter().map(|(set, _)| *set));
-                sets.push((box_set, baked.uvs));
+                refs.box_set = box_set(refs.uvs.iter().map(|(set, _)| *set));
+                let uv = self.write_uvs(baked.uvs.into_iter().map(Some))?;
+                refs.uvs.push((refs.box_set, uv));
                 self.baked += 1;
-                let mut refs = self.write_geometry(
-                    &baked.vertices,
-                    &baked.indices,
-                    source.has_normals,
-                    &sets,
-                )?;
-                refs.box_set = box_set;
                 refs
             }
-            None => {
-                self.write_geometry(&source.vertices, &source.indices, source.has_normals, &[])?
-            }
+            None => self.write_geometry(&source.vertices, &source.indices, source.has_normals)?,
         };
         self.prims.insert(key, refs.clone());
         Ok(refs)
@@ -165,7 +175,6 @@ impl Appender {
         vertices: &[Vertex],
         indices: &[u32],
         has_normals: bool,
-        uv_sets: &[(u32, Vec<[f32; 2]>)],
     ) -> Result<PrimRefs, ExportError> {
         let count = vertices.len() as u64;
         let mut min = [f32::INFINITY; 3];
@@ -192,20 +201,6 @@ impl Appender {
         } else {
             None
         };
-        let mut uvs = Vec::with_capacity(uv_sets.len());
-        for (set, values) in uv_sets {
-            let mut bytes = Vec::with_capacity(values.len() * 8);
-            for pair in values {
-                for coord in pair {
-                    if !coord.is_finite() {
-                        return Err(scene_error("箱形の投影で有限でない UV ができました"));
-                    }
-                    bytes.extend_from_slice(&coord.to_le_bytes());
-                }
-            }
-            let view = self.view(&bytes, Some(ARRAY_BUFFER))?;
-            uvs.push((*set, self.accessor(view, count, "VEC2", FLOAT, None)?));
-        }
         let mut index_bytes = Vec::with_capacity(indices.len() * 4);
         for index in indices {
             index_bytes.extend_from_slice(&index.to_le_bytes());
@@ -215,10 +210,29 @@ impl Appender {
         Ok(PrimRefs {
             position,
             normal,
-            uvs,
+            uvs: Vec::new(),
             indices,
             box_set: 0,
         })
+    }
+
+    fn write_uvs(
+        &mut self,
+        pairs: impl ExactSizeIterator<Item = Option<[f32; 2]>>,
+    ) -> Result<u64, ExportError> {
+        let count = pairs.len();
+        let mut bytes = Vec::with_capacity(count * 8);
+        for pair in pairs {
+            let pair = pair.ok_or_else(|| scene_error("元の UV の組の数が頂点の数と違います"))?;
+            for coord in pair {
+                if !coord.is_finite() {
+                    return Err(scene_error("箱形の投影で有限でない UV ができました"));
+                }
+                bytes.extend_from_slice(&coord.to_le_bytes());
+            }
+        }
+        let view = self.view(&bytes, Some(ARRAY_BUFFER))?;
+        self.accessor(view, count as u64, "VEC2", FLOAT, None)
     }
 
     /// byteLength は中身だけを数え、次のビューの先頭を4バイト境界に置く。
@@ -302,4 +316,31 @@ fn check_primitive(prim: &Primitive) -> Result<(), ExportError> {
 
 fn scene_error(what: &str) -> ExportError {
     ExportError::InvalidScene(what.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model_reviewer_core::shapes::{ShapeKind, build};
+
+    #[test]
+    fn preflight_precedes_uv_read() {
+        let source = build(ShapeKind::Cube, 1.0);
+        let baked = bake_box(&source, [1.0; 2]);
+        // 位置・法線・箱形の組と元の1組なら収まる。元の2組目を含めて初めて上限を超える。
+        let one_set = (baked.vertices.len() * (12 + 12 + 8 + 8) + baked.indices.len() * 4) as u64;
+        let available = crate::export::glb_length(0, Some(one_set)).unwrap();
+        let mut app = Appender::new(u64::from(u32::MAX) - 3 - available, &obj());
+        let result = app.primitive(
+            Geometry::Base(0),
+            &source,
+            Some([1.0; 2]),
+            SourceUvs {
+                key: vec![(0, 2), (1, 3)],
+                read: Box::new(|| panic!("全体が入らないときは UV を展開しない")),
+            },
+        );
+        assert!(matches!(result, Err(ExportError::TooLarge { .. })));
+        assert!(app.bin.is_empty());
+    }
 }

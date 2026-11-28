@@ -52,6 +52,8 @@ pub struct DocNode {
     pub world_aabb: Aabb,
     /// まだファイルに無い複製が、どのノード（ファイル内の番号）のJSONを写すか。書き出し用。
     pub template: Option<u32>,
+    /// 複製や書き出しを経ても変わらない、開いたモデル内の部品。追加図形なら空。
+    pub opened_node: Option<NodeId>,
 }
 
 /// 番号の付け替え。構造の変更1回につき1つ。`map` は定数時間。
@@ -254,6 +256,7 @@ impl Document {
                 draws: range,
                 world_aabb: node.world_aabb,
                 template: None,
+                opened_node: Some(NodeId(index as u32)),
             });
             index_of.insert(key, index as u32);
             file_index.insert(key, node.gltf_index);
@@ -719,6 +722,7 @@ impl Document {
                 draws: source.draws.start - draw_start..source.draws.end - draw_start,
                 world_aabb: source.world_aabb,
                 template,
+                opened_node: source.opened_node,
             };
             node.key = self.allocate_key();
             nodes.push(node);
@@ -764,6 +768,7 @@ impl Document {
             draws: 0..1,
             world_aabb,
             template: None,
+            opened_node: None,
         };
         Ok((
             Place {

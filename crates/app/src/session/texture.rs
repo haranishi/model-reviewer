@@ -25,7 +25,7 @@ const SELECT_PART: &str = "貼る部品を選んでから、画像を貼って�
 const NO_FACES: &str = "この部品には、貼る面がありません";
 const BUSY: &str = "読み込み中・書き出し中は貼れません";
 const NO_BOX: &str = "スキンかモーフのある部品には、この貼り方では貼れません";
-const CHANGED: &str = "貼る間に文書が変わったため、貼りませんでした";
+pub(super) const CHANGED: &str = "貼る間に文書が変わったため、貼りませんでした";
 const FILE_LIMIT: u64 = 64 << 20;
 pub(super) const PENDING_EXPORT: &str = "画像の貼り付けが終わってから書き出してください";
 pub(super) const PENDING_REVIEW: &str = "画像の貼り付けが終わってからレビューを保存してください";
@@ -38,8 +38,26 @@ const TIMED_OUT: &str = "画像の読み込みが 60 秒で終わらないため
 pub struct PasteHooks {
     /// 読み取りの前に、読み取りのスレッドで呼ぶ（読み取りが終わらない場合を再現する）。
     pub before_read: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// ドロップしたファイルの種類を調べる直前に、読み取りスレッドで呼ぶ。
+    pub before_probe: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// 貼り付け結果の送信が終わったときに呼ぶ。
+    pub after_send: Option<Arc<dyn Fn() + Send + Sync>>,
     /// `PASTE_TIMEOUT` の代わりに使う時間。
     pub timeout: Option<Duration>,
+    /// 期限の前後を待ち時間なしで確かめる時計。
+    pub clock: Option<Arc<dyn Fn() -> Instant + Send + Sync>>,
+}
+
+impl PasteHooks {
+    pub(super) fn now(&self) -> Instant {
+        self.clock
+            .as_ref()
+            .map_or_else(Instant::now, |clock| clock())
+    }
+
+    pub(super) fn deadline(&self) -> Instant {
+        self.now() + self.timeout.unwrap_or(PASTE_TIMEOUT)
+    }
 }
 
 pub struct TextureView {
@@ -136,6 +154,7 @@ fn selection(session: &Session) -> Option<Selection> {
             let Some(image) = tex.image else { continue };
             images.insert(image);
             match tex.map {
+                UvMap::Unresolved { .. } => {}
                 UvMap::Vertex { .. } => has_uv = true,
                 UvMap::Box { size, .. } => {
                     has_box = true;
@@ -311,14 +330,26 @@ fn read_image(
     })
 }
 
-pub fn paste(session: &mut Session, path: PathBuf) {
-    session.paste_error = None;
+pub(super) fn paste_target(session: &Session) -> Result<NodeKey, &'static str> {
     if let Some(reason) = paste_block(session) {
-        reject(session, reason.into());
-        return;
+        return Err(reason);
     }
+    selection(session).map(|s| s.key).ok_or(SELECT_PART)
+}
+
+pub fn paste(session: &mut Session, path: PathBuf) {
+    match paste_target(session) {
+        Ok(key) => {
+            let deadline = session.paste_hooks.deadline();
+            paste_at(session, key, path, deadline);
+        }
+        Err(reason) => reject(session, reason.into()),
+    }
+}
+
+pub(super) fn paste_at(session: &mut Session, key: NodeKey, path: PathBuf, deadline: Instant) {
+    session.paste_error = None;
     let doc = session.doc.as_ref().unwrap();
-    let key = doc.key(session.selection.unwrap()).unwrap();
     let resident = doc
         .images()
         .enumerate()
@@ -331,7 +362,7 @@ pub fn paste(session: &mut Session, path: PathBuf) {
     let wake = session.egui_ctx.clone();
     let input = path.clone();
     let before_read = session.paste_hooks.before_read.clone();
-    let timeout = session.paste_hooks.timeout.unwrap_or(PASTE_TIMEOUT);
+    let after_send = session.paste_hooks.after_send.clone();
     let spawned = std::thread::Builder::new()
         .name("texture-paste".into())
         .spawn(move || {
@@ -344,6 +375,9 @@ pub fn paste(session: &mut Session, path: PathBuf) {
             }))
             .unwrap_or_else(|_| Err("画像を読めません: 画素の復号に失敗しました".into()));
             let _ = tx.send(PasteOutcome { seen, result });
+            if let Some(hook) = after_send {
+                hook();
+            }
             if let Some(ctx) = wake {
                 ctx.request_repaint();
             }
@@ -360,18 +394,24 @@ pub fn paste(session: &mut Session, path: PathBuf) {
         stale: false,
         generation: session.shown_generation,
         revision: session.history.doc_rev(),
-        deadline: Instant::now() + timeout,
+        deadline,
     });
     // 画面が描き直されなくても、時間切れの判定が走るようにする。
     if let Some(ctx) = &session.egui_ctx {
-        ctx.request_repaint_after(timeout);
+        ctx.request_repaint_after(deadline.saturating_duration_since(session.paste_hooks.now()));
     }
     session.status_text = "画像を読み込んでいます".into();
 }
 
-fn reject(session: &mut Session, message: String) {
+pub(super) fn reject(session: &mut Session, message: String) {
     session.paste_error = Some(message.clone());
     session.status_text = message;
+}
+
+pub(super) fn time_out(session: &mut Session, path: &Path, message: &str) {
+    session.remember_opened_file(path);
+    session.store.remember_document(path);
+    reject(session, message.into());
 }
 
 pub(super) fn poll(session: &mut Session) -> bool {
@@ -387,7 +427,7 @@ pub(super) fn poll(session: &mut Session) -> bool {
             result
         }
         Err(mpsc::TryRecvError::Empty) => {
-            let now = Instant::now();
+            let now = session.paste_hooks.now();
             if now < job.deadline {
                 if let Some(ctx) = &session.egui_ctx {
                     ctx.request_repaint_after(job.deadline - now);
@@ -397,9 +437,7 @@ pub(super) fn poll(session: &mut Session) -> bool {
             // 読み取りのスレッドは止められないので、結果を待たずに捨てる。受け付けたパスは、
             // 読めたかどうか分からないので書き出し先から守る。
             let job = session.paste_job.take().unwrap();
-            session.remember_opened_file(&job.path);
-            session.protect_document(&job.path);
-            reject(session, TIMED_OUT.into());
+            time_out(session, &job.path, TIMED_OUT);
             return true;
         }
         Err(mpsc::TryRecvError::Disconnected) => Err("画像の読み込みが中断されました".into()),
@@ -570,7 +608,7 @@ pub(super) fn adjust(session: &mut Session, adjustment: Adjustment) {
                 Adjustment::Remove => {
                     let info_from = match tex.map {
                         UvMap::Vertex { info_from, .. } => info_from,
-                        UvMap::Box { .. } => None,
+                        UvMap::Box { .. } | UvMap::Unresolved { .. } => None,
                     };
                     let mask = tex.cutoff.map(|cutoff| TexUse {
                         image: None,

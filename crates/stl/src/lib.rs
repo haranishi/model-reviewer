@@ -77,7 +77,11 @@ fn assemble_model(parsed: binary::Parsed, options: &StlOptions<'_>) -> Model {
         tex: None,
     };
     Model {
-        textures: Textures::default(),
+        // GLB に変換すると、元のノードとメッシュはいずれも 0 番になる。
+        textures: Textures {
+            source_meshes: [(0, 0)].into(),
+            ..Textures::default()
+        },
         nodes: vec![node],
         draws: vec![draw],
         primitives: vec![parsed.primitive],

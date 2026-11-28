@@ -16,7 +16,7 @@ use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{LoadWarning, NodeId, SceneRead};
 use model_reviewer_core::texture::{ImageHash, ImageSource};
 use model_reviewer_gltf::export::{
-    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base, originals,
+    ExportNode, ExportNote, ExportScene, ExportTextures, document_originals, empty_base,
 };
 
 use crate::command::{Command, DialogButton, DialogRequest};
@@ -50,7 +50,7 @@ pub fn export_scene(doc: &Document) -> ExportScene {
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
         textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
-        originals: originals(doc.base()),
+        originals: document_originals(doc),
     }
 }
 
@@ -165,7 +165,7 @@ pub(super) fn export_glb(session: &mut Session, path: PathBuf) {
         session.block_edit_if_locked();
         return;
     }
-    if session.paste_job.is_some() {
+    if session.paste_job.is_some() || session.drop_probe.is_some() {
         // 復号の途中は原本の識別がまだ分からない。貼り付けが確定か中止になるまで断る。
         session.status_text = super::texture::PENDING_EXPORT.to_owned();
         return;
@@ -270,8 +270,7 @@ fn finish_export(session: &mut Session, done: ExportDone) {
         .map(|(_, &file)| file)
         .collect();
     session.exported_no_box.extend(blocked);
-    let in_use = pasted_in_use(doc);
-    session.exported_pasted.extend(in_use.iter().copied());
+    let in_use = used_image_hashes(doc, &mut session.exported_pasted);
     let left_over = session.exported_pasted.difference(&in_use).count();
     doc.set_file_indices(&done.assigned);
     // 書いたファイルを読み直した行列へそろえる（開き直したときと同じ範囲・初期視点になる）。
@@ -350,15 +349,19 @@ fn finish_export(session: &mut Session, done: ExportDone) {
     }
 }
 
-/// シーンにある部品が使っている、貼り付けた画像。
-fn pasted_in_use(doc: &Document) -> HashSet<ImageHash> {
+/// ファイルへ入れた貼り付け画像を控え、出どころによらず今使っている画像を返す。
+fn used_image_hashes(doc: &Document, pasted: &mut HashSet<ImageHash>) -> HashSet<ImageHash> {
     let images: Vec<_> = doc.images().collect();
     (0..doc.nodes().len())
         .flat_map(|i| doc.draws(NodeId(i as u32)).iter())
         .filter_map(|draw| doc.tex_use(draw.tex?)?.image)
         .filter_map(|id| images.get(id.0 as usize))
-        .filter(|image| matches!(image.source, ImageSource::Held(_)))
-        .map(|image| image.hash)
+        .map(|image| {
+            if matches!(image.source, ImageSource::Held(_)) {
+                pasted.insert(image.hash);
+            }
+            image.hash
+        })
         .collect()
 }
 

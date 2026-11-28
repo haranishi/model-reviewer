@@ -2,9 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use model_reviewer_core::doc::NodeKey;
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::LoadWarning;
 use model_reviewer_core::texture::{ImageId, chain_bytes, sniff};
@@ -167,6 +169,7 @@ impl Session {
         self.loader.is_some()
             || self.shown_loader.is_some()
             || self.paste_job.is_some()
+            || self.drop_probe.is_some()
             || self.textures.pasted.is_some()
             || self.textures.in_flight.is_some()
     }
@@ -179,6 +182,9 @@ impl Session {
 
     pub(super) fn reset_textures(&mut self) {
         if let Some(job) = &mut self.paste_job {
+            job.stale = true;
+        }
+        if let Some(job) = &mut self.drop_probe {
             job.stale = true;
         }
         self.texture_cache.set(None);
@@ -285,6 +291,7 @@ pub(super) fn open_guarded_with_identity(
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
+    session.drop_probe = None;
     session.protect_document(&path);
     if session.hold(Pending::OpenModel(path.clone(), options, expected.clone())) {
         return;
@@ -297,6 +304,7 @@ pub(super) fn review_guarded(session: &mut Session, path: PathBuf) {
         session.status_text = "書き出し中は別のファイルを開けません".to_owned();
         return;
     }
+    session.drop_probe = None;
     session.protect_document(&path);
     if session.hold(Pending::LoadReview(path.clone())) {
         return;
@@ -325,6 +333,7 @@ pub(super) fn new_guarded(session: &mut Session) {
     if refuse_new(session) {
         return;
     }
+    session.drop_probe = None;
     if session.hold(Pending::New) {
         return;
     }
@@ -359,6 +368,38 @@ pub fn load_review(session: &mut Session, path: PathBuf) {
 
 pub(super) const NOT_REGULAR_FILE: &str = "通常のファイルではないため開けません";
 
+enum DropKind {
+    Image,
+    Model,
+    Review,
+}
+
+pub(super) struct DropProbe {
+    path: PathBuf,
+    result: mpsc::Receiver<Result<DropKind, String>>,
+    target: Result<NodeKey, &'static str>,
+    pub stale: bool,
+    deadline: Instant,
+}
+
+fn probe(path: &Path) -> Result<DropKind, String> {
+    let metadata = std::fs::metadata(path).map_err(|err| loader::io_error_ja(&err))?;
+    if !metadata.is_file() {
+        return Err(NOT_REGULAR_FILE.into());
+    }
+    let mut header = Vec::with_capacity(8);
+    std::fs::File::open(path)
+        .and_then(|f| f.take(8).read_to_end(&mut header))
+        .map_err(|err| loader::io_error_ja(&err))?;
+    Ok(if sniff(&header).is_some() {
+        DropKind::Image
+    } else if header.starts_with(b"glTF") || !is_review_path(path) {
+        DropKind::Model
+    } else {
+        DropKind::Review
+    })
+}
+
 pub fn dropped(session: &mut Session, paths: Vec<PathBuf>) {
     let Some(first) = paths.first().cloned() else {
         return;
@@ -368,22 +409,83 @@ pub fn dropped(session: &mut Session, paths: Vec<PathBuf>) {
     } else {
         session.notice.clear();
     }
-    // 書き手のいない名前付きパイプなどは開くだけで止まる。中身を読む前に通常のファイルか確かめる。
-    if std::fs::metadata(&first).is_ok_and(|meta| !meta.is_file()) {
-        session.status_text = NOT_REGULAR_FILE.to_owned();
+    if session.is_exporting() {
+        session.status_text = "書き出し中は別のファイルを開けません".into();
         return;
     }
-    let mut header = Vec::with_capacity(8);
-    let _ = std::fs::File::open(&first).and_then(|f| f.take(8).read_to_end(&mut header));
-    if sniff(&header).is_some() {
-        super::texture::paste(session, first);
-    } else if session.is_exporting() {
-        session.status_text = "書き出し中は別のファイルを開けません".to_owned();
-    } else if header.starts_with(b"glTF") || !is_review_path(&first) {
-        open_guarded(session, first, LoadOptions::default());
-    } else {
-        review_guarded(session, first);
+    // 後から選択が動いても、ドロップを受け付けたときの部品に貼る。
+    session.drop_probe = None;
+    let target = super::texture::paste_target(session);
+    let (tx, result) = mpsc::channel();
+    let wake = session.egui_ctx.clone();
+    let hook = session.paste_hooks.before_probe.clone();
+    let input = first.clone();
+    let deadline = session.paste_hooks.deadline();
+    if std::thread::Builder::new()
+        .name("drop-probe".into())
+        .spawn(move || {
+            if let Some(hook) = hook {
+                hook();
+            }
+            let _ = tx.send(probe(&input));
+            if let Some(ctx) = wake {
+                ctx.request_repaint();
+            }
+        })
+        .is_err()
+    {
+        session.status_text = "ファイルの読み取りを始められませんでした".into();
+        return;
     }
+    session.drop_probe = Some(DropProbe {
+        path: first,
+        result,
+        target,
+        stale: false,
+        deadline,
+    });
+    session.status_text = "ファイルの種類を確認しています".into();
+    if let Some(ctx) = &session.egui_ctx {
+        ctx.request_repaint_after(deadline.saturating_duration_since(session.paste_hooks.now()));
+    }
+}
+
+pub(super) fn poll_drop(session: &mut Session) -> bool {
+    let Some(job) = &session.drop_probe else {
+        return false;
+    };
+    let result = match job.result.try_recv() {
+        Ok(result) => result,
+        Err(mpsc::TryRecvError::Empty) => {
+            let now = session.paste_hooks.now();
+            if now < job.deadline {
+                if let Some(ctx) = &session.egui_ctx {
+                    ctx.request_repaint_after(job.deadline - now);
+                }
+                return false;
+            }
+            let job = session.drop_probe.take().unwrap();
+            super::texture::time_out(
+                session,
+                &job.path,
+                "ファイルの種類を 60 秒で確認できなかったため、読み込みをやめました",
+            );
+            return true;
+        }
+        Err(mpsc::TryRecvError::Disconnected) => Err("ファイルの読み取りが中断されました".into()),
+    };
+    let job = session.drop_probe.take().unwrap();
+    match result {
+        Ok(DropKind::Image) => match job.target {
+            Err(reason) => super::texture::reject(session, reason.into()),
+            Ok(_) if job.stale => super::texture::reject(session, super::texture::CHANGED.into()),
+            Ok(key) => super::texture::paste_at(session, key, job.path, job.deadline),
+        },
+        Ok(DropKind::Model) => open_guarded(session, job.path, LoadOptions::default()),
+        Ok(DropKind::Review) => review_guarded(session, job.path),
+        Err(reason) => session.status_text = reason,
+    }
+    true
 }
 
 /// 起動引数。拡張子は目安で、先頭4バイトが glTF ならモデルとして開く。

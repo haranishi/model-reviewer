@@ -171,18 +171,17 @@ impl Base<'_> {
             })
     }
 
-    /// `model.draws[draw]` の形状の UV の組を読む。
-    pub fn uv_sets(&self, draw: usize) -> SourceSets {
-        let source = self.sources[draw];
-        self.file_uv_sets(source.mesh as usize, source.primitive as usize)
-            .unwrap_or_default()
-    }
-
     /// ファイルの `meshes[mesh].primitives[slot]` の UV の組を読む。読めない組は番号だけ返す。
-    pub fn file_uv_sets(&self, mesh: usize, slot: usize) -> Option<SourceSets> {
-        let primitive = self.root.meshes.get(mesh)?.primitives.get(slot)?;
-        let (sets, skipped) = build::uv_sets(&self.root, self.bin, primitive);
-        Some(SourceSets { sets, skipped })
+    pub fn file_uv_sets(&self, mesh: usize, slot: usize) -> Result<SourceSets, ExportError> {
+        let primitive = self
+            .root
+            .meshes
+            .get(mesh)
+            .and_then(|m| m.primitives.get(slot))
+            .ok_or_else(|| ExportError::InvalidScene("元の形状がありません".into()))?;
+        let (sets, skipped) = build::uv_sets(&self.root, self.bin, primitive)
+            .map_err(|e| ExportError::InvalidBase(e.message_ja()))?;
+        Ok(SourceSets { sets, skipped })
     }
 
     /// ファイルの `meshes[mesh].primitives[slot]` を、読み込みと同じ式で形状にする。
@@ -218,7 +217,7 @@ impl Base<'_> {
 
     /// 焼き込みで写す UV の組。基本色の画像が使う組を読めなければ断る（それ以外は写さずに進む）。
     pub fn bake_uv_sets(&self, mesh: usize, slot: usize) -> Result<SourceSets, ExportError> {
-        let sets = self.file_uv_sets(mesh, slot).unwrap_or_default();
+        let sets = self.file_uv_sets(mesh, slot)?;
         if self
             .base_color_set(mesh, slot)
             .is_some_and(|set| sets.skipped.contains(&set))

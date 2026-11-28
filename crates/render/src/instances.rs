@@ -97,7 +97,7 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
             .filter(|t| t.image.is_some())
             .map(|t| t.map)
         {
-            None => 0,
+            None | Some(UvMap::Unresolved { .. }) => 0,
             Some(UvMap::Vertex { .. }) if model.prim_uvs(draw.prim).is_empty() => 0,
             Some(UvMap::Vertex { .. }) => 1,
             Some(UvMap::Box { .. }) => 2,

@@ -116,6 +116,7 @@ pub struct Session {
     pub textures_shown: bool,
     pub textures: TextureProgress,
     paste_job: Option<texture::PasteJob>,
+    drop_probe: Option<open::DropProbe>,
     pub(crate) paste_error: Option<String>,
     texture_cache: Cell<Option<texture::Selection>>,
     /// 書き出しで新しいファイル番号を得た、スキン・モーフつきの複製。
@@ -247,6 +248,7 @@ impl Default for Session {
             textures_shown: true,
             textures: TextureProgress::default(),
             paste_job: None,
+            drop_probe: None,
             paste_error: None,
             texture_cache: Cell::new(None),
             exported_no_box: Default::default(),
@@ -386,10 +388,13 @@ impl Session {
             self.scene_dirty.instances = true;
             self.pending_patches.clear();
         }
-        if (self.history.doc_rev() != doc_rev || self.is_loading() || self.is_exporting())
-            && let Some(job) = &mut self.paste_job
-        {
-            job.stale = true;
+        if self.history.doc_rev() != doc_rev || self.is_loading() || self.is_exporting() {
+            if let Some(job) = &mut self.paste_job {
+                job.stale = true;
+            }
+            if let Some(job) = &mut self.drop_probe {
+                job.stale = true;
+            }
         }
         if self.scene_dirty.display || self.scene_dirty.instances {
             self.color_cache.set(None);
@@ -645,7 +650,8 @@ impl Session {
         for event in events {
             self.apply_load_event(event);
         }
-        texture::poll(self) || changed
+        let routed = open::poll_drop(self);
+        texture::poll(self) || routed || changed
     }
 
     pub fn poll_exporter(&mut self) -> bool {
@@ -984,7 +990,7 @@ impl Session {
             Some("書き出しが終わってからレビューを保存してください")
         } else if self.is_loading_replacement() {
             Some("読み込みが終わってからレビューを保存してください")
-        } else if self.paste_job.is_some() {
+        } else if self.paste_job.is_some() || self.drop_probe.is_some() {
             Some(texture::PENDING_REVIEW)
         } else {
             None
@@ -1408,8 +1414,8 @@ impl Session {
         // 投影は利用者が選んだ見方なので、モデルを開き直しても保つ。
         self.camera = initial_camera(&doc.bounds(), aspect, self.camera.projection);
         self.home_on_resize = !viewport_known;
-        if let Some(loaded) = incoming.model_ref.as_ref() {
-            let own_output = restored_review
+        let own_output = incoming.model_ref.as_ref().is_some_and(|loaded| {
+            restored_review
                 && self.exported_since_load
                 && self.model_ref.as_ref().is_some_and(|current| {
                     current.identity == loaded.identity
@@ -1417,8 +1423,11 @@ impl Session {
                         && self
                             .file_history
                             .is_written_output(&current.path, &loaded.identity)
-                });
-            if !own_output {
+                })
+        });
+        if !own_output {
+            self.exported_pasted.clear();
+            if let Some(loaded) = incoming.model_ref.as_ref() {
                 if let Some(source) = incoming.source_path.as_deref() {
                     self.remember_opened_file(source);
                 }
@@ -1444,7 +1453,6 @@ impl Session {
         self.model = Some(model);
         self.exported_no_box.clear();
         self.export_colors = Default::default();
-        self.exported_pasted.clear();
         self.reset_textures();
         if from_gpu {
             self.textures.opened = self.open_started;

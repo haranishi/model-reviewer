@@ -4,19 +4,19 @@ use std::collections::{HashMap, HashSet};
 
 use gltf::json::Value;
 use model_reviewer_core::scene::Draw;
-use model_reviewer_core::texture::{UvMap, same_look};
+use model_reviewer_core::texture::UvMap;
 
 use super::{fail, without};
 use crate::export::base::Base;
 use crate::export::json::{array, obj};
-use crate::export::textures::{Look, box_size, can_mark, model_look};
-use crate::export::{ExportError, ExportNode, ExportScene, ExportTextures, OriginalNode};
+use crate::export::textures::{Look, box_size, can_mark, color_texture, model_look, same_texture};
+use crate::export::{ExportError, ExportNode, ExportScene, OriginalNode};
 
 pub(super) struct MeshChecks<'a> {
     old: &'a Value,
     new: &'a Value,
     base: &'a Base<'a>,
-    textures: &'a ExportTextures,
+    scene: &'a ExportScene,
     originals: &'a HashMap<u32, OriginalNode>,
     origins: HashMap<usize, Option<usize>>,
     materials: HashSet<usize>,
@@ -30,7 +30,7 @@ impl<'a> MeshChecks<'a> {
             old,
             new,
             base,
-            textures: &scene.textures,
+            scene,
             originals: &scene.originals,
             origins: HashMap::new(),
             materials: HashSet::new(),
@@ -107,6 +107,7 @@ impl<'a> MeshChecks<'a> {
                 .ok_or_else(|| fail("文書に形状がありません".into()))?;
             draw_index += 1;
             let look = self
+                .scene
                 .textures
                 .look(draw.tex)
                 .map_err(|e| fail(e.message_ja()))?;
@@ -133,13 +134,14 @@ impl<'a> MeshChecks<'a> {
                 let opened_draw = &o.draws[draw_index - 1];
                 prior = Some(&self.old["meshes"][o.mesh as usize]["primitives"][slot]);
                 original_look = self
+                    .scene
                     .textures
                     .look(opened_draw.tex)
                     .map_err(|e| fail(e.message_ja()))?;
                 old_color = Some(opened_draw.base_color);
                 self.restored.insert((at, draw_index - 1));
             }
-            let texture_changed = !same_look(look, original_look);
+            let texture_changed = !same_texture(look, original_look, self.old, self.old);
             let color_changed = old_color
                 .is_none_or(|old| old.map(f32::to_bits) != draw.base_color.map(f32::to_bits));
             if !color_changed && !texture_changed {
@@ -154,7 +156,11 @@ impl<'a> MeshChecks<'a> {
                 ));
             }
             let boxed = texture_changed && box_size(look).is_some();
-            let sets = self.readable_sets(uv_source)?;
+            let sets = if boxed && self.scene.added_geometry(draw).is_none() {
+                self.readable_sets(uv_source)?
+            } else {
+                Vec::new()
+            };
             if boxed || prior.is_none() {
                 let first_accessor = array(self.old, "accessors").len();
                 if !new_geometry(primitive, first_accessor, boxed, &sets)
@@ -208,7 +214,7 @@ impl<'a> MeshChecks<'a> {
         let sets = self
             .base
             .file_uv_sets(mesh, slot)
-            .ok_or_else(|| fail("元の形状がありません".into()))?;
+            .map_err(|e| fail(e.message_ja()))?;
         Ok(sets.sets.iter().map(|(n, _)| *n).collect())
     }
 
@@ -239,8 +245,15 @@ impl<'a> MeshChecks<'a> {
             expected[PBR]["baseColorFactor"] = factor.clone();
         }
         if let Some(box_set) = texture {
-            match look.filter(|(tex, _)| tex.image.is_some()) {
-                None => {
+            match look {
+                Some((tex, None)) if let UvMap::Unresolved { material } = tex.map => {
+                    let reference = color_texture(self.old, material);
+                    if !reference.is_object() || info != Some(reference) {
+                        return Err(fail("元の基本色の画像参照が違います".into()));
+                    }
+                    expected[PBR]["baseColorTexture"] = reference.clone();
+                }
+                None | Some((_, None)) => {
                     if info.is_some() {
                         return Err(fail("外した基本色の画像が残っています".into()));
                     }

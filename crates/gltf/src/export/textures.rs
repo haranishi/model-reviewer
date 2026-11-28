@@ -84,6 +84,22 @@ pub(super) fn model_look(model: &Model, id: Option<TexId>) -> Look<'_> {
     ))
 }
 
+/// 表示しなかった画像も、材質を写した前後で textureInfo 全体が一致するときだけ同じとみなす。
+pub(super) fn same_texture(a: Look<'_>, b: Look<'_>, left: &Value, right: &Value) -> bool {
+    if let (Some((x, None)), Some((y, None))) = (a, b)
+        && let (UvMap::Unresolved { material: i }, UvMap::Unresolved { material: j }) =
+            (x.map, y.map)
+    {
+        let info = color_texture(left, i);
+        return x.cutoff == y.cutoff && info.is_object() && info == color_texture(right, j);
+    }
+    model_reviewer_core::texture::same_look(a, b)
+}
+
+pub(super) fn color_texture(root: &Value, material: u32) -> &Value {
+    &root["materials"][material as usize]["pbrMetallicRoughness"]["baseColorTexture"]
+}
+
 pub(super) fn mime_type(mime: Mime) -> &'static str {
     match mime {
         Mime::Png => "image/png",
@@ -111,6 +127,9 @@ pub(super) fn can_mark(material: &Value) -> bool {
 pub(super) enum TextureEdit {
     Keep,
     Remove,
+    Unresolved {
+        from: u32,
+    },
     Vertex {
         texture: usize,
         from: u32,
@@ -168,12 +187,19 @@ impl<'a> TextureWriter<'a> {
         let Some((tex, _)) = look else {
             return Ok(TextureEdit::Remove);
         };
+        if let UvMap::Unresolved { material } = tex.map {
+            if tex.image.is_some() || !color_texture(&self.base.value, material).is_object() {
+                return Err(invalid("元の材質に基本色の画像参照がありません"));
+            }
+            return Ok(TextureEdit::Unresolved { from: material });
+        }
         let Some(id) = tex.image else {
             return Ok(TextureEdit::Remove);
         };
         let image = &table.images[id.0 as usize];
         let filters = filters(tex.sampling);
         match tex.map {
+            UvMap::Unresolved { .. } => unreachable!(),
             UvMap::Vertex { info_from, .. } => {
                 let from =
                     info_from.ok_or_else(|| invalid("UV の貼り方に写す元の材質がありません"))?;

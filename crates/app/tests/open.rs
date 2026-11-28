@@ -46,7 +46,7 @@ fn pump(session: &mut Session) {
     pump_until(session, |session| {
         let settled = matches!(session.load, LoadPhase::Idle | LoadPhase::Failed(_));
         let pick_ready = session.model.is_none() || session.pick_index.is_some();
-        settled && pick_ready
+        settled && pick_ready && !session.textures_busy()
     });
 }
 

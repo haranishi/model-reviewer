@@ -174,6 +174,7 @@ fn selection_texture_json(session: &Session) -> Option<Value> {
                 write!(hash, "{byte:02x}").unwrap();
             }
             let (map, size) = match tex.map {
+                UvMap::Unresolved { .. } => return None,
                 UvMap::Vertex { .. } => ("uv", None),
                 UvMap::Box { size, .. } => ("box", Some(size)),
             };

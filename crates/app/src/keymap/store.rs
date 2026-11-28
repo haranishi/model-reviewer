@@ -246,10 +246,15 @@ impl Store {
             self.state = StoreState::Protected(DOCUMENT_NOTICE);
             return Some(DOCUMENT_NOTICE);
         }
-        if !self.documents.iter().any(|path| path == document) {
+        self.remember_document(document);
+        None
+    }
+
+    /// 応答待ちを打ち切った場所は登録だけにし、実体との照合は保存直前に行う。
+    pub(crate) fn remember_document(&mut self, document: &Path) {
+        if self.saves() && !self.documents.iter().any(|path| path == document) {
             self.documents.push(document.to_owned());
         }
-        None
     }
 
     /// 既定と違う割り当てだけを書く。保存しない様子なら何もせず `Ok`。失敗の理由は日本語の文。

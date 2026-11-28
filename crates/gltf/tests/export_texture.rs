@@ -484,7 +484,7 @@ fn snapshot(doc: &Document) -> ExportScene {
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
         textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
-        originals: model_reviewer_gltf::export::originals(doc.base()),
+        originals: model_reviewer_gltf::export::document_originals(doc),
     }
 }
 
@@ -1092,4 +1092,104 @@ fn verify_rejects_dropped_material_fields() {
         };
         rejects(&base, &scene, &damaged);
     }
+}
+
+#[test]
+fn baked_aliases_share_accessor() {
+    let base = edit_glb(&textured_quad_glb(&Default::default()), |v| {
+        let attrs = &mut v["meshes"][0]["primitives"][0]["attributes"];
+        for set in 1..32 {
+            attrs[format!("TEXCOORD_{set}")] = attrs["TEXCOORD_0"].clone();
+        }
+    });
+    let mut scene = scene_of(&base);
+    let image = add_image(&mut scene, jpeg_8x8());
+    set_texture(&mut scene, 0, box_texture(image, 2.0));
+    let (_, written) = export(&base, &scene);
+    let v = root(&written);
+    let attrs = &primitive_of(&v, 0)["attributes"];
+    for set in 1..32 {
+        assert_eq!(attrs[format!("TEXCOORD_{set}")], attrs["TEXCOORD_0"]);
+    }
+    assert_ne!(attrs["TEXCOORD_32"], attrs["TEXCOORD_0"]);
+}
+
+#[test]
+fn duplicate_keeps_projection_center() {
+    let base = edit_glb(&textured_quad_glb(&Default::default()), |v| {
+        let indices = primitive_of(v, 0)["indices"].as_u64().unwrap() as usize;
+        v["accessors"][indices]["count"] = 3.into();
+    });
+    let mut glb = Glb::from_slice(&base).unwrap();
+    let v = root(&base);
+    let position = primitive_of(&v, 0)["attributes"]["POSITION"]
+        .as_u64()
+        .unwrap() as usize;
+    let view = v["accessors"][position]["bufferView"].as_u64().unwrap() as usize;
+    let at = v["bufferViews"][view]["byteOffset"].as_u64().unwrap_or(0) as usize + 3 * 12;
+    glb.bin.as_mut().unwrap().to_mut()[at..at + 4].copy_from_slice(&(-4.0f32).to_le_bytes());
+    let base = edit_glb(&glb.to_vec().unwrap(), |v| {
+        v["accessors"][position]["min"][0] = (-4.0).into()
+    });
+    let mut doc = Document::new(Arc::new(load_glb(&base).unwrap()));
+    let (place, copy) = doc.duplicate_subtree(NodeKey(0)).unwrap();
+    doc.insert_subtree(place, copy).unwrap();
+    let image = doc
+        .try_add_image(jpeg_8x8().into(), model_reviewer_core::texture::Mime::Jpeg)
+        .unwrap();
+    let tex = doc.add_tex_use(box_texture(image, 0.5)).unwrap();
+    let key = doc.key(NodeId(1)).unwrap();
+    let mut looks = doc.subtree_looks(key).unwrap();
+    looks[0].tex = Some(tex);
+    doc.set_subtree_looks(key, &looks).unwrap();
+    let (built, written) = export(&base, &snapshot(&doc));
+    doc.set_file_indices(&built.assigned);
+    assert_eq!(export(&written, &snapshot(&doc)).1, written);
+}
+
+fn check_swapped_normal_uv(different_sources: bool) {
+    let quad = textured_quad_glb(&TexturedOptions {
+        tex_coord: 1,
+        ..Default::default()
+    });
+    let base = edit_glb(&quad, |v| {
+        v["materials"][0]["normalTexture"] = json(r#"{"index":0,"texCoord":1}"#);
+        v["materials"][0]["pbrMetallicRoughness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("baseColorTexture");
+        let mut second = primitive_of(v, 0).clone();
+        if different_sources {
+            second["attributes"]["TEXCOORD_1"] = second["attributes"]["TEXCOORD_0"].clone();
+        }
+        v["meshes"][0]["primitives"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+    });
+    let mut scene = scene_of(&base);
+    let image = add_image(&mut scene, jpeg_8x8());
+    set_texture(&mut scene, 0, box_texture(image, 1.));
+    scene.nodes[0].draws[1].tex = scene.nodes[0].draws[0].tex;
+    let (mut built, bytes) = export(&base, &scene);
+    let mut v = root(&bytes);
+    let mesh = v["nodes"][0]["mesh"].as_u64().unwrap() as usize;
+    let p = &mut v["meshes"][mesh]["primitives"];
+    if different_sources {
+        p[1] = p[0].clone();
+    } else {
+        p[1]["attributes"]["TEXCOORD_1"] = p[0]["attributes"]["TEXCOORD_0"].clone();
+    }
+    built.json = gltf::json::serialize::to_vec(&v).unwrap();
+    rejects(&base, &scene, &built);
+}
+
+#[test]
+fn verify_checks_source_uv_refs() {
+    check_swapped_normal_uv(true);
+}
+
+#[test]
+fn verify_checks_output_uv_refs() {
+    check_swapped_normal_uv(false);
 }

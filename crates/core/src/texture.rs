@@ -92,6 +92,8 @@ pub const IDENTITY_TRANSFORM: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UvMap {
+    /// 表示できなかった基本色の画像。書き出しと取り消しのために、参照を持つ材質を覚える。
+    Unresolved { material: u32 },
     Vertex {
         /// 2×3 行列の上段、下段の順。
         transform: [f32; 6],
@@ -109,7 +111,7 @@ pub enum UvMap {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TexUse {
-    /// MASK の閾値だけを保つ材質では `None`。
+    /// 表示できない参照や MASK の閾値だけを保つ材質では `None`。
     pub image: Option<ImageId>,
     pub sampling: Sampling,
     pub map: UvMap,
@@ -329,6 +331,8 @@ pub fn same_look(
         return false;
     }
     match (a.map, b.map) {
+        (UvMap::Unresolved { material: x }, UvMap::Unresolved { material: y }) => x == y,
+        (UvMap::Unresolved { .. }, _) | (_, UvMap::Unresolved { .. }) => false,
         (
             UvMap::Vertex {
                 transform: x,

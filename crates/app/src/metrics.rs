@@ -197,9 +197,9 @@ pub fn report_lines(metrics: &Metrics, counts: Option<Counts>) -> Vec<ReportLine
     }
     if let Some(bytes) = metrics.physical_mem {
         lines.push(ReportLine {
-            label: "メモリ",
+            label: "常駐メモリ",
             value: format!("{bytes} バイト"),
-            about: "memory_stats の physical_mem（プロセスの常駐メモリ）",
+            about: "memory_stats の physical_mem（プロセスの常駐メモリ。GPU に置いた画像などは含まないことがあります）",
         });
     }
     lines

@@ -1,9 +1,12 @@
 //! 元のGLBから、書き出しの判断に要る値を取り出す。読み込み（`inspect`・`build`）と同じ関数を
 //! 使うので、「変えていない」の判定と、読み込みが使うシーンの根が読み込みと食い違わない。
 
+use std::collections::HashMap;
+
 use glam::Affine3A;
 use gltf::json::Value;
 use model_reviewer_core::scene::Model;
+use model_reviewer_core::texture::ImageHash;
 
 use super::container::{self, Container};
 use super::{ExportError, ExportScene};
@@ -32,6 +35,10 @@ pub(crate) struct Base<'a> {
     pub model: Model,
     /// `model.draws` と同じ並びの、描画の出どころ（読み込みが作った対応。数え直さない）。
     pub sources: Vec<DrawSource>,
+    /// 材質が参照していない画像も、元の番号で再利用する。
+    pub image_indices: HashMap<ImageHash, usize>,
+    /// 同じ内容の画像が複数ある場合も、取り消しで元の材質の画像番号を復元する。
+    pub image_hashes: Vec<Option<ImageHash>>,
 }
 
 pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>, ExportError> {
@@ -39,6 +46,20 @@ pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>,
     let opened =
         inspect::open(bytes).map_err(|error| ExportError::InvalidBase(error.message_ja()))?;
     let root = opened.document.as_json();
+    let mut image_indices = HashMap::new();
+    let image_hashes = root
+        .images
+        .iter()
+        .enumerate()
+        .map(|(index, image)| {
+            let view = &root.buffer_views[image.buffer_view?.value()];
+            // inspect::open が検証した BIN 範囲。末尾の詰め物は画像に含めない。
+            let start = view.byte_offset.map_or(0, |offset| offset.0) as usize;
+            let hash = ImageHash::of(&opened.bin[start..start + view.byte_length.0 as usize]);
+            image_indices.entry(hash).or_insert(index);
+            Some(hash)
+        })
+        .collect();
     let node_count = root.nodes.len();
     let mut locals = Vec::with_capacity(node_count);
     let mut children = Vec::with_capacity(node_count);
@@ -111,10 +132,31 @@ pub(crate) fn read<'a>(bytes: &'a [u8], scene: &ExportScene) -> Result<Base<'a>,
         source_nodes,
         model,
         sources,
+        image_indices,
+        image_hashes,
     })
 }
 
 impl Base<'_> {
+    /// 読み込みの判定に加え、写すノードとメッシュの生の JSON でも確認する。
+    pub fn can_bake(&self, file: u32) -> bool {
+        let node = &self.value["nodes"][file as usize];
+        let mesh = node["mesh"]
+            .as_u64()
+            .map(|id| &self.value["meshes"][id as usize]);
+        self.model
+            .textures
+            .no_box_nodes
+            .binary_search(&file)
+            .is_err()
+            && node.get("skin").is_none()
+            && mesh.is_some_and(|m| {
+                super::json::array(m, "primitives")
+                    .iter()
+                    .all(|p| p.get("targets").is_none())
+            })
+    }
+
     /// ファイルのノード番号から、その部品の元の描画を引く。復元部品と複製の元も含む。
     pub fn draw_range(&self, file: u32) -> Option<std::ops::Range<usize>> {
         let at = self.source_nodes.get(file as usize).copied().flatten()?;

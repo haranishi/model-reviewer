@@ -321,7 +321,10 @@ fn missing_metrics_say_unmeasured_and_memory_is_omitted() {
         .as_ref()
         .map(|model| metrics::Counts::from_stats(model.stats));
     let lines = metrics::report_lines(&session.metrics, counts);
-    let memory = lines.iter().find(|line| line.label == "常駐メモリ").unwrap();
+    let memory = lines
+        .iter()
+        .find(|line| line.label == "常駐メモリ")
+        .unwrap();
     assert_eq!(memory.value, "1234 バイト");
     assert!(memory.about.contains("physical_mem"));
     let counts = lines

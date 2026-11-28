@@ -100,8 +100,10 @@ pub enum UvMap {
         info_from: Option<u32>,
     },
     Box {
-        /// ローカル座標で測った画像1枚の辺の長さ。
+        /// ローカル座標で測った画像の長い辺の長さ。
         size: f32,
+        /// 画像の幅 / 高さ。短い辺はここから決める。
+        aspect: f32,
     },
 }
 
@@ -124,6 +126,8 @@ pub struct Textures {
     pub prim_uvs: Vec<Vec<[f32; 2]>>,
     /// スキンまたはモーフのあるノードのファイル内番号。昇順。
     pub no_box_nodes: Vec<u32>,
+    /// ファイル内のノード番号から、開いた時点でそのノードが指していたメッシュの番号。
+    pub source_meshes: HashMap<u32, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,32 +247,43 @@ impl BoxFace {
         }
     }
 
-    fn uv(self, p: Vec3, size: f32) -> [f32; 2] {
+    fn uv(self, p: Vec3, [width, height]: [f32; 2]) -> [f32; 2] {
         let sign = if self.negative { -1.0 } else { 1.0 };
         let (u, v) = match self.axis {
             Axis::X => (-sign * p.z, p.y),
             Axis::Y => (p.x, -sign * p.z),
             Axis::Z => (sign * p.x, p.y),
         };
-        [u / size, -v / size]
+        [0.5 + u / width, 0.5 - v / height]
     }
 }
 
-/// ローカル座標を、面の外から見た UV に写す。`size` は有限の正の長さ。
-pub fn box_uv(p: Vec3, face_normal: Vec3, size: f32) -> [f32; 2] {
-    BoxFace::from_normal(face_normal).uv(p, size)
+/// 長い辺を `size` にし、縦横比 `aspect`（幅 / 高さ）を保った画像1枚の幅と高さ。
+pub fn box_sides(size: f32, aspect: f32) -> [f32; 2] {
+    [size * aspect.min(1.0), size / aspect.max(1.0)]
+}
+
+/// ローカル座標を、面の外から見た UV に写す。`center`（形状のローカルの外形の中心）が
+/// どの面でも画像の中心（0.5, 0.5）に来る。`sides` は有限の正の幅と高さ。
+pub fn box_uv(p: Vec3, face_normal: Vec3, center: Vec3, sides: [f32; 2]) -> [f32; 2] {
+    BoxFace::from_normal(face_normal).uv(p - center, sides)
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Baked {
+    /// 分けた頂点が参照していた元の頂点。元の UV の全組をここから写す。
+    pub source_indices: Vec<u32>,
     pub vertices: Vec<Vertex>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
 /// 検証済みの三角形を元の順に焼く。法線属性の有無は元の `prim.has_normals` に従う。
-pub fn bake_box(prim: &Primitive, size: f32) -> Baked {
+/// 画像の中心は `prim.local_aabb` の中心に置く。
+pub fn bake_box(prim: &Primitive, sides: [f32; 2]) -> Baked {
+    let center = prim.local_aabb.center();
     let mut baked = Baked {
+        source_indices: Vec::new(),
         vertices: Vec::new(),
         uvs: Vec::new(),
         indices: Vec::with_capacity(prim.indices.len()),
@@ -281,8 +296,11 @@ pub fn bake_box(prim: &Primitive, size: f32) -> Baked {
             let baked_index = by_face.entry((index, face)).or_insert_with(|| {
                 let vertex = prim.vertices[index as usize];
                 let next = baked.vertices.len() as u32;
+                baked.source_indices.push(index);
                 baked.vertices.push(vertex);
-                baked.uvs.push(face.uv(Vec3::from(vertex.position), size));
+                baked
+                    .uvs
+                    .push(face.uv(Vec3::from(vertex.position) - center, sides));
                 next
             });
             baked.indices.push(*baked_index);
@@ -323,14 +341,16 @@ pub fn same_look(
                 ..
             },
         ) => i == j && x.map(f32::to_bits) == y.map(f32::to_bits),
-        (UvMap::Box { size: x }, UvMap::Box { size: y }) => x.to_bits() == y.to_bits(),
-        (UvMap::Box { size }, _) => matches_baked_box(b, size),
-        (_, UvMap::Box { size }) => matches_baked_box(a, size),
+        (UvMap::Box { size: x, aspect: a }, UvMap::Box { size: y, aspect: b }) => {
+            x.to_bits() == y.to_bits() && a.to_bits() == b.to_bits()
+        }
+        (UvMap::Box { size, .. }, _) => matches_baked_box(b, size),
+        (_, UvMap::Box { size, .. }) => matches_baked_box(a, size),
     }
 }
 
 fn matches_baked_box(tex: &TexUse, size: f32) -> bool {
-    matches!(tex.map, UvMap::Vertex { transform, tex_coord: 0, .. } if transform == IDENTITY_TRANSFORM)
+    matches!(tex.map, UvMap::Vertex { transform, .. } if transform == IDENTITY_TRANSFORM)
         && tex.baked_box.map(f32::to_bits) == Some(size.to_bits())
 }
 
@@ -440,7 +460,7 @@ mod tests {
         ] {
             for [u, v] in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
                 let p = (normal + right * u + down * v) * 2.0;
-                assert_uv(box_uv(p, normal, 2.0), [u, v]);
+                assert_uv(box_uv(p, normal, Vec3::ZERO, [2.0; 2]), [0.5 + u, 0.5 + v]);
             }
         }
     }
@@ -454,7 +474,7 @@ mod tests {
             (Vec3::new(0.0, -2.0, 2.0), [1.0, -3.0]),
             (Vec3::splat(-0.0), [-3.0, -2.0]),
         ] {
-            assert_uv(box_uv(p, normal, 2.0), uv);
+            assert_uv(box_uv(p, normal, Vec3::ZERO, [2.0; 2]), uv.map(|v| 0.5 + v));
         }
     }
 
@@ -485,6 +505,21 @@ mod tests {
     }
 
     #[test]
+    fn box_sides_keep_aspect_with_long_side() {
+        assert_eq!(box_sides(2.0, 2.0), [2.0, 1.0]);
+        assert_eq!(box_sides(2.0, 0.5), [1.0, 2.0]);
+        assert_eq!(box_sides(2.0, 1.0), [2.0, 2.0]);
+    }
+
+    #[test]
+    fn box_centers_offset_bounds() {
+        let prim = folded_mesh();
+        let baked = bake_box(&prim, [2.0; 2]);
+        // +Z 面の (0, 0) は、外形の中心 (1, 1) から左下の角。
+        assert_uv(baked.uvs[baked.indices[1] as usize], [0.0, 1.0]);
+    }
+
+    #[test]
     fn bake_box_keeps_triangle_positions() {
         let mut prim = folded_mesh();
         for has_normals in [true, false] {
@@ -494,7 +529,7 @@ mod tests {
                     v.normal = [0.0; 3];
                 }
             }
-            let baked = bake_box(&prim, 2.0);
+            let baked = bake_box(&prim, [2.0; 2]);
             assert_eq!(baked.indices.len(), prim.indices.len());
             assert_eq!(baked.uvs.len(), baked.vertices.len());
             let normals = [Vec3::Z, Vec3::Z, Vec3::X, Vec3::NEG_Z, Vec3::ZERO];
@@ -511,7 +546,12 @@ mod tests {
                 );
                 assert_uv(
                     baked.uvs[index as usize],
-                    box_uv(original.position.into(), normals[i / 3], 2.0),
+                    box_uv(
+                        original.position.into(),
+                        normals[i / 3],
+                        prim.local_aabb.center(),
+                        [2.0; 2],
+                    ),
                 );
             }
         }
@@ -519,7 +559,7 @@ mod tests {
 
     #[test]
     fn bake_box_splits_only_at_axis_changes() {
-        let baked = bake_box(&folded_mesh(), 2.0);
+        let baked = bake_box(&folded_mesh(), [2.0; 2]);
         assert_eq!(baked.vertices.len(), 10);
         assert_eq!(baked.indices, [0, 1, 2, 2, 3, 0, 4, 5, 6, 7, 8, 9, 4, 4, 4]);
     }
@@ -529,7 +569,10 @@ mod tests {
         let boxed = TexUse {
             image: Some(ImageId(1)),
             sampling: Sampling::default(),
-            map: UvMap::Box { size: 2.0 },
+            map: UvMap::Box {
+                size: 2.0,
+                aspect: 1.0,
+            },
             cutoff: Some(0.5),
             baked_box: None,
         };
@@ -558,7 +601,10 @@ mod tests {
         assert!(!same(
             &boxed,
             &TexUse {
-                map: UvMap::Box { size: 1.0 },
+                map: UvMap::Box {
+                    size: 1.0,
+                    aspect: 1.0
+                },
                 ..boxed
             }
         ));
@@ -571,11 +617,13 @@ mod tests {
         ));
         let mut shifted = IDENTITY_TRANSFORM;
         shifted[2] = 0.5;
+        let other_set = TexUse {
+            map: vertex_map(1, Some(7), IDENTITY_TRANSFORM),
+            ..baked
+        };
+        assert!(same(&boxed, &other_set));
+        assert!(!same(&baked, &other_set));
         for different in [
-            TexUse {
-                map: vertex_map(1, Some(7), IDENTITY_TRANSFORM),
-                ..baked
-            },
             TexUse {
                 map: vertex_map(0, Some(7), shifted),
                 ..baked

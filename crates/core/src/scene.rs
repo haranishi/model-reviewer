@@ -487,7 +487,10 @@ mod tests {
         let tex = TexUse {
             image: Some(ImageId(0)),
             sampling: Sampling::default(),
-            map: UvMap::Box { size: 1.0 },
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
             cutoff: None,
             baked_box: None,
         };

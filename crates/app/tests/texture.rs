@@ -680,7 +680,13 @@ fn size_field_changes_box_size() {
     assert_eq!(selected_tex(h.state()), original);
     h.key_press(egui::Key::Enter);
     h.step();
-    assert_eq!(selected_tex(h.state()).map, UvMap::Box { size: 0.25 });
+    assert_eq!(
+        selected_tex(h.state()).map,
+        UvMap::Box {
+            size: 0.25,
+            aspect: 1.0
+        }
+    );
     let rev = h.state().history.doc_rev();
     h.state_mut().apply(Command::SetTextureSize(0.25));
     assert_eq!(h.state().history.doc_rev(), rev);
@@ -689,10 +695,42 @@ fn size_field_changes_box_size() {
 }
 
 #[test]
+fn repaste_preserves_size_and_updates_aspect() {
+    let mut s = cube();
+    for (w, h) in [(8, 4), (4, 8)] {
+        let path = folder("box-aspect").join(format!("{w}-{h}.png"));
+        image::RgbaImage::new(w, h).save(&path).unwrap();
+        paste(&mut s, path);
+        if w > h {
+            s.apply(Command::SetTextureSize(0.25));
+        }
+        let path = folder("box-aspect").join(format!("{w}-{h}.glb"));
+        export(&mut s, &path);
+        let model = model_reviewer_gltf::load_glb(&std::fs::read(path).unwrap()).unwrap();
+        let draw = model.draws[0];
+        let p = &model.primitives[draw.prim.0 as usize];
+        let uvs = model.prim_uvs(draw.prim);
+        let extent = |axis: usize| {
+            let (min, max) = uvs
+                .iter()
+                .map(|uv| uv[axis])
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| {
+                    (min.min(v), max.max(v))
+                });
+            assert!((min + max - 1.0).abs() < 1e-5);
+            max - min
+        };
+        let side = (p.local_aabb.max - p.local_aabb.min).x;
+        assert!((extent(0) / extent(1) - h as f32 / w as f32).abs() < 1e-5);
+        assert!((extent(0).min(extent(1)) - side / 0.25).abs() < 1e-5);
+    }
+}
+
+#[test]
 fn stl_paste_uses_scale_for_size() {
     let mut s = opened("millimeters", &stl_sample(), 0);
     paste(&mut s, png("millimeters"));
-    let UvMap::Box { size } = selected_tex(&s).map else {
+    let UvMap::Box { size, .. } = selected_tex(&s).map else {
         panic!("箱形の投影")
     };
     assert!((size - 40.).abs() < 0.0001);
@@ -700,7 +738,7 @@ fn stl_paste_uses_scale_for_size() {
     assert!((view.world_size.unwrap() - 0.04).abs() < 1e-6);
     assert_eq!(view.units.shown().suffix(), "mm");
     s.apply(Command::SetTextureSize(0.01));
-    let UvMap::Box { size } = selected_tex(&s).map else {
+    let UvMap::Box { size, .. } = selected_tex(&s).map else {
         panic!("箱形の投影")
     };
     assert!((size - 10.).abs() < 0.0001);

@@ -71,12 +71,19 @@ pub(crate) fn verify(
         .ok_or_else(|| fail("元のJSONを読み直せません".to_owned()))?;
     check_assigned(&base, scene, &shape, built)?;
     check_top_level(&old_value, &new_value, built)?;
-    check_nodes(&old_value, &new_value, &base, scene, &shape, built)?;
+    let restored = check_nodes(&old_value, &new_value, &base, scene, &shape, built)?;
     check_scenes(&old_value, &new_value, &base, &shape, built)?;
     check_appended(&old_value, &new_value, &base, built, scene)?;
     let model = crate::load_glb(written)
         .map_err(|error| fail(format!("開けません: {}", error.message_ja())))?;
-    check_model(&model, &base, scene, built, &new_value)?;
+    let reopened = crate::inspect::open(written)
+        .map_err(|error| fail(format!("開けません: {}", error.message_ja())))?;
+    let written = Written {
+        root: reopened.document.as_json(),
+        bin: reopened.bin,
+        value: &new_value,
+    };
+    check_model(&model, &base, scene, built, &written, &restored)?;
     Ok(model)
 }
 
@@ -201,8 +208,8 @@ fn check_nodes(
     scene: &ExportScene,
     shape: &Shape,
     built: &Built,
-) -> Result<(), ExportError> {
-    let mut meshes = looks::MeshChecks::new(old, new, base, &scene.textures);
+) -> Result<HashSet<(usize, usize)>, ExportError> {
+    let mut meshes = looks::MeshChecks::new(old, new, base, scene);
     let old_nodes = nodes_of(old);
     let new_nodes = nodes_of(new);
     let added = scene
@@ -228,7 +235,7 @@ fn check_nodes(
                 if without(old_node, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} の変えていない項目が元と違います")));
                 }
-                meshes.node(node, new_node)?;
+                meshes.node(index, node, new_node)?;
                 let untouched = base.locals[file].is_some_and(|local| same_bits(local, node.local));
                 if untouched && !same_keys(old_node, new_node, &TRANSFORM) {
                     return Err(fail(format!(
@@ -300,7 +307,7 @@ fn check_nodes(
                 if without(source, &NODE_EDITABLE) != without(new_node, &NODE_EDITABLE) {
                     return Err(fail(format!("{what} が複製の元の写しになっていません")));
                 }
-                meshes.node(node, new_node)?;
+                meshes.node(index, node, new_node)?;
             }
             None => {
                 let Some(map) = new_node.as_object() else {
@@ -312,7 +319,7 @@ fn check_nodes(
                 if map.contains_key("mesh") == node.draws.is_empty() {
                     return Err(fail(format!("{what} の形状の有無が文書と違います")));
                 }
-                meshes.node(node, new_node)?;
+                meshes.node(index, node, new_node)?;
             }
         }
     }
@@ -480,14 +487,33 @@ fn check_appended(
     Ok(())
 }
 
+/// 書いたファイルの JSON と BIN。UV の組を描画ごとに読み直す。
+struct Written<'a> {
+    root: &'a gltf::json::Root,
+    bin: &'a [u8],
+    value: &'a Value,
+}
+
+impl Written<'_> {
+    fn uv_sets(&self, node: u32, slot: usize, vertices: usize) -> Option<crate::build::UvSets> {
+        let mesh = self.root.nodes.get(node as usize)?.mesh?.value();
+        let primitive = self.root.meshes.get(mesh)?.primitives.get(slot)?;
+        crate::build::uv_sets(self.root, self.bin, primitive, vertices)
+            .ok()
+            .flatten()
+    }
+}
+
 /// 3. 本アプリの読み込みで開いた結果が `scene` と一致する。
 fn check_model(
     model: &Model,
     base: &Base<'_>,
     scene: &ExportScene,
     built: &Built,
-    new: &Value,
+    written: &Written<'_>,
+    restored: &HashSet<(usize, usize)>,
 ) -> Result<(), ExportError> {
+    let new = written.value;
     if model.nodes.len() != scene.nodes.len() {
         return Err(fail(format!(
             "部品の数が違います（読み直し {}、文書 {}）",
@@ -532,9 +558,13 @@ fn check_model(
         if draws.len() != node.draws.len() {
             return Err(fail(format!("{what} の描画の数が違います")));
         }
-        let source_draws = match node.file_index.or(node.template) {
-            Some(file) => Some(
-                base.draw_range(file)
+        let source_range = node
+            .file_index
+            .or(node.template)
+            .map(|file| base.draw_range(file));
+        let source_draws = match source_range.clone() {
+            Some(range) => Some(
+                range
                     .and_then(|r| base.model.draws.get(r))
                     .ok_or_else(|| fail(format!("{what} の元の描画がありません")))?,
             ),
@@ -579,14 +609,28 @@ fn check_model(
                     "{what} の画像・貼り方・透明度の閾値が違います"
                 )));
             }
-            let size = box_size(look);
-            if compared.insert((got.prim, key, size.map(f32::to_bits))) {
-                let matches = match size {
-                    Some(size) => baked_matches(actual, model.prim_uvs(got.prim), expected, size),
+            let sides = box_size(look).map(|(_, sides)| sides);
+            let back = restored.contains(&(index, slot));
+            if compared.insert((got.prim, key, sides.map(|s| s.map(f32::to_bits)), back)) {
+                let matches = match sides {
+                    Some(sides) => baked_matches(actual, model.prim_uvs(got.prim), expected, sides),
+                    None if back => same_triangles(actual, expected),
                     None => same_primitive(actual, expected),
                 };
                 if !matches {
                     return Err(fail(format!("{what} の形状または UV が違います")));
+                }
+                // 焼いた形状は元の UV の組を、戻した形状は焼く前の UV の組を、角ごとに同じ値で持つ。
+                let base_draw = source_range.clone().flatten().map(|r| r.start + slot);
+                if let Some(draw) = base_draw.filter(|_| sides.is_some() || back) {
+                    let file_slot = base.sources[draw].primitive as usize;
+                    let got_sets = written
+                        .uv_sets(built.assigned[index], file_slot, actual.vertices.len())
+                        .ok_or_else(|| fail(format!("{what} の UV の組を読めません")))?;
+                    let want_sets = base.uv_sets(draw).map_err(|e| fail(e.message_ja()))?;
+                    if !same_uv_sets(actual, &got_sets, expected, &want_sets, back) {
+                        return Err(fail(format!("{what} の元の UV の組が違います")));
+                    }
                 }
             }
             placed += (actual.indices.len() / 3) as u64;
@@ -603,7 +647,7 @@ fn matches_look(want: Look<'_>, got: Look<'_>, old: &Value, new: &Value) -> bool
     if same_look(want, got) {
         return true;
     }
-    let (Some(size), Some((tex, hash))) = (box_size(want), got) else {
+    let (Some((size, _)), Some((tex, hash))) = (box_size(want), got) else {
         return false;
     };
     let UvMap::Vertex {
@@ -624,7 +668,72 @@ fn matches_look(want: Look<'_>, got: Look<'_>, old: &Value, new: &Value) -> bool
     same_look(want, Some((&marked, hash)))
 }
 
-fn baked_matches(actual: &Primitive, uvs: &[[f32; 2]], expected: &Primitive, size: f32) -> bool {
+/// 角ごとに、両方にある組の UV がビット単位で同じ。焼いた形状（`back` が偽）は元の組をすべて持ち、
+/// 足すのは箱形の組1つだけ（土台で焼いた形状をそのまま使うなら同じ組）。戻した形状は、焼いた
+/// 形状が写した組をすべて持つ（箱形の組を除く）。
+fn same_uv_sets(
+    actual: &Primitive,
+    got: &[(u32, Vec<[f32; 2]>)],
+    expected: &Primitive,
+    want: &[(u32, Vec<[f32; 2]>)],
+    back: bool,
+) -> bool {
+    let (smaller, larger) = if back { (got, want) } else { (want, got) };
+    if larger.len() != smaller.len() + 1 && larger.len() != smaller.len() {
+        return false;
+    }
+    smaller.iter().all(|(set, values)| {
+        let Some((_, other)) = larger.iter().find(|(n, _)| n == set) else {
+            return false;
+        };
+        let (got_values, want_values) = if back {
+            (values, other)
+        } else {
+            (other, values)
+        };
+        actual
+            .indices
+            .iter()
+            .zip(&expected.indices)
+            .all(
+                |(&g, &w)| match (got_values.get(g as usize), want_values.get(w as usize)) {
+                    (Some(a), Some(b)) => a.map(f32::to_bits) == b.map(f32::to_bits),
+                    _ => false,
+                },
+            )
+    })
+}
+
+/// 三角形の数と、角ごとの位置（と元にあれば法線）がビット単位で同じ。頂点の並びは問わない。
+fn same_triangles(actual: &Primitive, expected: &Primitive) -> bool {
+    actual.has_normals == expected.has_normals
+        && actual.indices.len() == expected.indices.len()
+        && actual
+            .indices
+            .iter()
+            .zip(&expected.indices)
+            .all(|(&a, &b)| {
+                match (
+                    actual.vertices.get(a as usize),
+                    expected.vertices.get(b as usize),
+                ) {
+                    (Some(a), Some(b)) => {
+                        a.position.map(f32::to_bits) == b.position.map(f32::to_bits)
+                            && (!expected.has_normals
+                                || a.normal.map(f32::to_bits) == b.normal.map(f32::to_bits))
+                    }
+                    _ => false,
+                }
+            })
+}
+
+fn baked_matches(
+    actual: &Primitive,
+    uvs: &[[f32; 2]],
+    expected: &Primitive,
+    sides: [f32; 2],
+) -> bool {
+    let center = expected.local_aabb.center();
     if actual.indices.len() != expected.indices.len()
         || actual.has_normals != expected.has_normals
         || actual.vertices.len() != uvs.len()
@@ -651,7 +760,7 @@ fn baked_matches(actual: &Primitive, uvs: &[[f32; 2]], expected: &Primitive, siz
                         || vertex.normal.map(f32::to_bits) == source.normal.map(f32::to_bits))
                     && uvs[i as usize]
                         .into_iter()
-                        .zip(box_uv(Vec3::from(source.position), normal, size))
+                        .zip(box_uv(Vec3::from(source.position), normal, center, sides))
                         .all(|(v, target)| {
                             v.is_finite()
                                 && target.is_finite()

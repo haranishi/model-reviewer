@@ -16,6 +16,9 @@ pub const FLAG_DERIVE_NORMAL: u32 = 1;
 /// インスタンスのフラグ。ワールド行列の行列式が負（鏡写し）の部品。表と裏の判定が逆になるので、
 /// シェーダーが断面の切り口の色を決めるときに反転する。`instance` がワールド行列から毎回決め直す。
 pub const FLAG_MIRRORED: u32 = 2;
+/// インスタンスのフラグ。MASK の材質で基本色の透明度が閾値より小さい描画。画像の有無に
+/// かかわらず（画像の透明度は 1 以下なので）どの画素も閾値に届かず、シェーダーが描かない。
+pub const FLAG_CUT_OUT: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -167,9 +170,14 @@ pub fn build(model: &impl SceneRead, visible: &dyn Fn(NodeId) -> bool) -> Instan
             Some(tex) => textured.get_mut(&texture_key(draw, tex)).expect("数えた組"),
             None => &mut plain[draw.prim.0 as usize],
         };
-        let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL };
+        let flags = if has_normals { 0 } else { FLAG_DERIVE_NORMAL } | cut_out(model, draw);
         let mut raw_instance = instance(model.world(id), draw.base_color, index as u32, flags);
         raw_instance.color[3] = instance_alpha(model, draw);
+        if let Some(center) = box_center(model, draw) {
+            for (row, value) in raw_instance.normal.iter_mut().zip(center) {
+                row[3] = value;
+            }
+        }
         raw[*slot as usize] = raw_instance;
         nodes[*slot as usize] = index as u32;
         slots.push(*slot);
@@ -245,13 +253,18 @@ pub(crate) fn patch(
         let world = model.world(id);
         for (i, &slot) in list.slots[at].iter().enumerate() {
             let old = list.raw[slot as usize];
-            let (color, alpha) = if matched {
-                (draws[i].base_color, instance_alpha(model, &draws[i]))
+            let (color, alpha, flags) = if matched {
+                let flags = (old.ids[1] & !FLAG_CUT_OUT) | cut_out(model, &draws[i]);
+                (draws[i].base_color, instance_alpha(model, &draws[i]), flags)
             } else {
-                (old.color, old.color[3])
+                (old.color, old.color[3], old.ids[1])
             };
-            let mut next = instance(world, color, node, old.ids[1]);
+            let mut next = instance(world, color, node, flags);
             next.color[3] = alpha;
+            // 形状は変わらないので、箱形の中心は前の値のまま。
+            for (row, old) in next.normal.iter_mut().zip(old.normal) {
+                row[3] = old[3];
+            }
             list.raw[slot as usize] = next;
             out.slots.push(slot);
         }
@@ -262,6 +275,26 @@ pub(crate) fn patch(
 
 /// 切り抜き（MASK）の材質の描画だけ、基本色の透明度を判定に渡す。画面へ書く透明度は表示方法で
 /// 決めるので、ほかの描画は 1 のままにする。
+fn cut_out(model: &impl SceneRead, draw: &Draw) -> u32 {
+    match draw
+        .tex
+        .and_then(|tex| model.tex_use(tex))
+        .and_then(|t| t.cutoff)
+    {
+        Some(cutoff) if draw.base_color[3] < cutoff => FLAG_CUT_OUT,
+        _ => 0,
+    }
+}
+
+/// 箱形で貼る描画の、形状のローカルの外形の中心。シェーダーが画像の中心をここに置く。
+fn box_center(model: &impl SceneRead, draw: &Draw) -> Option<[f32; 3]> {
+    let tex = model.tex_use(draw.tex?)?;
+    if tex.image.is_none() || !matches!(tex.map, UvMap::Box { .. }) {
+        return None;
+    }
+    Some(model.primitive(draw.prim)?.local_aabb.center().to_array())
+}
+
 fn instance_alpha(model: &impl SceneRead, draw: &Draw) -> f32 {
     match draw.tex.and_then(|tex| model.tex_use(tex)) {
         Some(usage) if usage.cutoff.is_some() => draw.base_color[3],
@@ -377,7 +410,10 @@ mod tests {
         model.textures.uses = vec![TexUse {
             image: Some(ImageId(0)),
             sampling: Sampling::default(),
-            map: UvMap::Box { size: 1.0 },
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
             cutoff: Some(0.5),
             baked_box: None,
         }];
@@ -399,6 +435,41 @@ mod tests {
             .unwrap();
         patch(&mut list, &doc, &range);
         assert_eq!(alphas(&list, 0), [0.25]);
+        assert_eq!(list, build(&doc, &|_| true));
+    }
+
+    #[test]
+    fn mask_below_cutoff_is_cut_out_and_box_keeps_center() {
+        use model_reviewer_core::texture::{Sampling, TexId, TexUse, UvMap};
+
+        let mut model = (*scattered()).clone();
+        // 画像の無い MASK の材質。
+        model.textures.uses = vec![TexUse {
+            image: None,
+            sampling: Sampling::default(),
+            map: UvMap::Box {
+                size: 1.0,
+                aspect: 1.0,
+            },
+            cutoff: Some(0.5),
+            baked_box: None,
+        }];
+        model.draws[0].tex = Some(TexId(0));
+        model.draws[0].base_color[3] = 0.25;
+        let mut doc = Document::new(Arc::new(model));
+        let first = |list: &InstanceList| list.raw[list.node_slots(&(0..1))[0] as usize];
+        let mut list = build(&doc, &|_| true);
+        assert_eq!(first(&list).ids[1] & FLAG_CUT_OUT, FLAG_CUT_OUT);
+        // 画像の無い材質には箱形の中心を入れない。
+        assert!(first(&list).normal.iter().all(|row| row[3] == 0.0));
+        let others = list.raw.iter().filter(|raw| raw.ids[1] & FLAG_CUT_OUT != 0);
+        assert_eq!(others.count(), 1);
+        let count = doc.subtree_colors(NodeKey(0)).unwrap().len();
+        let range = doc
+            .set_subtree_colors(NodeKey(0), &vec![[1.0, 1.0, 1.0, 0.5]; count])
+            .unwrap();
+        patch(&mut list, &doc, &range);
+        assert_eq!(first(&list).ids[1] & FLAG_CUT_OUT, 0);
         assert_eq!(list, build(&doc, &|_| true));
     }
 

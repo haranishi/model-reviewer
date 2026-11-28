@@ -6,7 +6,8 @@ use std::sync::Arc;
 use gltf::json::{Value, texture as gl};
 use model_reviewer_core::scene::{Model, SceneRead};
 use model_reviewer_core::texture::{
-    ImageHash, ImageInfo, ImageSource, Mime, Mip, Sampling, TexId, TexUse, UvMap, Wrap, sniff,
+    ImageHash, ImageInfo, ImageSource, Mime, Mip, Sampling, TexId, TexUse, UvMap, Wrap, box_sides,
+    sniff,
 };
 
 use super::ExportError;
@@ -90,10 +91,11 @@ pub(super) fn mime_type(mime: Mime) -> &'static str {
     }
 }
 
-pub(super) fn box_size(look: Look<'_>) -> Option<f32> {
+/// 箱形で貼る描画の、長い辺の長さと画像1枚の幅と高さ。
+pub(super) fn box_size(look: Look<'_>) -> Option<(f32, [f32; 2])> {
     let (tex, _) = look?;
     match (tex.image, tex.map) {
-        (Some(_), UvMap::Box { size }) => Some(size),
+        (Some(_), UvMap::Box { size, aspect }) => Some((size, box_sides(size, aspect))),
         _ => None,
     }
 }
@@ -109,8 +111,16 @@ pub(super) fn can_mark(material: &Value) -> bool {
 pub(super) enum TextureEdit {
     Keep,
     Remove,
-    Vertex { texture: usize, from: u32 },
-    Box { texture: usize, size: u32 },
+    Vertex {
+        texture: usize,
+        from: u32,
+    },
+    /// `set` は箱形の UV の組の番号（形状を焼いた後に決める）。
+    Box {
+        texture: usize,
+        size: u32,
+        set: u32,
+    },
 }
 
 pub(super) struct TextureWriter<'a> {
@@ -189,12 +199,13 @@ impl<'a> TextureWriter<'a> {
                 let texture = self.texture(root, source, filters)?;
                 Ok(TextureEdit::Vertex { texture, from })
             }
-            UvMap::Box { size } => {
+            UvMap::Box { size, .. } => {
                 let source = self.image(root, bin, image)?;
                 let texture = self.texture(root, source, filters)?;
                 Ok(TextureEdit::Box {
                     texture,
                     size: size.to_bits(),
+                    set: 0,
                 })
             }
         }

@@ -3,11 +3,11 @@
 要件4・5。型は [design.md](design.md)、GPU は [design-display.md](design-display.md)。
 
 ## 箱形の投影の式（`core::texture::box_uv`。シェーダーと書き出しが同じ式を使う）
-形状のローカルの位置を `p`、三角形の面の法線（頂点の並びが反時計回りに見える側。`cross(b - a, c - a)`）を `n`、画像1枚の辺を `size` とする。
+形状のローカルの位置を `p`、三角形の面の法線（頂点の並びが反時計回りに見える側。`cross(b - a, c - a)`）を `n`、形状のローカルの外形の中心を `c`、画像1枚の幅と高さを `(w, h) = box_sides(size, aspect)`（長い辺が `size`。`aspect` は画像の幅 / 高さ）とする。`p` は `p - c` に置き換えて使う。
 1. 軸を選ぶ。`|n.x| >= |n.y|` かつ `|n.x| >= |n.z|` なら X。そうでなく `|n.y| >= |n.z|` なら Y。残りは Z。`s` はその成分の符号（0 と、長さ0の法線は正）。
 2. X: `(u, v) = (-s * p.z, p.y)`。Y: `(u, v) = (p.x, -s * p.z)`。Z: `(u, v) = (s * p.x, p.y)`。
-3. `uv = (u / size, -v / size)`。サンプラは繰り返し。
-- 符号 `s` を掛けるのは、どの面を外から見ても絵が裏返らないようにするためである（文字やラベルを貼る使い方がある）。ローカルの原点が、絵の左上の角に当たる。
+3. `uv = (0.5 + u / w, 0.5 - v / h)`。サンプラは繰り返し。
+- 符号 `s` を掛けるのは、どの面を外から見ても絵が裏返らないようにするためである（文字やラベルを貼る使い方がある）。外形の中心が、どの面でも絵の中心に当たる（原点が中心に無い形状でも絵が割れない）。画面は箱形の描画のインスタンスの法線行列の各行の w に `c` を持つ。
 - 画面では `scene_box` のフラグメントが、ローカルの位置の微分から面の法線を求めて同じ式を使う。微分から出る法線の向きは、画面上の回り方と、鏡写しの部品（`FLAG_MIRRORED`）で反転する。**どちらへ直すかの定数は、GPU の試験（[design-testing.md](design-testing.md)）で決める。** 推測で書かない。
 - `bake_box` は、三角形ごとに（軸、符号）を決め、（元の頂点の番号、軸、符号）ごとに頂点を1つ作る。位置と法線は元の値をビット単位で写す。三角形の順と、各三角形の頂点の位置は変えない。法線の無い形状は、法線を持たないまま作る。
 
@@ -54,8 +54,8 @@ pub fn texture_view(session: &Session) -> Option<TextureView>;   // 右のパネ
 1. `paste`: 選択・描画の有無・読み込み中と書き出し中を確かめ、だめなら理由を状態欄に出して終わる。箱形になる描画を持つ部品が `no_box_nodes`（自分のノード、複製なら写す元）に当たれば断る。選んだ部品の鍵（`NodeKey`）と、**表示中の文書の世代（`shown_generation`）と文書の版（`doc_rev`）**を控え、仕事のスレッド（`texture-paste`）を起こす。
 2. スレッド: ファイルの大きさ（64 MiB まで）→ 読む → ファイルそのままの識別（長さと BLAKE3。`ModelIdentity::from_bytes`）→ `sniff` → `strip_metadata` → `dimensions` → 残りの上限に収まる段数（`plan_levels` を1枚で呼ぶ。上限は「合計の上限 − 置いたバイト数」）→ `decode`。結果を1回だけ送る。失敗は `TexError::message_ja`。
 3. 受け取ったとき、**世代と版が控えと同じ**で、読み込み中でも書き出し中でもなければ、`add_image` → 描画ごとに `TexUse` を作って `add_tex_use` → `Step::new("画像の貼り付け", vec![Edit::SetLooks { .. }], Some(key))` を実行する。違っていたら「貼る間に文書が変わったため、貼りませんでした」（部品の鍵は文書ごとに 0 から振るので、鍵だけでは別のモデルの部品に当たる。版まで見るのは、取り消しややり直しで同じ鍵の中身が替わるため）。画像は `begin_image` で GPU へ送る（予算つき）。
-4. 描画ごとの `TexUse`: いまの `tex` が `UvMap::Vertex` で、その形状が UV を持つなら、その `TexUse` の `image` だけを替えた写し。それ以外は `{ image: Some(..), sampling: 繰り返し・線形・縮小版つき, map: Box { size }, cutoff: いまの TexUse の cutoff（無ければ None）, baked_box: None }`。色は赤・緑・青を 1 に、透明度はそのまま。
-5. `RemoveTexture`: 描画の `tex` を、`cutoff` があれば `image: None` の `TexUse`、無ければ `None` にする（色はそのまま）。`SetTextureSize`: 箱形の描画だけ、`size` を替えた `TexUse` へ差し替える。どちらも `SetLooks` の1回分（名前は「画像を外す」「画像の大きさ」）。すべての描画がすでにその値なら何もしない。
+4. 描画ごとの `TexUse`: いまの `tex` が `UvMap::Vertex` で、その形状が UV を持つなら、その `TexUse` の `image` だけを替えた写し。それ以外は `{ image: Some(..), sampling: 繰り返し・線形・縮小版つき, map: Box { size, aspect }, cutoff: いまの TexUse の cutoff（無ければ None）, baked_box: None }`。色は赤・緑・青を 1 に、透明度はそのまま。
+5. `RemoveTexture`: 描画の `tex` を、`cutoff` があれば `image: None` の `TexUse`、無ければ `None` にする（色はそのまま）。`SetTextureSize`: 箱形の描画だけ、`size` を替えた `TexUse` へ差し替える（`aspect` は保つ）。貼り替えは、いまの箱形の `size` を保ち、`aspect` を新しい画像の幅 / 高さにする。どちらも `SetLooks` の1回分（名前は「画像を外す」「画像の大きさ」）。すべての描画がすでにその値なら何もしない。
 6. `after_applied`: `retextured` なら `scene_dirty.instances` を立てる。色だけが変わった範囲は、今の `recolored` の部分更新に乗せる。
 - **保護**: 貼り付けが成功したら、モデルを開いたときと同じ2つを登録する。①画像のファイルのパス（選んだパスと、リンクを解いたパス）を `opened_files` に、②**ファイルそのままの識別（付帯情報を取り除く前の長さと BLAKE3）を `FileHistory::remember_opened` に**。②があるので、貼った後に画像を別名にしたり移したりしても、書き出しとレビュー保存の保存先にできない（[protect-originals](../protect-originals/design.md) の内容の照合）。文書が持つ「取り除いた後」のハッシュは、この照合には使えない（元のファイルと長さも中身も違うため）。
 - **ドロップ**（`session::open::dropped`）: 1つ目のファイルの先頭を読み、`sniff` が画像なら `PasteTexture` に回す。選択が無ければ断る（開く動作に回さない）。GLB・STL は今のまま。

@@ -1,5 +1,7 @@
 //! シェーダーとパイプライン。描画先の形式と多重サンプル数が変わったときだけ作り直す。
 
+use std::sync::OnceLock;
+
 use crate::targets::{DEPTH_FORMAT, MASK_FORMAT};
 
 // 描画の定数（`shaders/frame.wgsl` の `Frame`）は scene・mask・grid の先頭に付ける。
@@ -201,8 +203,10 @@ pub struct Pipelines {
     /// 線のパイプラインを作ったか（`POLYGON_MODE_LINE` を持つ装置だけ）。
     pub lines: bool,
     pub scene: wgpu::RenderPipeline,
-    pub scene_uv: wgpu::RenderPipeline,
-    pub scene_box: wgpu::RenderPipeline,
+    /// 画像の描画。テクスチャの無いモデルでは作らないよう、初めて画像を描くときに作る。
+    pub scene_uv: OnceLock<wgpu::RenderPipeline>,
+    pub scene_box: OnceLock<wgpu::RenderPipeline>,
+    texture_layout: wgpu::PipelineLayout,
     /// 透かし。半透明で重ね、深度は比べず書かない。
     pub xray: wgpu::RenderPipeline,
     /// 「面と線」の線。深度は「同じか手前」で比べ、偏りで面より手前に寄せる。書かない。
@@ -212,6 +216,78 @@ pub struct Pipelines {
     pub grid: wgpu::RenderPipeline,
     pub mask: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
+}
+
+/// 形状を描くパイプライン。`entry` は頂点シェーダー、配置、使う頂点バッファの数。
+fn shape_pipeline(
+    device: &wgpu::Device,
+    layouts: &Layouts,
+    (format, samples): (wgpu::TextureFormat, u32),
+    v: ShapeVariant,
+    (vertex, layout, buffer_count): (&str, &wgpu::PipelineLayout, usize),
+) -> wgpu::RenderPipeline {
+    let buffers = [
+        Some(vertex_layout()),
+        Some(instance_layout(&INSTANCE_ATTRS)),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: crate::plan::UV_BYTES,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &UV_ATTRS,
+        }),
+    ];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(v.label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &layouts.scene_module,
+            entry_point: Some(vertex),
+            buffers: &buffers[..buffer_count],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        // 面の向きによる間引きはしない（鏡像の変換や裏表の不揃いなモデルで面が消えないように）。
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            polygon_mode: v.polygon_mode,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(v.depth_write),
+            depth_compare: Some(v.depth_compare),
+            stencil: wgpu::StencilState::default(),
+            bias: v.bias,
+        }),
+        multisample: wgpu::MultisampleState {
+            count: samples,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &layouts.scene_module,
+            entry_point: Some(v.fragment),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: v.blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn face_variant(label: &'static str, fragment: &'static str) -> ShapeVariant {
+    ShapeVariant {
+        label,
+        fragment,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        depth_write: true,
+        depth_compare: wgpu::CompareFunction::Greater,
+        bias: wgpu::DepthBiasState::default(),
+        blend: None,
+    }
 }
 
 /// 形状を描くパイプラインの違いの部分。
@@ -226,6 +302,29 @@ struct ShapeVariant {
 }
 
 impl Pipelines {
+    /// 画像の描画のパイプライン（`boxed` なら箱形）。無ければ作る。
+    pub fn textured(
+        &self,
+        device: &wgpu::Device,
+        layouts: &Layouts,
+        boxed: bool,
+    ) -> &wgpu::RenderPipeline {
+        let (cell, label, vertex, buffers) = if boxed {
+            (&self.scene_box, "scene_box", "vs_box", 2)
+        } else {
+            (&self.scene_uv, "scene_uv", "vs_uv", 3)
+        };
+        cell.get_or_init(|| {
+            shape_pipeline(
+                device,
+                layouts,
+                (self.format, self.samples),
+                face_variant(label, label),
+                (vertex, &self.texture_layout, buffers),
+            )
+        })
+    }
+
     /// `lines` が偽なら線のパイプラインを作らない（`POLYGON_MODE_LINE` の無い装置で作ると失敗する）。
     pub fn new(
         device: &wgpu::Device,
@@ -254,53 +353,14 @@ impl Pipelines {
             mask: !0,
             alpha_to_coverage_enabled: false,
         };
-        let buffers = [
-            Some(vertex_layout()),
-            Some(instance_layout(&INSTANCE_ATTRS)),
-            Some(wgpu::VertexBufferLayout {
-                array_stride: crate::plan::UV_BYTES,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &UV_ATTRS,
-            }),
-        ];
         let shape = |v: ShapeVariant, vertex, layout, buffer_count| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(v.label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &layouts.scene_module,
-                    entry_point: Some(vertex),
-                    buffers: &buffers[..buffer_count],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                // 面の向きによる間引きはしない（鏡像の変換や裏表の不揃いなモデルで面が消えないように）。
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    polygon_mode: v.polygon_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(v.depth_write),
-                    depth_compare: Some(v.depth_compare),
-                    stencil: wgpu::StencilState::default(),
-                    bias: v.bias,
-                }),
-                multisample,
-                fragment: Some(wgpu::FragmentState {
-                    module: &layouts.scene_module,
-                    entry_point: Some(v.fragment),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: v.blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+            shape_pipeline(
+                device,
+                layouts,
+                (format, samples),
+                v,
+                (vertex, layout, buffer_count),
+            )
         };
         // 反転Z：クリア値0、手前ほど大きい。
         let plain = |v| shape(v, "vs_main", &frame_layout, 2);
@@ -314,13 +374,6 @@ impl Pipelines {
             blend: None,
         };
         let scene = plain(faces("scene", "fs_main"));
-        let scene_uv = shape(faces("scene_uv", "scene_uv"), "vs_uv", &texture_layout, 3);
-        let scene_box = shape(
-            faces("scene_box", "scene_box"),
-            "vs_box",
-            &texture_layout,
-            2,
-        );
         let xray = plain(ShapeVariant {
             label: "scene xray",
             fragment: "fs_main",
@@ -449,8 +502,9 @@ impl Pipelines {
             samples,
             lines,
             scene,
-            scene_uv,
-            scene_box,
+            scene_uv: OnceLock::new(),
+            scene_box: OnceLock::new(),
+            texture_layout,
             xray,
             line_overlay,
             line_only,

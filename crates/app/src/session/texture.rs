@@ -123,7 +123,7 @@ fn selection(session: &Session) -> Option<Selection> {
             images.insert(image);
             match tex.map {
                 UvMap::Vertex { .. } => has_uv = true,
-                UvMap::Box { size } => {
+                UvMap::Box { size, .. } => {
                     has_box = true;
                     let world = size * k;
                     let first = *first_size.get_or_insert(world);
@@ -219,6 +219,7 @@ struct PreparedImage {
     original: ModelIdentity,
     bytes: Arc<[u8]>,
     mime: Mime,
+    size: [u32; 2],
     chain: Option<MipChain>,
     shrunk: bool,
 }
@@ -277,6 +278,7 @@ fn read_image(
         original,
         bytes: bytes.into(),
         mime,
+        size,
         chain: (!reuse).then_some(chain),
         shrunk: skip > 0,
     })
@@ -387,7 +389,11 @@ fn finish(session: &mut Session, job: PasteJob, image: PreparedImage) -> Result<
                 image: None,
                 sampling: Sampling::default(),
                 map: UvMap::Box {
-                    size: world_size / k,
+                    size: match old.map(|tex| tex.map) {
+                        Some(UvMap::Box { size, .. }) => size,
+                        _ => world_size / k,
+                    },
+                    aspect: image.size[0] as f32 / image.size[1] as f32,
                 },
                 cutoff: old.and_then(|tex| tex.cutoff),
                 baked_box: None,
@@ -519,14 +525,14 @@ pub(super) fn adjust(session: &mut Session, adjustment: Adjustment) {
                     Some((draw.base_color, mask))
                 }
                 Adjustment::Size(world) => {
-                    if !matches!(tex.map, UvMap::Box { .. }) {
+                    let UvMap::Box { aspect, .. } = tex.map else {
                         return None;
-                    }
+                    };
                     let size = world / k;
                     if !(size.is_finite() && size > 0.0) {
                         return None;
                     }
-                    tex.map = UvMap::Box { size };
+                    tex.map = UvMap::Box { size, aspect };
                     Some((draw.base_color, Some(tex)))
                 }
             }

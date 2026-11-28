@@ -31,6 +31,7 @@ egui-wgpu = { version = "0.37.0", default-features = false }
 wgpu = { version = "30.0.2" }
 egui_system_font_provider = "0.37.0"
 gltf = { version = "1.4.1", default-features = false, features = [
+    "allow_empty_texture",
     "utils",
     "names",
     "KHR_materials_unlit",

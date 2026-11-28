@@ -65,6 +65,15 @@ impl TextureProgress {
 }
 
 impl Session {
+    /// 状態欄の「簡略表示」に出すモデルの知らせ。画像を基本色に掛けて表示する知らせ
+    /// （`Textures`）は省いたものではないので出さない（色の欄の注意で伝える）。
+    pub fn simplification_warnings(&self) -> impl Iterator<Item = &LoadWarning> {
+        self.model
+            .iter()
+            .flat_map(|model| model.warnings.iter())
+            .filter(|warning| !matches!(warning, LoadWarning::Textures { .. }))
+    }
+
     /// ファイルの解析で省いた参照も一覧に数える。表示を無効にしても元の枚数は分かる。
     pub(crate) fn texture_counts(&self) -> (usize, usize) {
         let Some(model) = self.model.as_ref() else {

@@ -57,7 +57,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                     open: !session.panel_details,
                 });
             }
-            if let Some(model) = &session.model {
+            if session.model.is_some() {
                 if shown.parts {
                     ui.label(parts_text(session));
                 }
@@ -117,7 +117,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                     )
                     .on_hover_text("計測の2点の距離（保存されません）");
                 }
-                let count = model.warnings.len() + session.textures.warning_count();
+                let count = session.simplification_warnings().count() + session.textures.warning_count();
                 if count > 0 {
                     let response = ui.add(egui::Button::new(
                         egui::RichText::new(format!("簡略表示 {count} 件")).color(theme::WARNING),
@@ -128,7 +128,7 @@ pub fn show(ui: &mut egui::Ui, session: &Session, out: &mut Vec<Command>) {
                         egui::ScrollArea::vertical()
                             .max_height(200.0)
                             .show(ui, |ui| {
-                                for warning in &model.warnings {
+                                for warning in session.simplification_warnings() {
                                     ui.label(warning.message_ja());
                                 }
                                 for warning in session.textures.warnings(session.texture_options.budget_mib) {
@@ -236,11 +236,7 @@ fn fixed_width(ui: &egui::Ui, session: &Session) -> f32 {
     if let Some(distance) = crate::session::measure_distance(session) {
         fixed += width(&format!("距離 {}", session.units.format(distance, 4)), 0.0);
     }
-    if session
-        .model
-        .as_ref()
-        .is_some_and(|model| !model.warnings.is_empty() || session.textures.warning_count() > 0)
-    {
+    if session.simplification_warnings().next().is_some() || session.textures.warning_count() > 0 {
         fixed += width("簡略表示 000 件", BUTTON_PAD);
     }
     if let Some(progress) = session.texture_progress_label() {

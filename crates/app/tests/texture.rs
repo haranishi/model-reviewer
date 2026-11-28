@@ -74,6 +74,19 @@ fn opening_textured_glb_reports_progress() {
 }
 
 #[test]
+fn shown_images_are_not_reported_as_simplified() {
+    let mut s = Session::default();
+    s.apply(Command::OpenModel(file(
+        "not-simplified",
+        &textured_quad_glb(&Default::default()),
+    )));
+    CountingImages::default().finish(&mut s);
+    assert_eq!(s.textures.displayed(), 1);
+    assert_eq!(s.simplification_warnings().count(), 0);
+    assert!(s.textures.failed.is_empty() && s.textures.shrunk == 0);
+}
+
+#[test]
 fn textures_can_be_hidden_and_shown() {
     let mut s = Session::default();
     s.apply(Command::OpenModel(file(

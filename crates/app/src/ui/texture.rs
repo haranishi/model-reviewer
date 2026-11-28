@@ -90,7 +90,8 @@ fn size_field(ui: &mut egui::Ui, input: &TextureView, out: &mut Vec<Command>) {
             out.insert(0, Command::SetTextureSize(size as f32));
         }
         ui.data_mut(|d| d.remove::<String>(id));
-    } else if field.has_focus() {
+    } else if ui.memory(|m| m.has_focus(field.id)) {
+        // `Response::has_focus` は前面でないウィンドウで常に偽になり、打った文字が消える。
         ui.data_mut(|d| d.insert_temp(id, text));
     }
 }

@@ -650,6 +650,16 @@ fn repasting_removed_mask_keeps_original_uv() {
 
 #[test]
 fn size_field_changes_box_size() {
+    size_field_accepts_typing(true);
+}
+
+// 画面を出さない自動操作の窓は前面にならず、egui は欄を「選ばれていない」と扱う。
+#[test]
+fn size_field_accepts_typing_in_a_background_window() {
+    size_field_accepts_typing(false);
+}
+
+fn size_field_accepts_typing(focused: bool) {
     use egui_kittest::{Harness, kittest::Queryable};
     use model_reviewer_core::units::UnitLabel;
 
@@ -672,6 +682,7 @@ fn size_field_changes_box_size() {
             },
             s,
         );
+    h.input_mut().focused = focused;
     h.get_by_label("1枚の大きさ").click();
     h.step();
     // ほかの数値の欄と同じく、押して打つと前の値を置き換える。

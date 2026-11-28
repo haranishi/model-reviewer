@@ -39,6 +39,10 @@ fn scene_of(model: &Model) -> ExportScene {
             .collect(),
         added: Vec::new(),
         base_primitive_count: model.primitives.len() as u32,
+        textures: model_reviewer_gltf::export::ExportTextures::from_tables(
+            &model.textures.images,
+            &model.textures.uses,
+        ),
     }
 }
 

@@ -79,6 +79,7 @@ fn one_shape() -> ExportScene {
         )],
         added: vec![tetra()],
         base_primitive_count: 0,
+        textures: Default::default(),
     }
 }
 
@@ -188,6 +189,7 @@ fn exports_a_group_with_children_from_empty_base() {
         ],
         added: vec![tetra()],
         base_primitive_count: 0,
+        textures: Default::default(),
     };
     let written = export(&scene);
     let model = load_glb(&written).expect("開ける");
@@ -244,6 +246,7 @@ fn empty_scene_on_empty_base_is_refused() {
         nodes: vec![added(None, "空の組", Affine3A::IDENTITY, Vec::new())],
         added: Vec::new(),
         base_primitive_count: 0,
+        textures: Default::default(),
     };
     assert!(matches!(
         build(&base, &group_only),

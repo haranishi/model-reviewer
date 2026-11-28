@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use model_reviewer_core::doc::Document;
 use model_reviewer_core::identity::ModelIdentity;
 use model_reviewer_core::scene::{NodeId, SceneRead};
-use model_reviewer_gltf::export::{ExportNode, ExportNote, ExportScene, empty_base};
+use model_reviewer_gltf::export::{
+    ExportNode, ExportNote, ExportScene, ExportTextures, empty_base,
+};
 
 use crate::command::{Command, DialogButton, DialogRequest};
 use crate::exporter::{self, ExportDone, ExportEvent, ExportFailure, ExportRequest, ExportStage};
@@ -45,6 +47,7 @@ pub fn export_scene(doc: &Document) -> ExportScene {
         nodes,
         added: doc.added_primitives().to_vec(),
         base_primitive_count: doc.base().primitives.len() as u32,
+        textures: ExportTextures::from_tables(doc.images(), doc.tex_uses()),
     }
 }
 
@@ -282,6 +285,14 @@ pub fn note_ja(note: &ExportNote) -> String {
                 "色を変えた部品 {nodes} 個: 材質 {materials} 個とメッシュ {meshes} 個を足しました。元の材質とメッシュは、ファイルに残しています。"
             )
         }
+        ExportNote::Retextured { nodes, images, image_bytes, baked } => {
+            let mut message = format!("画像を変えた部品は {nodes} 個です。画像 {images} 枚（{image_bytes} バイト）を足しました。元の画像と材質はファイルに残っています。");
+            if baked > 0 {
+                message.push_str(&format!("\n箱形の投影で UV 付きの形状を {baked} 個作りました。頂点の色と接線は写していません。"));
+            }
+            message
+        }
+        ExportNote::BoxSizeUnmarked => "材質の追加情報を保つため、箱形の大きさを記録できない材質がありました。次の書き出しでも形状を作り直します。".to_owned(),
         ExportNote::DetachedNodes { count } => {
             format!(
                 "削除した部品 {count} 個はシーンから外しました。形状のデータはファイルに残っています。"

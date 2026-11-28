@@ -6,6 +6,35 @@ use gltf::json::Value;
 
 use super::ExportError;
 
+pub(super) fn array<'a>(root: &'a Value, key: &str) -> &'a [Value] {
+    root.get(key)
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// 最上位の配列を取り出す。無ければ空の配列を作る。
+pub(super) fn array_mut<'v>(
+    root: &'v mut Value,
+    key: &str,
+) -> Result<&'v mut Vec<Value>, ExportError> {
+    let Value::Object(map) = root else {
+        return Err(ExportError::InvalidBase(
+            "JSONの最上位がオブジェクトではありません".to_owned(),
+        ));
+    };
+    map.entry(key.to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| ExportError::InvalidBase(format!("{key} が配列ではありません")))
+}
+
+pub(super) fn push(root: &mut Value, key: &str, item: Value) -> Result<usize, ExportError> {
+    let items = array_mut(root, key)?;
+    let index = items.len();
+    items.push(item);
+    Ok(index)
+}
+
 /// 空のオブジェクト。
 pub(crate) fn obj() -> Value {
     Value::Object(Default::default())

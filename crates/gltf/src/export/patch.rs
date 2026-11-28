@@ -2,11 +2,11 @@
 
 use gltf::json::Value;
 
-use super::append::{Appender, Counts};
+use super::append::Appender;
 use super::base::{self, Base, same_bits};
 use super::container::{self, align4};
-use super::json::{obj, set, uint, uints, write_children, write_name, write_transform};
-use super::recolor;
+use super::json::{array_mut, obj, set, uint, uints, write_children, write_name, write_transform};
+use super::restyle;
 use super::{Built, ExportError, ExportNote, ExportScene};
 
 /// `ExportScene` を元のファイルに当てはめた形。
@@ -24,10 +24,10 @@ pub(crate) struct Shape {
 pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportError> {
     let base = base::read(bytes, scene)?;
     let shape = shape(&base, scene)?;
-    let recolored = recolor::plan(&base, scene)?;
-    let recolored_materials = recolored.materials.len() as u32;
-    let recolored_meshes = recolored.meshes.len() as u32;
     let mut root = base.value.clone();
+    let bin_start = base.container.bin.map_or(0, |bin| align4(bin.len() as u64));
+    let mut appender = Appender::new(bin_start, &root);
+    let styled = restyle::apply(&base, scene, &mut root, &mut appender)?;
     let mut matrix_written = 0u32;
     let mut animated = 0u32;
     let mut skinned = 0u32;
@@ -48,13 +48,13 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
                 !base.locals[file].is_some_and(|local| same_bits(local, node.local));
             let name_changed = node.name != base.names[file];
             let children_changed = new_children != base.children[file];
-            let mesh = recolored.mesh_of[index];
+            let mesh = styled.mesh_of[index];
             if !(transform_changed || name_changed || children_changed || mesh.is_some()) {
                 continue;
             }
             let target = node_mut(nodes, file)?;
             if let Some(mesh) = mesh {
-                set(target, "mesh", uint(mesh));
+                set(target, "mesh", Value::from(mesh));
             }
             if transform_changed {
                 if write_transform(target, node.local)? {
@@ -87,23 +87,7 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
         }
     }
 
-    // 色の写し：足した図形の材質とメッシュより前に、配列の末尾へ。
-    extend(&mut root, "materials", recolored.materials)?;
-    extend(&mut root, "meshes", recolored.meshes)?;
-
-    // 足す部品：行きがけ順に配列の末尾へ。
-    let bin_start = base.container.bin.map_or(0, |bin| align4(bin.len() as u64));
-    let mut appender = Appender::new(
-        bin_start,
-        scene.base_primitive_count,
-        &scene.added,
-        Counts {
-            meshes: array_len(&root, "meshes"),
-            materials: array_len(&root, "materials"),
-            accessors: array_len(&root, "accessors"),
-            views: array_len(&root, "bufferViews"),
-        },
-    );
+    // 足す部品を行きがけ順に並べる。
     let mut new_nodes = Vec::new();
     for (index, node) in scene.nodes.iter().enumerate() {
         if node.file_index.is_some() {
@@ -127,15 +111,15 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
                     .ok_or_else(|| {
                         ExportError::InvalidBase("ノードがオブジェクトではありません".to_owned())
                     })?;
-                if let Some(mesh) = recolored.mesh_of[index] {
-                    set(&mut copy, "mesh", uint(mesh));
+                if let Some(mesh) = styled.mesh_of[index] {
+                    set(&mut copy, "mesh", Value::from(mesh));
                 }
                 copy
             }
             None => {
                 let mut fresh = obj();
-                if !node.draws.is_empty() {
-                    set(&mut fresh, "mesh", uint(appender.mesh(&node.draws)?));
+                if let Some(mesh) = styled.mesh_of[index] {
+                    set(&mut fresh, "mesh", Value::from(mesh));
                 }
                 fresh
             }
@@ -170,24 +154,9 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
         scene_added = true;
     }
 
-    // 足した形状。
-    let appended_bin = std::mem::take(&mut appender.bin);
-    extend(&mut root, "meshes", std::mem::take(&mut appender.meshes))?;
-    extend(
-        &mut root,
-        "materials",
-        std::mem::take(&mut appender.materials),
-    )?;
-    extend(
-        &mut root,
-        "accessors",
-        std::mem::take(&mut appender.accessors),
-    )?;
-    extend(
-        &mut root,
-        "bufferViews",
-        std::mem::take(&mut appender.views),
-    )?;
+    let appended_bin = appender.bin;
+    extend(&mut root, "accessors", appender.accessors)?;
+    extend(&mut root, "bufferViews", appender.views)?;
     if !appended_bin.is_empty() {
         let length = bin_start + appended_bin.len() as u64;
         let buffers = array_mut(&mut root, "buffers")?;
@@ -212,14 +181,7 @@ pub(crate) fn build(bytes: &[u8], scene: &ExportScene) -> Result<Built, ExportEr
         .iter()
         .filter(|node| shape.in_scene[node.gltf_index as usize].is_none())
         .count() as u32;
-    let mut notes = Vec::new();
-    if recolored.nodes > 0 {
-        notes.push(ExportNote::Recolored {
-            nodes: recolored.nodes,
-            materials: recolored_materials,
-            meshes: recolored_meshes,
-        });
-    }
+    let mut notes = styled.notes;
     if detached > 0 {
         notes.push(ExportNote::DetachedNodes { count: detached });
     }
@@ -379,27 +341,10 @@ fn node_mut(nodes: &mut [Value], index: usize) -> Result<&mut Value, ExportError
         .ok_or_else(|| ExportError::InvalidBase(format!("ノード {index} がありません")))
 }
 
-/// 最上位の配列を取り出す。無ければ空の配列を作る。
-fn array_mut<'v>(root: &'v mut Value, key: &str) -> Result<&'v mut Vec<Value>, ExportError> {
-    let Value::Object(map) = root else {
-        return Err(ExportError::InvalidBase(
-            "JSONの最上位がオブジェクトではありません".to_owned(),
-        ));
-    };
-    map.entry(key.to_owned())
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| ExportError::InvalidBase(format!("{key} が配列ではありません")))
-}
-
 fn extend(root: &mut Value, key: &str, items: Vec<Value>) -> Result<(), ExportError> {
     if items.is_empty() {
         return Ok(());
     }
     array_mut(root, key)?.extend(items);
     Ok(())
-}
-
-fn array_len(root: &Value, key: &str) -> usize {
-    root.get(key).and_then(Value::as_array).map_or(0, Vec::len)
 }

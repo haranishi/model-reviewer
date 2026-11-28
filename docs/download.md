@@ -15,10 +15,10 @@ In the download folder, run the command for your OS. Compare the result with the
 
 ## macOS — Apple Silicon / Intel
 
-macOS 11 以降向けに組み立てています（画面を確かめたのは Apple Silicon の新しい macOS だけです）。Metal 対応の GPU が必要です。ZIP を展開し、Model Reviewer.app を「アプリケーション」に移して開きます。
+macOS 11 以降向けに組み立てています（画面を確かめたのは Apple Silicon の新しい macOS だけで、Intel の Mac では起動を確かめていません）。Metal 対応の GPU が必要です。ZIP を展開し、Model Reviewer.app を「アプリケーション」に移して開きます。
 公証を受けていないため、開発元を確認できないと表示される場合があります。起動を一度試した後、「システム設定」→「プライバシーとセキュリティ」→「このまま開く」を選びます。macOS 11・12 では「システム環境設定」→「セキュリティとプライバシー」→「一般」にあります。
 
-The app is built for macOS 11 or later (only tested on a recent macOS on Apple Silicon) and needs a Metal-capable GPU. Unzip the download, move Model Reviewer.app to Applications and open it. The app has an ad-hoc signature and is unnotarized. If macOS reports an unidentified developer, try opening it once, then use System Settings → Privacy & Security → Open Anyway. On macOS 11–12, use System Preferences → Security & Privacy → General.
+The app is built for macOS 11 or later (only tested on a recent macOS on Apple Silicon; not yet tried on an Intel Mac) and needs a Metal-capable GPU. Unzip the download, move Model Reviewer.app to Applications and open it. The app has an ad-hoc signature and is unnotarized. If macOS reports an unidentified developer, try opening it once, then use System Settings → Privacy & Security → Open Anyway. On macOS 11–12, use System Preferences → Security & Privacy → General.
 https://support.apple.com/en-us/102445
 
 ## Windows — x86-64

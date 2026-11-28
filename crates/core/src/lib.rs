@@ -15,5 +15,6 @@ pub mod scene;
 pub mod section;
 pub mod shapes;
 pub mod snap;
+pub mod texture;
 pub mod units;
 pub mod visibility;

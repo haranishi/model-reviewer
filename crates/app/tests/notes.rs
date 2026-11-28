@@ -11,9 +11,11 @@ use model_reviewer::session::{Draft, Session};
 use model_reviewer_core::math::Aabb;
 use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{Model, ModelStats, Node, NodeId};
+use model_reviewer_core::texture::Textures;
 
 fn install(session: &mut Session, name: &str) {
     let model = Arc::new(Model {
+        textures: Textures::default(),
         nodes: vec![Node {
             name: name.to_owned(),
             gltf_index: 0,

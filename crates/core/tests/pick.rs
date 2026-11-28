@@ -11,6 +11,7 @@ use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
 };
 use model_reviewer_core::section::{Axis, SectionPlane};
+use model_reviewer_core::texture::Textures;
 use model_reviewer_core::visibility::Visibility;
 
 fn vertex(position: [f32; 3]) -> Vertex {
@@ -64,6 +65,7 @@ fn model_of(prim: Primitive, worlds: &[Affine3A]) -> Model {
         .map(|_| Draw {
             prim: PrimId(0),
             base_color: [1.0, 1.0, 1.0, 1.0],
+            tex: None,
         })
         .collect();
     let nodes = worlds
@@ -82,6 +84,7 @@ fn model_of(prim: Primitive, worlds: &[Affine3A]) -> Model {
         })
         .collect();
     Model {
+        textures: Textures::default(),
         nodes,
         draws,
         primitives: vec![prim],

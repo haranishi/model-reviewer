@@ -872,6 +872,7 @@ impl SceneRead for Document {
 pub(crate) mod tests {
     use super::*;
     use crate::scene::{ModelStats, Node};
+    use crate::texture::Textures;
     use glam::Vec3;
 
     pub(crate) const RED: [f32; 4] = [0.7, 0.1, 0.1, 1.0];
@@ -904,10 +905,12 @@ pub(crate) mod tests {
                     Draw {
                         prim: PrimId(0),
                         base_color: RED,
+                        tex: None,
                     },
                     Draw {
                         prim: PrimId(1),
                         base_color: GREEN,
+                        tex: None,
                     },
                 ],
             ),
@@ -918,6 +921,7 @@ pub(crate) mod tests {
                 vec![Draw {
                     prim: PrimId(0),
                     base_color: BLUE,
+                    tex: None,
                 }],
             ),
             (
@@ -927,6 +931,7 @@ pub(crate) mod tests {
                 vec![Draw {
                     prim: PrimId(0),
                     base_color: GREY,
+                    tex: None,
                 }],
             ),
         ];
@@ -949,6 +954,7 @@ pub(crate) mod tests {
             });
         }
         let model = Model {
+            textures: Textures::default(),
             nodes,
             draws,
             primitives: vec![prim(), prim()],
@@ -1039,6 +1045,7 @@ pub(crate) mod tests {
                     Draw {
                         prim: PrimId(0),
                         base_color: GREY,
+                        tex: None,
                     },
                 )
                 .unwrap();

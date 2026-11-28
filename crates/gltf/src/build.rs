@@ -12,6 +12,7 @@ use model_reviewer_core::math::Aabb;
 use model_reviewer_core::scene::{
     Draw, LoadWarning, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
 };
+use model_reviewer_core::texture::Textures;
 
 use crate::error::LoadError;
 use crate::inspect::{self, Opened};
@@ -117,6 +118,7 @@ fn assemble_with_sources(
         warnings.push(LoadWarning::UnsupportedOptionalExtension { name: name.clone() });
     }
     let model = Model {
+        textures: Textures::default(),
         stats: ModelStats {
             nodes: inspect::fit_u32(nodes.len() as u64, "インスタンス数")?,
             meshes: inspect::fit_u32(assembly.meshes.len() as u64, "インスタンス数")?,
@@ -431,6 +433,7 @@ impl<'a> Assembly<'a> {
         self.draws.push(Draw {
             prim,
             base_color: color,
+            tex: None,
         });
         self.sources.push(source);
         self.meshes.insert(mesh_index);

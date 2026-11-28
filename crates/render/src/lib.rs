@@ -976,6 +976,7 @@ mod failure_tests {
     use model_reviewer_core::scene::{
         Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, Vertex,
     };
+    use model_reviewer_core::texture::Textures;
     use model_reviewer_core::visibility::Visibility;
 
     use super::{FrameParams, RenderError, SceneRenderer, plan};
@@ -1061,6 +1062,7 @@ mod failure_tests {
             draws.push(Draw {
                 prim: PrimId(0),
                 base_color: [0.8, 0.05, 0.04, 1.0],
+                tex: None,
             });
             nodes.push(Node {
                 name: format!("n{index}"),
@@ -1075,6 +1077,7 @@ mod failure_tests {
             });
         }
         Model {
+            textures: Textures::default(),
             nodes,
             draws,
             primitives: vec![quad()],

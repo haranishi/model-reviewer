@@ -10,6 +10,7 @@ use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
 use model_reviewer_core::shapes::{self, ShapeKind, ShapeSpec};
+use model_reviewer_core::texture::Textures;
 
 /// 決まった種の乱数（xorshift64）。
 struct Rng(u64);
@@ -68,6 +69,7 @@ fn build(specs: &[(Option<usize>, Affine3A, Vec<u32>)], prims: Vec<Primitive>) -
             draws.push(Draw {
                 prim: PrimId(shape),
                 base_color: [0.5, 0.5, 0.5, 1.0],
+                tex: None,
             });
             aabb = aabb.union(prims[shape as usize].local_aabb.transformed(&world));
         }
@@ -87,6 +89,7 @@ fn build(specs: &[(Option<usize>, Affine3A, Vec<u32>)], prims: Vec<Primitive>) -
         .iter()
         .fold(Aabb::empty(), |bounds, node| bounds.union(node.world_aabb));
     Model {
+        textures: Textures::default(),
         stats: ModelStats {
             nodes: count as u32,
             ..ModelStats::default()
@@ -434,6 +437,7 @@ fn added_shapes_get_new_primitive_ids_and_go_to_the_end() {
     let draw = Draw {
         prim: id,
         base_color: [1.0, 0.0, 0.0, 1.0],
+        tex: None,
     };
     let (place, piece) = doc.shape_piece("立方体", local, draw).unwrap();
     assert_eq!(
@@ -459,6 +463,7 @@ fn added_shapes_get_new_primitive_ids_and_go_to_the_end() {
     let unknown = Draw {
         prim: PrimId(9),
         base_color: [1.0; 4],
+        tex: None,
     };
     assert_eq!(
         doc.shape_piece("x", local, unknown).unwrap_err(),
@@ -587,6 +592,7 @@ fn shape_spec_survives_duplicate() {
     let draw = Draw {
         prim: id,
         base_color: shapes::SHAPE_COLOR,
+        tex: None,
     };
     let (place, piece) = doc.shape_piece("円柱", shift(3.0), draw).unwrap();
     let key = piece.nodes[0].key;

@@ -15,6 +15,7 @@ use model_reviewer_core::review::ReviewState;
 use model_reviewer_core::scene::{
     Draw, Model, ModelStats, Node, NodeId, PrimId, Primitive, SceneRead,
 };
+use model_reviewer_core::texture::Textures;
 
 struct Rng(u64);
 
@@ -72,6 +73,7 @@ fn build(specs: &[(Option<usize>, Affine3A, Vec<u32>)], prims: Vec<Primitive>) -
             draws.push(Draw {
                 prim: PrimId(shape),
                 base_color: [0.5, 0.5, 0.5, 1.0],
+                tex: None,
             });
             aabb = aabb.union(prims[shape as usize].local_aabb.transformed(&world));
         }
@@ -91,6 +93,7 @@ fn build(specs: &[(Option<usize>, Affine3A, Vec<u32>)], prims: Vec<Primitive>) -
         .iter()
         .fold(Aabb::empty(), |bounds, node| bounds.union(node.world_aabb));
     Model {
+        textures: Textures::default(),
         stats: ModelStats {
             nodes: count as u32,
             ..ModelStats::default()
@@ -273,6 +276,7 @@ impl World {
                 let draw = Draw {
                     prim,
                     base_color: [0.2, 0.4, 0.6, 1.0],
+                    tex: None,
                 };
                 let (at, piece) = self
                     .doc
@@ -464,6 +468,7 @@ fn every_operation_undoes_and_redoes_bit_exactly() {
     let draw = Draw {
         prim,
         base_color: [1.0, 0.0, 0.0, 1.0],
+        tex: None,
     };
     let (at, piece) = world.doc.shape_piece("球", shift(3.0), draw).unwrap();
     roundtrip(&mut world, "図形を足す", vec![Edit::Insert { at, piece }]);
@@ -926,6 +931,7 @@ fn heavy_document_timings() {
     let draw = Draw {
         prim,
         base_color: [1.0; 4],
+        tex: None,
     };
     let (_, add) = time(|| {
         let (at, piece) = world.doc.shape_piece("立方体", shift(2.0), draw).unwrap();

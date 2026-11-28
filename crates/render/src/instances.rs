@@ -245,6 +245,7 @@ mod tests {
     use model_reviewer_core::doc::{Document, NodeKey};
     use model_reviewer_core::math::Aabb;
     use model_reviewer_core::scene::{Draw, Model, ModelStats, Node, PrimId, Primitive};
+    use model_reviewer_core::texture::Textures;
     use std::sync::Arc;
 
     fn prim() -> Primitive {
@@ -274,6 +275,7 @@ mod tests {
                 draws.push(Draw {
                     prim: PrimId((n + k) % 2),
                     base_color: shade(n, k),
+                    tex: None,
                 });
             }
             let local = Affine3A::from_translation(Vec3::new(n as f32, 0.0, 0.0));
@@ -290,6 +292,7 @@ mod tests {
             });
         }
         Arc::new(Model {
+            textures: Textures::default(),
             nodes,
             draws,
             primitives: vec![prim(), prim()],
@@ -393,6 +396,7 @@ mod tests {
             Draw {
                 prim: PrimId(1),
                 base_color: [1.0, 0.0, 0.0, 1.0],
+                tex: None,
             },
         );
         for node in &mut other.nodes {

@@ -20,7 +20,9 @@ fn load_err(bytes: &[u8]) -> LoadError {
 fn assert_order(warnings: &[LoadWarning]) {
     fn rank(warning: &LoadWarning) -> u8 {
         match warning {
-            LoadWarning::Textures { .. } => 0,
+            LoadWarning::Textures { .. }
+            | LoadWarning::OtherTextures { .. }
+            | LoadWarning::ImagesSkipped { .. } => 0,
             LoadWarning::VertexColors { .. } => 1,
             LoadWarning::AlphaBlend { .. } => 2,
             LoadWarning::Animations { .. } => 3,

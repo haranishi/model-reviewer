@@ -74,6 +74,7 @@ fn one_shape() -> ExportScene {
             vec![Draw {
                 prim: PrimId(0),
                 base_color: COLOR,
+                tex: None,
             }],
         )],
         added: vec![tetra()],
@@ -167,6 +168,7 @@ fn exports_a_group_with_children_from_empty_base() {
     let draw = |color: [f32; 4]| Draw {
         prim: PrimId(0),
         base_color: color,
+        tex: None,
     };
     let scene = ExportScene {
         nodes: vec![
